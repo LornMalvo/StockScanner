@@ -91,111 +91,430 @@ def _section(title):
     st.markdown(f'<div class="section-header">{title}</div>', unsafe_allow_html=True)
 
 
-# ─── Evaluación fundamental ───────────────────────────────────────────────────
+# ─── Benchmarks por sector ────────────────────────────────────────────────────
+#
+# Cada sector tiene sus propios rangos "normales" para:
+#   pe_fair   → PER razonable para el sector
+#   pe_high   → PER caro para el sector
+#   peg_ok    → PEG aceptable
+#   margin_ok → Margen neto mínimo aceptable
+#   roe_ok    → ROE mínimo aceptable
+#   ev_ebitda_fair → EV/EBITDA razonable
+#   methods   → qué métodos de valoración usar (por orden de relevancia)
+#               "per"=PER×EPS, "peg"=PEG, "ev_ebitda"=EV/EBITDA, "ev_rev"=EV/Revenue
+#               "dcf_lite"=FCF yield, "nav"=Price/Book para financieras
+#   notas     → texto explicativo para el usuario
 
-def _evaluate(y: dict, sec: dict | None, use_sec: bool) -> dict:
-    """Genera el diagnóstico final."""
-    price        = y.get("price") or 0
-    pe_forward   = y.get("pe_forward")
-    pe_trailing  = y.get("pe_trailing")
-    peg          = y.get("peg_ratio")
-    target_mean  = y.get("target_mean")
-    profit_m     = y.get("profit_margin") or 0
-    roe          = y.get("roe") or 0
-    rev_yoy      = y.get("revenue_yoy") or 0
-    earn_yoy     = y.get("earnings_yoy") or 0
-    short_ratio  = y.get("short_ratio") or 0
-    week52_high  = y.get("52w_high") or price
-    week52_low   = y.get("52w_low") or price
+SECTOR_PROFILES = {
+    "Technology": {
+        "pe_fair": 28, "pe_high": 50,
+        "peg_ok": 1.5, "margin_ok": 0.12, "roe_ok": 0.15,
+        "ev_ebitda_fair": 22,
+        "methods": ["peg", "per", "ev_ebitda"],
+        "nota": "Tecnología cotiza con prima estructural por crecimiento. PEG < 1.5 y márgenes > 12% son señales positivas.",
+    },
+    "Communication Services": {
+        "pe_fair": 22, "pe_high": 40,
+        "peg_ok": 1.3, "margin_ok": 0.10, "roe_ok": 0.12,
+        "ev_ebitda_fair": 18,
+        "methods": ["peg", "ev_ebitda", "per"],
+        "nota": "Servicios de comunicación valora el crecimiento de usuarios y EBITDA. Los múltiplos varían mucho entre plataformas y telecos.",
+    },
+    "Consumer Cyclical": {
+        "pe_fair": 20, "pe_high": 35,
+        "peg_ok": 1.2, "margin_ok": 0.06, "roe_ok": 0.12,
+        "ev_ebitda_fair": 14,
+        "methods": ["per", "ev_ebitda", "peg"],
+        "nota": "Cíclico al consumo: los márgenes caen en recesión. PER < 20 con ROE > 12% es señal sólida.",
+    },
+    "Consumer Defensive": {
+        "pe_fair": 22, "pe_high": 32,
+        "peg_ok": 2.0, "margin_ok": 0.07, "roe_ok": 0.15,
+        "ev_ebitda_fair": 16,
+        "methods": ["per", "ev_ebitda", "peg"],
+        "nota": "Defensivo al consumo: se valora por estabilidad y dividendos. PER hasta 22 es razonable.",
+    },
+    "Healthcare": {
+        "pe_fair": 24, "pe_high": 45,
+        "peg_ok": 1.8, "margin_ok": 0.10, "roe_ok": 0.12,
+        "ev_ebitda_fair": 18,
+        "methods": ["peg", "per", "ev_ebitda"],
+        "nota": "Salud tiene prima por pipeline y patentes. Farmacéuticas puras pueden tener PER alto justificado.",
+    },
+    "Financials": {
+        "pe_fair": 14, "pe_high": 22,
+        "peg_ok": 1.0, "margin_ok": 0.15, "roe_ok": 0.10,
+        "ev_ebitda_fair": 10,
+        "methods": ["nav", "per", "peg"],
+        "nota": "Financieras se valoran por Price/Book y ROE. EV/EBITDA menos relevante; se prefiere P/B < 1.5 + ROE > 10%.",
+    },
+    "Industrials": {
+        "pe_fair": 20, "pe_high": 32,
+        "peg_ok": 1.5, "margin_ok": 0.07, "roe_ok": 0.12,
+        "ev_ebitda_fair": 14,
+        "methods": ["per", "ev_ebitda", "peg"],
+        "nota": "Industriales valoran flujo de caja operativo y márgenes estables. PER < 20 y D/E < 1 son buenas señales.",
+    },
+    "Energy": {
+        "pe_fair": 14, "pe_high": 22,
+        "peg_ok": 1.0, "margin_ok": 0.08, "roe_ok": 0.10,
+        "ev_ebitda_fair": 6,
+        "methods": ["ev_ebitda", "per", "dcf_lite"],
+        "nota": "Energía se valora principalmente por EV/EBITDA (ciclo de commodity). EV/EBITDA < 6 es barato para el sector.",
+    },
+    "Basic Materials": {
+        "pe_fair": 16, "pe_high": 26,
+        "peg_ok": 1.2, "margin_ok": 0.06, "roe_ok": 0.10,
+        "ev_ebitda_fair": 8,
+        "methods": ["ev_ebitda", "per", "peg"],
+        "nota": "Materiales básicos depende del ciclo. EV/EBITDA es la métrica principal; los márgenes fluctúan con el precio del commodity.",
+    },
+    "Real Estate": {
+        "pe_fair": 30, "pe_high": 55,
+        "peg_ok": 2.5, "margin_ok": 0.20, "roe_ok": 0.08,
+        "ev_ebitda_fair": 20,
+        "methods": ["ev_ebitda", "dcf_lite", "per"],
+        "nota": "REITs y real estate se valoran por FFO/AFFO y EV/EBITDA. El PER convencional puede ser engañoso por la depreciación.",
+    },
+    "Utilities": {
+        "pe_fair": 18, "pe_high": 28,
+        "peg_ok": 2.0, "margin_ok": 0.10, "roe_ok": 0.08,
+        "ev_ebitda_fair": 12,
+        "methods": ["per", "ev_ebitda", "dcf_lite"],
+        "nota": "Utilities cotizan por estabilidad regulatoria y dividendos. PER < 18 y yield > 3% son señales atractivas.",
+    },
+    # Fallback genérico
+    "_default": {
+        "pe_fair": 20, "pe_high": 35,
+        "peg_ok": 1.5, "margin_ok": 0.08, "roe_ok": 0.10,
+        "ev_ebitda_fair": 14,
+        "methods": ["per", "peg", "ev_ebitda"],
+        "nota": "Sector no clasificado. Se aplican benchmarks genéricos.",
+    },
+}
 
-    # Salud fundamental (0-100)
-    score = 0
-    if profit_m > 0.15: score += 20
-    elif profit_m > 0:  score += 10
-    if roe > 0.15:      score += 15
-    elif roe > 0:       score += 8
-    if rev_yoy > 20:    score += 20
-    elif rev_yoy > 5:   score += 12
-    if earn_yoy > 20:   score += 20
-    elif earn_yoy > 0:  score += 10
-    if peg and peg < 1: score += 15
-    elif peg and peg < 2: score += 8
-    if short_ratio < 3: score += 10
-    score = min(score, 100)
+def _get_sector_profile(sector: str) -> dict:
+    """Devuelve el perfil del sector, buscando coincidencia parcial."""
+    for key in SECTOR_PROFILES:
+        if key != "_default" and key.lower() in (sector or "").lower():
+            return SECTOR_PROFILES[key], key
+    return SECTOR_PROFILES["_default"], sector or "Desconocido"
 
-    # Valor objetivo fundamental (media ponderada)
-    eps = y.get("eps_ttm") or y.get("eps_forward") or 0
-    targets = []
-    if pe_forward and eps:
-        targets.append(pe_forward * eps * 1.05)
-    if target_mean:
+
+# ─── Motor de valoración por sector ──────────────────────────────────────────
+
+def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str]]:
+    """
+    Calcula el valor objetivo usando los métodos relevantes para el sector.
+    Devuelve (fair_value, lista_de_métodos_usados).
+    """
+    price       = y.get("price") or 0
+    eps_fwd     = y.get("eps_forward")
+    eps_ttm     = y.get("eps_ttm")
+    pe_forward  = y.get("pe_forward")
+    peg         = y.get("peg_ratio")
+    ev_ebitda   = y.get("ev_ebitda")
+    ebitda      = y.get("ebitda")
+    market_cap  = y.get("market_cap") or 1
+    ent_value   = y.get("enterprise_value") or 1
+    fcf         = y.get("free_cash_flow") or 0
+    price_book  = y.get("price_book")
+    roe         = y.get("roe") or 0
+    earn_growth = (y.get("earnings_yoy") or 0) / 100
+    target_mean = y.get("target_mean")
+
+    methods_used = []
+    targets      = []
+
+    for method in profile["methods"]:
+
+        # PER × EPS con PE justo del sector
+        if method == "per" and eps_fwd and eps_fwd > 0:
+            fair_pe = profile["pe_fair"]
+            # Si la empresa crece más que la media del sector, le damos un 10% de prima
+            if earn_growth > 0.20:
+                fair_pe *= 1.10
+            val = fair_pe * eps_fwd
+            if val > 0:
+                targets.append(val)
+                methods_used.append(f"PER sectorial ({fair_pe:.0f}×EPS) → {val:,.2f}")
+
+        # PEG: precio justo = EPS × PEG_sector × tasa_crecimiento × 100
+        elif method == "peg" and peg and eps_fwd and eps_fwd > 0 and earn_growth > 0:
+            # PEG justo del sector como referencia
+            val = eps_fwd * profile["peg_ok"] * (earn_growth * 100)
+            if val > 0:
+                targets.append(val)
+                methods_used.append(f"PEG sectorial ({profile['peg_ok']}×crecimiento) → {val:,.2f}")
+
+        # EV/EBITDA sectorial
+        elif method == "ev_ebitda" and ev_ebitda and ebitda and ebitda > 0:
+            fair_ev_ebitda = profile["ev_ebitda_fair"]
+            # Valor implícito de mercado ajustando el múltiplo justo vs el actual
+            ratio = fair_ev_ebitda / ev_ebitda if ev_ebitda else 1
+            val   = price * ratio
+            if val > 0:
+                targets.append(val)
+                methods_used.append(f"EV/EBITDA sectorial ({fair_ev_ebitda}×) → {val:,.2f}")
+
+        # FCF Yield (DCF simplificado): precio justo = FCF / yield_esperado
+        elif method == "dcf_lite" and fcf > 0 and market_cap > 0:
+            fcf_yield_target = 0.04  # rentabilidad FCF esperada del 4%
+            shares = market_cap / price if price else 1
+            fcf_per_share = fcf / shares
+            val = fcf_per_share / fcf_yield_target
+            if val > 0:
+                targets.append(val)
+                methods_used.append(f"FCF Yield (4%) → {val:,.2f}")
+
+        # Price/Book para financieras: P/B justo = ROE / coste_capital
+        elif method == "nav" and price_book and roe > 0:
+            cost_of_equity = 0.10  # WACC simplificado 10%
+            fair_pb = roe / cost_of_equity
+            val = price * (fair_pb / price_book) if price_book else price
+            if val > 0:
+                targets.append(val)
+                methods_used.append(f"Price/Book justo (ROE/Ke={fair_pb:.2f}×) → {val:,.2f}")
+
+    # El precio objetivo de consenso de analistas tiene siempre peso en el promedio
+    if target_mean and target_mean > 0:
         targets.append(target_mean)
-    if y.get("ev_ebitda") and y.get("ebitda"):
-        mc = y.get("market_cap") or 1
-        ev = y.get("enterprise_value") or 1
-        adj = mc / ev if ev else 1
-        targets.append(y["ev_ebitda"] * (y["ebitda"] / 1e9) * adj * 1e9 / (mc / price) if price else 0)
+        methods_used.append(f"Consenso analistas → {target_mean:,.2f}")
 
-    fair_value = sum(targets) / len(targets) if targets else None
+    if not targets:
+        return None, []
 
-    # Descuento/prima sobre media 52w
-    mid_52 = (week52_high + week52_low) / 2 if week52_high and week52_low else None
+    # Media ponderada: consenso pesa 1, cada método pesa 1 (igual peso)
+    fair_value = sum(targets) / len(targets)
+    return fair_value, methods_used
+
+
+# ─── Salud fundamental ajustada al sector ────────────────────────────────────
+
+def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[str]]:
+    """Calcula la salud fundamental (0-100) con umbrales del sector."""
+    score    = 0
+    breakdown = []
+
+    profit_m   = y.get("profit_margin") or 0
+    roe        = y.get("roe") or 0
+    rev_yoy    = y.get("revenue_yoy") or 0
+    earn_yoy   = y.get("earnings_yoy") or 0
+    peg        = y.get("peg_ratio")
+    short_r    = y.get("short_ratio") or 0
+    debt_eq    = y.get("debt_equity") or 0
+    curr_ratio = y.get("current_ratio") or 0
+    fcf        = y.get("free_cash_flow") or 0
+
+    margin_ok = profile["margin_ok"]
+    roe_ok    = profile["roe_ok"]
+    peg_ok    = profile["peg_ok"]
+
+    # Margen neto vs benchmark sector (0-20 pts)
+    if profit_m >= margin_ok * 2:    pts = 20
+    elif profit_m >= margin_ok:      pts = 14
+    elif profit_m >= margin_ok * 0.5: pts = 7
+    elif profit_m > 0:               pts = 3
+    else:                            pts = 0
+    score += pts
+    breakdown.append(f"Margen neto {profit_m*100:.1f}% (ref. sector >{margin_ok*100:.0f}%): +{pts}/20")
+
+    # ROE vs benchmark sector (0-15 pts)
+    if roe >= roe_ok * 2:    pts = 15
+    elif roe >= roe_ok:      pts = 11
+    elif roe >= roe_ok * 0.5: pts = 5
+    elif roe > 0:             pts = 2
+    else:                     pts = 0
+    score += pts
+    breakdown.append(f"ROE {roe*100:.1f}% (ref. sector >{roe_ok*100:.0f}%): +{pts}/15")
+
+    # Crecimiento ingresos (0-20 pts) — sector cíclico/defensivo tiene baremo distinto
+    if rev_yoy >= 30:    pts = 20
+    elif rev_yoy >= 15:  pts = 15
+    elif rev_yoy >= 8:   pts = 10
+    elif rev_yoy >= 3:   pts = 5
+    elif rev_yoy >= 0:   pts = 2
+    else:                pts = 0
+    score += pts
+    breakdown.append(f"Crec. ingresos {rev_yoy:.1f}%: +{pts}/20")
+
+    # Crecimiento beneficios (0-20 pts)
+    if earn_yoy >= 40:   pts = 20
+    elif earn_yoy >= 20: pts = 15
+    elif earn_yoy >= 10: pts = 10
+    elif earn_yoy >= 0:  pts = 5
+    else:                pts = 0
+    score += pts
+    breakdown.append(f"Crec. beneficios {earn_yoy:.1f}%: +{pts}/20")
+
+    # PEG vs benchmark sector (0-15 pts)
+    if peg:
+        if peg <= peg_ok * 0.5:   pts = 15
+        elif peg <= peg_ok * 0.75: pts = 11
+        elif peg <= peg_ok:        pts = 7
+        elif peg <= peg_ok * 1.5:  pts = 3
+        else:                      pts = 0
+        score += pts
+        breakdown.append(f"PEG {peg:.2f} (ref. sector <{peg_ok}): +{pts}/15")
+
+    # Balance sano (0-10 pts)
+    b_pts = 0
+    if fcf > 0:           b_pts += 4
+    if curr_ratio >= 1.5: b_pts += 3
+    elif curr_ratio >= 1: b_pts += 1
+    if debt_eq < 50:      b_pts += 3
+    elif debt_eq < 100:   b_pts += 1
+    score += b_pts
+    breakdown.append(f"Balance (FCF/Liquidez/Deuda): +{b_pts}/10")
+
+    score = min(100, score)
+    return score, breakdown
+
+
+# ─── Evaluación final ─────────────────────────────────────────────────────────
+
+def _evaluate(y: dict, sec: dict | None) -> dict:
+    """Diagnóstico completo ajustado al sector."""
+
+    price       = y.get("price") or 0
+    sector_raw  = y.get("sector", "")
+    profile, sector_label = _get_sector_profile(sector_raw)
+
+    short_ratio = y.get("short_ratio") or 0
+    week52_high = y.get("52w_high") or price
+    week52_low  = y.get("52w_low") or price
+    pe_forward  = y.get("pe_forward")
+    pe_trailing = y.get("pe_trailing")
+    price_book  = y.get("price_book")
+
+    # ── Salud fundamental ────────────────────────────────────────────────
+    health_score, health_breakdown = _calc_health_score(y, profile)
+
+    # ── Valor objetivo ───────────────────────────────────────────────────
+    fair_value, methods_used = _calc_fair_value(y, profile)
+
+    # ── Prima/descuento vs histórico 52W ─────────────────────────────────
+    mid_52  = (week52_high + week52_low) / 2 if week52_high and week52_low else None
     vs_hist = ((price - mid_52) / mid_52 * 100) if mid_52 else None
 
-    # Diagnóstico
-    if fair_value:
-        upside = (fair_value - price) / price * 100
-    else:
-        upside = None
+    # ── Upside ───────────────────────────────────────────────────────────
+    upside = ((fair_value - price) / price * 100) if fair_value else None
 
-    if upside is not None:
-        if upside > 20:
-            diag = "INFRAVALORADA — Potencial alcista significativo"
-        elif upside > 5:
-            diag = "LIGERAMENTE INFRAVALORADA"
-        elif upside > -5:
-            diag = "PRECIO JUSTO / RANGO OBJETIVO"
-        elif upside > -20:
-            diag = "EN OBSERVACIÓN (Precio Superior al Valor Objetivo)"
+    # ── Diagnóstico — 7 niveles ───────────────────────────────────────────
+    # Los umbrales se suavizan/endurecen según el perfil de valoración del sector
+    pe_ref  = profile["pe_fair"]
+    pe_high = profile["pe_high"]
+
+    if upside is None:
+        diag       = "SIN DATOS SUFICIENTES"
+        diag_color = "#64748b"
+        diag_icon  = "—"
+    elif upside >= 30:
+        diag       = "MUY INFRAVALORADA — Oportunidad excepcional"
+        diag_color = "#6ee7b7"
+        diag_icon  = "▲▲"
+    elif upside >= 12:
+        diag       = "INFRAVALORADA — Potencial alcista significativo"
+        diag_color = "#86efac"
+        diag_icon  = "▲"
+    elif upside >= 3:
+        diag       = "LIGERAMENTE INFRAVALORADA — Entrada atractiva"
+        diag_color = "#bef264"
+        diag_icon  = "↑"
+    elif upside >= -3:
+        diag       = "PRECIO JUSTO — En rango de valor razonable"
+        diag_color = "#fbbf24"
+        diag_icon  = "="
+    elif upside >= -15:
+        diag       = "EN OBSERVACIÓN — Precio por encima del valor objetivo"
+        diag_color = "#fb923c"
+        diag_icon  = "↓"
+    elif upside >= -30:
+        diag       = "SOBREVALORADA — Riesgo de corrección moderada"
+        diag_color = "#f87171"
+        diag_icon  = "▼"
+    else:
+        diag       = "MUY SOBREVALORADA — Riesgo de corrección severa"
+        diag_color = "#fca5a5"
+        diag_icon  = "▼▼"
+
+    # ── Valoración relativa al sector ─────────────────────────────────────
+    # Compara los múltiplos actuales contra los benchmarks del sector
+    vs_sector_items = []
+
+    if pe_forward:
+        if pe_forward < pe_ref * 0.7:
+            vs_sector_items.append(f"PER Forward {pe_forward:.1f}× muy barato vs sector ({pe_ref}×)")
+        elif pe_forward < pe_ref:
+            vs_sector_items.append(f"PER Forward {pe_forward:.1f}× barato vs sector ({pe_ref}×)")
+        elif pe_forward < pe_high:
+            vs_sector_items.append(f"PER Forward {pe_forward:.1f}× en rango normal del sector")
         else:
-            diag = "SOBREVALORADA — Riesgo de corrección"
-    else:
-        diag = "DATOS INSUFICIENTES"
+            vs_sector_items.append(f"PER Forward {pe_forward:.1f}× caro vs sector (ref. {pe_ref}×, techo {pe_high}×)")
 
-    # Riesgo técnico (basado en short ratio y distancia a máximos)
+    peg = y.get("peg_ratio")
+    if peg:
+        peg_ref = profile["peg_ok"]
+        if peg < peg_ref * 0.6:
+            vs_sector_items.append(f"PEG {peg:.2f} muy atractivo (ref. sector <{peg_ref})")
+        elif peg < peg_ref:
+            vs_sector_items.append(f"PEG {peg:.2f} atractivo (ref. sector <{peg_ref})")
+        else:
+            vs_sector_items.append(f"PEG {peg:.2f} por encima del umbral del sector ({peg_ref})")
+
+    ev_ebitda = y.get("ev_ebitda")
+    if ev_ebitda:
+        ev_ref = profile["ev_ebitda_fair"]
+        if ev_ebitda < ev_ref * 0.75:
+            vs_sector_items.append(f"EV/EBITDA {ev_ebitda:.1f}× muy barato vs sector ({ev_ref}×)")
+        elif ev_ebitda < ev_ref:
+            vs_sector_items.append(f"EV/EBITDA {ev_ebitda:.1f}× razonable vs sector ({ev_ref}×)")
+        else:
+            vs_sector_items.append(f"EV/EBITDA {ev_ebitda:.1f}× elevado vs sector (ref. {ev_ref}×)")
+
+    if "nav" in profile["methods"] and price_book:
+        if price_book < 1.0:
+            vs_sector_items.append(f"Price/Book {price_book:.2f}× por debajo de valor contable (oportunidad)")
+        elif price_book < 1.5:
+            vs_sector_items.append(f"Price/Book {price_book:.2f}× razonable para sector financiero")
+        else:
+            vs_sector_items.append(f"Price/Book {price_book:.2f}× elevado para sector financiero")
+
+    vs_sector_str = " · ".join(vs_sector_items) if vs_sector_items else "Datos insuficientes para comparar"
+
+    # ── Riesgo técnico ────────────────────────────────────────────────────
     risk = 0
     if short_ratio:
-        risk += min(short_ratio * 1.5, 5)
+        risk += min(short_ratio * 1.5, 6)
     if week52_high and price:
         dist_high = (week52_high - price) / week52_high * 100
-        risk += min(dist_high * 0.1, 5)
+        risk += min(dist_high * 0.08, 5)
     risk = round(min(risk, 15), 1)
 
-    # Valoración vs sector
-    sector = y.get("sector", "")
-    if pe_forward and pe_forward < 15 and peg and peg < 1:
-        vs_sector = "Extremadamente infravalorada / GANGA"
-    elif pe_forward and pe_forward < 20:
-        vs_sector = "Infravalorada vs sector"
-    elif pe_forward and pe_forward > 40:
-        vs_sector = "Prima de valoración elevada"
-    else:
-        vs_sector = "En línea con el sector"
-
     return {
-        "score":      score,
-        "fair_value": fair_value,
-        "upside":     upside,
-        "diag":       diag,
-        "vs_hist":    vs_hist,
-        "vs_sector":  vs_sector,
-        "risk":       risk,
+        "health_score":    health_score,
+        "health_breakdown": health_breakdown,
+        "fair_value":      fair_value,
+        "methods_used":    methods_used,
+        "upside":          upside,
+        "diag":            diag,
+        "diag_color":      diag_color,
+        "diag_icon":       diag_icon,
+        "vs_hist":         vs_hist,
+        "vs_sector":       vs_sector_str,
+        "risk":            risk,
+        "sector_label":    sector_label,
+        "sector_nota":     profile["nota"],
+        "pe_ref":          pe_ref,
+        "pe_high":         pe_high,
+        "peg_ok":          profile["peg_ok"],
+        "ev_ebitda_fair":  profile["ev_ebitda_fair"],
     }
 
 
 # ─── Render principal ─────────────────────────────────────────────────────────
 
-def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict | None, use_sec: bool, fx_rate: float | None = None, tech: dict | None = None):
+def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict | None, fx_rate: float | None = None, tech: dict | None = None):
     st.markdown("---")
 
     # ── Auditoría de fuentes ─────────────────────────────────────────────
@@ -243,9 +562,13 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
         """, unsafe_allow_html=True)
 
     # ── Desglose TTM ────────────────────────────────────────────────────
-    source_data = sec if (use_sec and sec) else None
-    quarters_to_show = source_data["quarters"] if source_data and source_data.get("quarters") else y.get("ttm_quarters", [])
-    source_label = "SEC EDGAR" if (use_sec and sec) else "Yahoo Finance"
+    # Prioriza SEC si está disponible (más oficial), si no usa Yahoo
+    if sec and sec.get("quarters"):
+        quarters_to_show = sec["quarters"]
+        source_label = "SEC EDGAR"
+    else:
+        quarters_to_show = y.get("ttm_quarters", [])
+        source_label = "Yahoo Finance"
 
     if quarters_to_show:
         _section(f"DESGLOSE TTM — {source_label}")
@@ -402,63 +725,151 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
         st.markdown('<div class="metric-card"><span class="audit-warn">Análisis técnico no disponible.</span></div>', unsafe_allow_html=True)
 
     # ── Evaluación final ─────────────────────────────────────────────────
-    ev = _evaluate(y, sec, use_sec)
+    ev = _evaluate(y, sec)
 
     _section("EVALUACIÓN FINAL")
 
-    score     = ev["score"]
-    fair      = ev["fair_value"]
-    upside    = ev["upside"]
-    vs_hist   = ev["vs_hist"]
-    price_now = y.get("price") or 0
+    health_score = ev["health_score"]
+    fair         = ev["fair_value"]
+    upside       = ev["upside"]
+    vs_hist      = ev["vs_hist"]
+    price_now    = y.get("price") or 0
+    diag_color   = ev.get("diag_color", "#f1f5f9")
+    diag_icon    = ev.get("diag_icon", "")
 
-    # Barra de salud
-    bar_w = score
+    # ── Bloque sector ────────────────────────────────────────────────────
     st.markdown(f"""
-    <div class="metric-card">
-      <div class="metric-label">SALUD FUNDAMENTAL</div>
-      <div class="metric-value">{score:.0f} / 100</div>
-      <div class="progress-bar-bg">
-        <div class="progress-bar-fill" style="width:{bar_w}%;"></div>
+    <div class="metric-card" style="border-left:3px solid #38bdf8;">
+      <div class="metric-label">CONTEXTO SECTORIAL</div>
+      <div style="font-size:0.95rem;font-weight:600;color:#f1f5f9;margin-bottom:0.4rem;">
+        {ev['sector_label']}
+      </div>
+      <div style="font-size:0.8rem;color:#94a3b8;line-height:1.6;">{ev['sector_nota']}</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.5rem;margin-top:0.8rem;">
+        <div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">
+          <div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">PER justo sector</div>
+          <div style="font-family:'IBM Plex Mono',monospace;color:#38bdf8;font-weight:600;">{ev['pe_ref']}×</div>
+        </div>
+        <div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">
+          <div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">PEG aceptable</div>
+          <div style="font-family:'IBM Plex Mono',monospace;color:#38bdf8;font-weight:600;">&lt;{ev['peg_ok']}</div>
+        </div>
+        <div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">
+          <div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">EV/EBITDA justo</div>
+          <div style="font-family:'IBM Plex Mono',monospace;color:#38bdf8;font-weight:600;">{ev['ev_ebitda_fair']}×</div>
+        </div>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Veredicto
+    # ── Salud fundamental con desglose ────────────────────────────────────
+    bar_color_health = "#6ee7b7" if health_score >= 70 else "#fbbf24" if health_score >= 45 else "#fca5a5"
+    breakdown_html = "".join([
+        f'<div style="font-size:0.75rem;color:#94a3b8;padding:0.2rem 0;border-bottom:1px solid #1a2540;">▸ {b}</div>'
+        for b in ev["health_breakdown"]
+    ])
+
+    with st.expander(f"SALUD FUNDAMENTAL: {health_score}/100 — ver desglose por criterio", expanded=False):
+        st.markdown(f"""
+        <div style="background:#111827;border-radius:8px;padding:0.8rem 1rem;">
+          <div style="display:flex;align-items:baseline;gap:0.8rem;margin-bottom:0.5rem;">
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:1.6rem;
+                         font-weight:600;color:{bar_color_health};">{health_score}</span>
+            <span style="color:#64748b;font-size:0.85rem;">/ 100 — umbrales ajustados al sector <b style="color:#f1f5f9;">{ev['sector_label']}</b></span>
+          </div>
+          <div style="background:#1e2d45;border-radius:4px;height:8px;margin-bottom:1rem;">
+            <div style="height:8px;border-radius:4px;background:{bar_color_health};width:{health_score}%;"></div>
+          </div>
+          {breakdown_html}
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── Métodos de valoración usados ──────────────────────────────────────
+    methods_html = "".join([
+        f'<div style="font-size:0.76rem;color:#94a3b8;padding:0.18rem 0;">▸ {m}</div>'
+        for m in ev.get("methods_used", [])
+    ]) or '<div style="font-size:0.76rem;color:#64748b;">No hay datos suficientes para calcular valor objetivo.</div>'
+
+    with st.expander("METODOLOGÍA DE VALORACIÓN — ver cálculo del valor objetivo", expanded=False):
+        st.markdown(f"""
+        <div style="background:#111827;border-radius:8px;padding:0.8rem 1rem;">
+          <div style="font-size:0.72rem;color:#38bdf8;text-transform:uppercase;
+                      letter-spacing:0.08em;margin-bottom:0.5rem;">
+            Métodos aplicados (sector: {ev['sector_label']})
+          </div>
+          {methods_html}
+          <div style="margin-top:0.6rem;font-size:0.72rem;color:#64748b;">
+            El valor objetivo es la media aritmética de todos los métodos disponibles
+            más el consenso de analistas cuando existe.
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── Comparativa vs sector ─────────────────────────────────────────────
+    vs_items = ev.get("vs_sector", "")
+    if vs_items and " · " in vs_items:
+        items = vs_items.split(" · ")
+        vs_html = "".join([
+            f'<div style="font-size:0.8rem;color:#e2e8f0;padding:0.25rem 0;'
+            f'border-bottom:1px solid #1a2540;">▸ {item}</div>'
+            for item in items
+        ])
+    else:
+        vs_html = f'<div style="font-size:0.8rem;color:#94a3b8;">{vs_items}</div>'
+
+    st.markdown(f"""
+    <div class="metric-card">
+      <div class="metric-label">MÚLTIPLOS ACTUALES VS BENCHMARKS DEL SECTOR</div>
+      {vs_html}
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Veredicto principal ───────────────────────────────────────────────
     upside_str = f"{upside:+.2f}%" if upside is not None else "N/A"
     fair_usd   = f"{currency_y} {fair:,.2f}" if fair else "N/A"
     fair_eur   = f" (€{fair*fx_rate:,.2f})" if (fair and fx_rate and currency_y == "USD") else ""
     fair_str   = f"{fair_usd}{fair_eur}" if fair else "N/A"
     hist_str   = f"{vs_hist:+.2f}% vs media 52W" if vs_hist is not None else "N/A"
     price_eur  = f" (€{price_now*fx_rate:,.2f})" if (fx_rate and currency_y == "USD") else ""
-
-    color_upside = "#6ee7b7" if (upside or 0) > 0 else "#fca5a5"
+    upside_color = "#6ee7b7" if (upside or 0) > 0 else "#fca5a5"
 
     st.markdown(f"""
-    <div class="verdict-box">
+    <div class="verdict-box" style="border-left-color:{diag_color};">
       <div class="verdict-title">DIAGNÓSTICO GENERAL</div>
-      <div class="verdict-main">{ev['diag']}</div>
+      <div style="display:flex;align-items:center;gap:0.7rem;margin-bottom:0.5rem;">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:1.4rem;
+                     font-weight:700;color:{diag_color};">{diag_icon}</span>
+        <span class="verdict-main" style="color:{diag_color};">{ev['diag']}</span>
+      </div>
+
       <div class="verdict-sub" style="margin-top:0.6rem;">
         <span style="color:#94a3b8;">Precio actual:</span>
-        <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;color:#f1f5f9;"> {currency_y} {price_now:,.2f}{price_eur}</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;color:#f1f5f9;">
+          {currency_y} {price_now:,.2f}{price_eur}
+        </span>
         &nbsp;·&nbsp;
-        <span style="color:#94a3b8;">Valor objetivo:</span>
-        <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;color:#f1f5f9;"> {fair_str}</span>
-        <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;color:{color_upside};"> ({upside_str})</span>
+        <span style="color:#94a3b8;">Valor objetivo (sector-ajustado):</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;color:#f1f5f9;">
+          {fair_str}
+        </span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-weight:700;color:{upside_color};">
+          ({upside_str})
+        </span>
       </div>
+
       <div class="verdict-sub">
         <span style="color:#94a3b8;">Vs. media 52W:</span>
-        <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;color:#fbbf24;"> {hist_str}</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;color:#fbbf24;">
+          {hist_str}
+        </span>
       </div>
+
       <div class="verdict-sub" style="margin-top:0.4rem;">
-        <span style="color:#94a3b8;">Valoración vs sector:</span>
-        <span style="color:#e2e8f0;"> {ev['vs_sector']}</span>
-      </div>
-      <div class="verdict-sub">
-        <span style="color:#94a3b8;">Riesgo técnico (short):</span>
-        <span style="color:#e2e8f0;"> {ev['risk']}%</span>
+        <span style="color:#94a3b8;">Presión vendedora (short ratio):</span>
+        <span style="color:#e2e8f0;"> riesgo técnico estimado {ev['risk']}%</span>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.caption(f"Datos: {'SEC EDGAR + ' if sec else ''}Yahoo Finance · {ticker} · Tipo de cambio USD/EUR: {fx_rate:.4f} · Los datos no constituyen asesoramiento financiero.")
+    sec_label = "SEC EDGAR + Yahoo Finance" if sec else "Yahoo Finance"
+    st.caption(f"Datos: {sec_label} · {ticker} · USD/EUR: {fx_rate:.4f} · Valoración ajustada al sector {ev['sector_label']} · No constituye asesoramiento financiero.")
