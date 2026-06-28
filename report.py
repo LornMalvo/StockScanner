@@ -17,19 +17,47 @@ def _fmt_num(val, decimals=2, prefix="", suffix=""):
         return "N/A"
 
 
-def _fmt_big(val, prefix="$"):
-    """Formatea números grandes en B / M."""
+def _fmt_big(val, prefix="$", fx_rate: float | None = None):
+    """Formatea números grandes en B / M, con conversión EUR opcional."""
     if val is None:
         return "N/A"
     try:
         val = float(val)
         if abs(val) >= 1e12:
-            return f"{prefix}{val/1e12:.2f}T"
-        if abs(val) >= 1e9:
-            return f"{prefix}{val/1e9:.2f}B"
-        if abs(val) >= 1e6:
-            return f"{prefix}{val/1e6:.2f}M"
-        return f"{prefix}{val:,.0f}"
+            base = f"{prefix}{val/1e12:.2f}T"
+        elif abs(val) >= 1e9:
+            base = f"{prefix}{val/1e9:.2f}B"
+        elif abs(val) >= 1e6:
+            base = f"{prefix}{val/1e6:.2f}M"
+        else:
+            base = f"{prefix}{val:,.0f}"
+        if fx_rate and prefix == "$":
+            eur_val = val * fx_rate
+            if abs(eur_val) >= 1e12:
+                eur_str = f"€{eur_val/1e12:.2f}T"
+            elif abs(eur_val) >= 1e9:
+                eur_str = f"€{eur_val/1e9:.2f}B"
+            elif abs(eur_val) >= 1e6:
+                eur_str = f"€{eur_val/1e6:.2f}M"
+            else:
+                eur_str = f"€{eur_val:,.0f}"
+            return f'{base} <span style="color:#64748b;font-size:0.85em;">({eur_str})</span>'
+        return base
+    except Exception:
+        return "N/A"
+
+
+def _fmt_price(val, currency="USD", fx_rate: float | None = None) -> str:
+    """Formatea precio con conversión EUR si la moneda es USD."""
+    if val is None:
+        return "N/A"
+    try:
+        val = float(val)
+        base = f"{currency} {val:,.2f}"
+        if fx_rate and currency == "USD":
+            eur_val = val * fx_rate
+            return f'{base} <span style="color:#64748b;font-size:0.85em;">(€{eur_val:,.2f})</span>'
+        return base
     except Exception:
         return "N/A"
 
@@ -167,7 +195,7 @@ def _evaluate(y: dict, sec: dict | None, use_sec: bool) -> dict:
 
 # ─── Render principal ─────────────────────────────────────────────────────────
 
-def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict | None, use_sec: bool):
+def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict | None, use_sec: bool, fx_rate: float | None = None, tech: dict | None = None):
     st.markdown("---")
 
     # ── Auditoría de fuentes ─────────────────────────────────────────────
@@ -182,10 +210,11 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
             "NO_DATA": ("— SIN DATOS SEC", "audit-warn"),
         }
         label, cls = status_map.get(cross["status"], ("—", ""))
+        fx_label = f"&nbsp;|&nbsp; USD/EUR: {fx_rate:.4f}" if fx_rate else ""
 
         html = f"""
         <div class="metric-card">
-          <div class="metric-label">ACTIVO: {company_name} &nbsp;|&nbsp; MONEDA: {currency_y}</div>
+          <div class="metric-label">ACTIVO: {company_name} &nbsp;|&nbsp; MONEDA: {currency_y}{fx_label}</div>
           <div class="row-kv">
             <span class="row-key">SEC EDGAR TTM Revenue</span>
             <span class="row-val">{_fmt_big(cross.get('sec_ttm'),'')}</span>
@@ -205,9 +234,10 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
         """
         st.markdown(html, unsafe_allow_html=True)
     else:
+        fx_label = f"&nbsp;|&nbsp; USD/EUR: {fx_rate:.4f}" if fx_rate else ""
         st.markdown(f"""
         <div class="metric-card">
-          <div class="metric-label">ACTIVO: {company_name} &nbsp;|&nbsp; MONEDA: {currency_y}</div>
+          <div class="metric-label">ACTIVO: {company_name} &nbsp;|&nbsp; MONEDA: {currency_y}{fx_label}</div>
           <span class="audit-warn" style="font-size:0.85rem;">Usando solo Yahoo Finance — SEC no disponible para este ticker</span>
         </div>
         """, unsafe_allow_html=True)
@@ -237,9 +267,9 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
         _section("A · MERCADO Y CONSENSO")
         html = ""
         rec = y.get("recommendation", "N/A")
-        html += _kv("Precio Actual", _fmt_num(y.get("price"), 2, prefix=f"{currency_y} "))
-        html += _kv("Objetivo Analistas", _fmt_num(y.get("target_mean"), 2, prefix=f"{currency_y} "))
-        html += _kv("Rango", f"{_fmt_num(y.get('target_low'),2)} – {_fmt_num(y.get('target_high'),2)}")
+        html += _kv("Precio Actual",     _fmt_price(y.get("price"), currency_y, fx_rate))
+        html += _kv("Objetivo Analistas",_fmt_price(y.get("target_mean"), currency_y, fx_rate))
+        html += _kv("Rango", f"{_fmt_price(y.get('target_low'), currency_y, fx_rate)} – {_fmt_price(y.get('target_high'), currency_y, fx_rate)}")
         html += _kv("Recomendación", _badge(rec))
         html += _kv("Nº Analistas", str(y.get("analyst_count") or "N/A"))
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
@@ -261,8 +291,8 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
         earn_yoy = y.get("earnings_yoy")
         html += _kv("Revenue Growth",  _fmt_num(rev_yoy, 2, suffix="%") if rev_yoy is not None else "N/A",  _color_pct(rev_yoy))
         html += _kv("Earnings Growth", _fmt_num(earn_yoy, 2, suffix="%") if earn_yoy is not None else "N/A", _color_pct(earn_yoy))
-        html += _kv("EPS (TTM)",       _fmt_num(y.get("eps_ttm"), 2, prefix=f"{currency_y} "))
-        html += _kv("EPS (Forward)",   _fmt_num(y.get("eps_forward"), 2, prefix=f"{currency_y} "))
+        html += _kv("EPS (TTM)",       _fmt_price(y.get("eps_ttm"), currency_y, fx_rate))
+        html += _kv("EPS (Forward)",   _fmt_price(y.get("eps_forward"), currency_y, fx_rate))
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
     with col_b:
@@ -276,18 +306,18 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
         html += _kv("Price/Book",    _fmt_num(y.get("price_book"), 4))
         html += _kv("EV/Revenue",    _fmt_num(y.get("ev_revenue"), 4))
         html += _kv("EV/EBITDA",     _fmt_num(y.get("ev_ebitda"), 4))
-        html += _kv("Market Cap",    _fmt_big(y.get("market_cap")))
+        html += _kv("Market Cap",    _fmt_big(y.get("market_cap"), "$", fx_rate))
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
         # D. Balance
         _section("D · BALANCE Y CAJA")
         html = ""
-        html += _kv("Total Cash",          _fmt_big(y.get("total_cash")))
-        html += _kv("Total Debt",          _fmt_big(y.get("total_debt")))
+        html += _kv("Total Cash",          _fmt_big(y.get("total_cash"), "$", fx_rate))
+        html += _kv("Total Debt",          _fmt_big(y.get("total_debt"), "$", fx_rate))
         html += _kv("Debt/Equity",         _fmt_num(y.get("debt_equity"), 2))
         html += _kv("Current Ratio",       _fmt_num(y.get("current_ratio"), 2))
-        html += _kv("Free Cash Flow",      _fmt_big(y.get("free_cash_flow")))
-        html += _kv("Operating Cash Flow", _fmt_big(y.get("operating_cf")))
+        html += _kv("Free Cash Flow",      _fmt_big(y.get("free_cash_flow"), "$", fx_rate))
+        html += _kv("Operating Cash Flow", _fmt_big(y.get("operating_cf"), "$", fx_rate))
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
         # F. Dividendos y otros
@@ -295,12 +325,81 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
         html = ""
         dy = y.get("dividend_yield")
         html += _kv("Dividend Yield", _fmt_num((dy or 0)*100, 2, suffix="%") if dy else "N/A")
-        html += _kv("Dividend Rate",  _fmt_num(y.get("dividend_rate"), 2, prefix=f"{currency_y} ") if y.get("dividend_rate") else "N/A")
+        html += _kv("Dividend Rate",  _fmt_price(y.get("dividend_rate"), currency_y, fx_rate) if y.get("dividend_rate") else "N/A")
         html += _kv("Short Ratio",    _fmt_num(y.get("short_ratio"), 2))
         html += _kv("Beta",           _fmt_num(y.get("beta"), 2))
-        html += _kv("52W High",       _fmt_num(y.get("52w_high"), 2, prefix=f"{currency_y} "))
-        html += _kv("52W Low",        _fmt_num(y.get("52w_low"), 2, prefix=f"{currency_y} "))
+        html += _kv("52W High",       _fmt_price(y.get("52w_high"), currency_y, fx_rate))
+        html += _kv("52W Low",        _fmt_price(y.get("52w_low"), currency_y, fx_rate))
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
+
+    # ── G. Análisis Técnico ──────────────────────────────────────────────
+    _section("G · ANÁLISIS TÉCNICO")
+
+    if tech and not tech.get("error"):
+        col_t1, col_t2 = st.columns(2)
+
+        with col_t1:
+            # RSI
+            rsi_val = tech.get("rsi")
+            rsi_lbl = tech.get("rsi_label", "N/A")
+            rsi_cls = tech.get("rsi_css", "")
+
+            # Barra RSI
+            rsi_pct = min(max(rsi_val or 0, 0), 100)
+            if rsi_pct >= 70:
+                bar_color = "#fca5a5"
+            elif rsi_pct <= 30:
+                bar_color = "#6ee7b7"
+            else:
+                bar_color = "#38bdf8"
+
+            st.markdown(f"""
+            <div class="metric-card">
+              <div class="metric-label">RSI (14 períodos)</div>
+              <div style="display:flex;align-items:baseline;gap:0.6rem;">
+                <div class="metric-value">{_fmt_num(rsi_val, 2)}</div>
+                <span class="row-val {rsi_cls}" style="font-size:0.82rem;">{rsi_lbl}</span>
+              </div>
+              <div class="progress-bar-bg" style="margin-top:0.6rem;position:relative;">
+                <div style="height:8px;border-radius:4px;background:{bar_color};width:{rsi_pct}%;"></div>
+              </div>
+              <div style="display:flex;justify-content:space-between;font-size:0.7rem;color:#64748b;margin-top:0.2rem;">
+                <span>0 — Sobreventa</span><span>50</span><span>Sobrecompra — 100</span>
+              </div>
+              <div style="margin-top:0.5rem;font-size:0.78rem;color:#94a3b8;">
+                ▸ RSI &lt; 30: sobreventa (posible rebote) &nbsp;|&nbsp; RSI &gt; 70: sobrecompra (posible corrección)
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col_t2:
+            # MM50 y MM200
+            mm50  = tech.get("mm50")
+            mm200 = tech.get("mm200")
+            d50   = tech.get("dist_mm50")
+            d200  = tech.get("dist_mm200")
+            cross_sig = tech.get("cross_signal")
+
+            html = ""
+            html += _kv("MM50",  _fmt_price(mm50, currency_y, fx_rate), f"row-val {tech.get('mm50_css','')}")
+            html += _kv("Distancia MM50", _fmt_num(d50, 2, suffix="%") if d50 is not None else "N/A",
+                        "row-val green" if (d50 or 0) >= 0 else "row-val red")
+            html += _kv("Señal MM50", tech.get("mm50_signal","N/A"), f"row-val {tech.get('mm50_css','')}")
+            html += _kv("MM200", _fmt_price(mm200, currency_y, fx_rate) if mm200 else "N/A", f"row-val {tech.get('mm200_css','')}")
+            html += _kv("Distancia MM200", _fmt_num(d200, 2, suffix="%") if d200 is not None else "N/A",
+                        "row-val green" if (d200 or 0) >= 0 else "row-val red")
+            html += _kv("Señal MM200", tech.get("mm200_signal","N/A"), f"row-val {tech.get('mm200_css','')}")
+
+            if cross_sig:
+                cross_label, cross_css = cross_sig
+                html += _kv("Cruce MM50/MM200", cross_label, f"row-val {cross_css}")
+
+            st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
+
+    elif tech and tech.get("error"):
+        st.markdown(f'<div class="metric-card"><span class="audit-warn">No se pudo calcular el análisis técnico: {tech["error"]}</span></div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="metric-card"><span class="audit-warn">Análisis técnico no disponible.</span></div>', unsafe_allow_html=True)
 
     # ── Evaluación final ─────────────────────────────────────────────────
     ev = _evaluate(y, sec, use_sec)
@@ -327,8 +426,11 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
 
     # Veredicto
     upside_str = f"{upside:+.2f}%" if upside is not None else "N/A"
-    fair_str   = f"{currency_y} {fair:,.2f}" if fair else "N/A"
+    fair_usd   = f"{currency_y} {fair:,.2f}" if fair else "N/A"
+    fair_eur   = f" (€{fair*fx_rate:,.2f})" if (fair and fx_rate and currency_y == "USD") else ""
+    fair_str   = f"{fair_usd}{fair_eur}" if fair else "N/A"
     hist_str   = f"{vs_hist:+.2f}% vs media 52W" if vs_hist is not None else "N/A"
+    price_eur  = f" (€{price_now*fx_rate:,.2f})" if (fx_rate and currency_y == "USD") else ""
 
     color_upside = "#6ee7b7" if (upside or 0) > 0 else "#fca5a5"
 
@@ -338,9 +440,9 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
       <div class="verdict-main">{ev['diag']}</div>
       <div class="verdict-sub" style="margin-top:0.6rem;">
         <span style="color:#94a3b8;">Precio actual:</span>
-        <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;color:#f1f5f9;"> {currency_y} {price_now:,.2f}</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;color:#f1f5f9;"> {currency_y} {price_now:,.2f}{price_eur}</span>
         &nbsp;·&nbsp;
-        <span style="color:#94a3b8;">Valor objetivo estimado:</span>
+        <span style="color:#94a3b8;">Valor objetivo:</span>
         <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;color:#f1f5f9;"> {fair_str}</span>
         <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;color:{color_upside};"> ({upside_str})</span>
       </div>
@@ -359,4 +461,4 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
     </div>
     """, unsafe_allow_html=True)
 
-    st.caption(f"Datos obtenidos de {'SEC EDGAR + ' if sec else ''}Yahoo Finance · {ticker} · Los datos no constituyen asesoramiento financiero.")
+    st.caption(f"Datos: {'SEC EDGAR + ' if sec else ''}Yahoo Finance · {ticker} · Tipo de cambio USD/EUR: {fx_rate:.4f} · Los datos no constituyen asesoramiento financiero.")

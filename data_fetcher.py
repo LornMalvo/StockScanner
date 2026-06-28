@@ -6,6 +6,126 @@ Obtiene datos de Yahoo Finance (yfinance) y SEC EDGAR.
 import re
 import requests
 import yfinance as yf
+import pandas as pd
+
+
+# ─────────────────────────────────────────────────────────────
+# TIPO DE CAMBIO USD → EUR (en tiempo real)
+# ─────────────────────────────────────────────────────────────
+
+def fetch_usd_eur_rate() -> float:
+    """Obtiene el tipo de cambio USD/EUR en tiempo real desde Yahoo Finance."""
+    try:
+        fx = yf.Ticker("EURUSD=X")
+        rate = fx.info.get("regularMarketPrice") or fx.info.get("currentPrice")
+        if rate:
+            # EURUSD = cuántos USD vale 1 EUR → invertir para USD→EUR
+            return round(1 / rate, 6)
+    except Exception:
+        pass
+    # Fallback: tipo aproximado del día
+    return round(1 / 1.139, 6)
+
+
+# ─────────────────────────────────────────────────────────────
+# ANÁLISIS TÉCNICO: RSI, MM50, MM200
+# ─────────────────────────────────────────────────────────────
+
+def _calc_rsi(closes: pd.Series, period: int = 14) -> float | None:
+    """Calcula el RSI de cierre para el período dado."""
+    try:
+        delta = closes.diff()
+        gain  = delta.clip(lower=0)
+        loss  = (-delta).clip(lower=0)
+        avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
+        avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
+        rs  = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return round(float(rsi.iloc[-1]), 2)
+    except Exception:
+        return None
+
+
+def _rsi_label(rsi: float | None) -> tuple[str, str]:
+    """Devuelve (etiqueta, clase_css) según el valor del RSI."""
+    if rsi is None:
+        return "N/A", ""
+    if rsi >= 70:
+        return "SOBRECOMPRA", "red"
+    if rsi >= 60:
+        return "ZONA ALCISTA", "yellow"
+    if rsi <= 30:
+        return "SOBREVENTA", "green"
+    if rsi <= 40:
+        return "ZONA BAJISTA", "yellow"
+    return "NEUTRAL", ""
+
+
+def fetch_technical_data(ticker: str) -> dict:
+    """
+    Calcula RSI(14), MM50 y MM200 usando el histórico de precios de yfinance.
+    Devuelve un dict con los valores y etiquetas interpretativas.
+    """
+    try:
+        t = yf.Ticker(ticker)
+        hist = t.history(period="1y", interval="1d")
+
+        if hist.empty or len(hist) < 50:
+            return {"error": "Histórico insuficiente"}
+
+        closes = hist["Close"]
+        price  = float(closes.iloc[-1])
+
+        rsi    = _calc_rsi(closes)
+        mm50   = round(float(closes.tail(50).mean()), 4)
+        mm200  = round(float(closes.tail(200).mean()), 4) if len(closes) >= 200 else None
+
+        rsi_lbl, rsi_cls = _rsi_label(rsi)
+
+        # Señal MM50
+        if price > mm50:
+            mm50_signal, mm50_cls = "Por encima ↑ (alcista)", "green"
+        else:
+            mm50_signal, mm50_cls = "Por debajo ↓ (bajista)", "red"
+
+        # Señal MM200
+        if mm200 is None:
+            mm200_signal, mm200_cls = "Datos insuficientes", ""
+        elif price > mm200:
+            mm200_signal, mm200_cls = "Por encima ↑ (alcista)", "green"
+        else:
+            mm200_signal, mm200_cls = "Por debajo ↓ (bajista)", "red"
+
+        # Golden / Death cross
+        cross_signal = None
+        if mm200 is not None:
+            if mm50 > mm200:
+                cross_signal = ("GOLDEN CROSS", "green")
+            else:
+                cross_signal = ("DEATH CROSS", "red")
+
+        # Distancias %
+        dist_mm50  = round((price - mm50)  / mm50  * 100, 2)
+        dist_mm200 = round((price - mm200) / mm200 * 100, 2) if mm200 else None
+
+        return {
+            "price":        price,
+            "rsi":          rsi,
+            "rsi_label":    rsi_lbl,
+            "rsi_css":      rsi_cls,
+            "mm50":         mm50,
+            "mm50_signal":  mm50_signal,
+            "mm50_css":     mm50_cls,
+            "dist_mm50":    dist_mm50,
+            "mm200":        mm200,
+            "mm200_signal": mm200_signal,
+            "mm200_css":    mm200_cls,
+            "dist_mm200":   dist_mm200,
+            "cross_signal": cross_signal,
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ─────────────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 import streamlit as st
-from data_fetcher import fetch_sec_data, fetch_yahoo_data, verify_cross_data
+from data_fetcher import fetch_sec_data, fetch_yahoo_data, verify_cross_data, fetch_usd_eur_rate, fetch_technical_data
 from report import render_report
 
 st.set_page_config(
@@ -229,11 +229,13 @@ if buscar and ticker_input:
     )
     use_sec = fuente.startswith("SEC")
 
-    with st.spinner("Obteniendo datos SEC EDGAR…" if use_sec else "Usando Yahoo Finance…"):
-        sec_data = fetch_sec_data(ticker) if use_sec else None
-        cross    = verify_cross_data(sec_data, yahoo_data) if sec_data else None
+    with st.spinner("Obteniendo datos SEC EDGAR, tipo de cambio y análisis técnico…"):
+        sec_data  = fetch_sec_data(ticker) if use_sec else None
+        cross     = verify_cross_data(sec_data, yahoo_data) if sec_data else None
+        fx_rate   = fetch_usd_eur_rate()          # USD → EUR en tiempo real
+        tech_data = fetch_technical_data(ticker)  # RSI, MM50, MM200
 
-    render_report(ticker, company_name, yahoo_data, sec_data, cross, use_sec)
+    render_report(ticker, company_name, yahoo_data, sec_data, cross, use_sec, fx_rate, tech_data)
 
 elif buscar and not ticker_input:
     st.warning("Introduce un ticker para continuar.")
