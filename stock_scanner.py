@@ -1,5 +1,5 @@
 """
-scanner.py
+stock_scanner.py
 Rastreador de gangas: puntúa acciones del S&P 500 y/o lista personalizada
 usando criterios fundamentales + técnicos propios.
 """
@@ -8,6 +8,7 @@ import yfinance as yf
 import pandas as pd
 import time
 import streamlit as st
+from analysis import SCANNER_TOOLTIPS
 
 # ─────────────────────────────────────────────────────────────────────────────
 # UNIVERSO S&P 500
@@ -445,7 +446,7 @@ def render_scanner(fx_rate: float | None = None):
         # Barra de score
         bar_color = gcolor
 
-        # Desglose de criterios
+        # Desglose de criterios con tooltips
         details_html = ""
         for key, (pts, max_pts, note) in r["details"].items():
             if pts < 0:
@@ -457,14 +458,26 @@ def render_scanner(fx_rate: float | None = None):
             else:
                 pt_color = "#6ee7b7"
                 pt_str   = f"+{pts}"
-            details_html += f"""
-            <div style="display:flex;justify-content:space-between;padding:0.2rem 0;
-                        font-size:0.75rem;border-bottom:1px solid #1a2540;">
-              <span style="color:#94a3b8;">{key}</span>
-              <span style="color:#64748b;margin:0 0.5rem;">{note}</span>
-              <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;
-                           color:{pt_color};">{pt_str}/{max_pts}</span>
-            </div>"""
+            # Tooltip
+            tip = SCANNER_TOOLTIPS.get(key, "")
+            tip_html = ""
+            if tip:
+                tip_safe = tip.replace('"','&quot;').replace("'","&#39;")
+                tip_html = (
+                    '<span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;">'
+                    '<span style="font-size:0.6rem;color:#1e3a5f;border:1px solid #1e3a5f;'
+                    'border-radius:50%;padding:0 3px;font-family:\'IBM Plex Mono\',monospace;">?</span>'
+                    f'<span class="tooltip-box">{tip}</span>'
+                    '</span>'
+                )
+            details_html += (
+                '<div style="display:flex;justify-content:space-between;align-items:center;'
+                'padding:0.22rem 0;font-size:0.75rem;border-bottom:1px solid #1a2540;">'
+                f'<span style="color:#94a3b8;">{key}{tip_html}</span>'
+                f'<span style="color:#64748b;margin:0 0.5rem;">{note}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:{pt_color};">{pt_str}/{max_pts}</span>'
+                '</div>'
+            )
 
         with st.expander(f"{stars}  {ticker} — {name[:40]}  ·  Score: {score}/100  ·  {grade}", expanded=False):
             st.markdown(f"""
@@ -533,4 +546,5 @@ def render_scanner(fx_rate: float | None = None):
             {details_html}
             """, unsafe_allow_html=True)
 
-    st.caption(f"Ganga Score calculado con datos de Yahoo Finance · Tipo de cambio USD/EUR: {fx_rate:.4f if fx_rate else 'N/A'} · No constituye asesoramiento financiero.")
+    fx_str = f"{fx_rate:.4f}" if fx_rate else "N/A"
+    st.caption(f"Ganga Score calculado con datos de Yahoo Finance · Tipo de cambio USD/EUR: {fx_str} · No constituye asesoramiento financiero.")
