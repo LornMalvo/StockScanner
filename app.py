@@ -212,12 +212,12 @@ with tab_analisis:
         """, unsafe_allow_html=True)
 
         with st.spinner("Obteniendo datos, verificando con SEC EDGAR y calculando análisis técnico…"):
-            sec_data  = fetch_sec_data(ticker)
-            cross     = verify_cross_data(sec_data, yahoo_data) if sec_data else None
-            fx_rate   = fetch_usd_eur_rate()
-            tech_data = fetch_technical_data(ticker)
+            sec_data        = fetch_sec_data(ticker)
+            cross           = verify_cross_data(sec_data, yahoo_data) if sec_data else None
+            fx_rate, fx_meta = fetch_usd_eur_rate()
+            tech_data       = fetch_technical_data(ticker)
 
-        render_report(ticker, company_name, yahoo_data, sec_data, cross, fx_rate, tech_data)
+        render_report(ticker, company_name, yahoo_data, sec_data, cross, fx_rate, tech_data, fx_meta)
 
     elif buscar and not ticker_input:
         st.warning("Introduce un ticker para continuar.")
@@ -229,5 +229,6 @@ with tab_analisis:
 with tab_scanner:
     # Tipo de cambio (reutilizamos si ya está en sesión)
     if "fx_rate" not in st.session_state:
-        st.session_state.fx_rate = fetch_usd_eur_rate()
+        fx_rate, _ = fetch_usd_eur_rate()
+        st.session_state.fx_rate = fx_rate
     render_scanner(fx_rate=st.session_state.fx_rate)
