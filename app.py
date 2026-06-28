@@ -1,7 +1,7 @@
 import streamlit as st
 from data_fetcher import fetch_sec_data, fetch_yahoo_data, verify_cross_data, fetch_usd_eur_rate, fetch_technical_data
 from report import render_report
-from scanner import render_scanner
+from stock_scanner import render_scanner
 
 st.set_page_config(
     page_title="Análisis Fundamental",
