@@ -112,6 +112,37 @@ st.markdown("""
   .ttm-row:last-child { border-bottom:none; color:#f1f5f9; font-weight:600; }
   .ttm-val { color:#e2e8f0; }
 
+  /* Tooltips */
+  .tooltip-wrap { display:inline-block; vertical-align:middle; }
+  .tooltip-box {
+    visibility: hidden;
+    opacity: 0;
+    background: #1e293b;
+    color: #e2e8f0;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
+    position: absolute;
+    z-index: 9999;
+    bottom: 125%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 260px;
+    pointer-events: none;
+    transition: opacity 0.15s;
+    font-family: 'Inter', sans-serif;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  .tooltip-wrap:hover .tooltip-box {
+    visibility: visible;
+    opacity: 1;
+  }
+
   /* Tabs */
   .stTabs [data-baseweb="tab-list"] {
     background: #0a0e1a;

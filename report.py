@@ -4,6 +4,10 @@ Renderiza el informe completo en Streamlit con el diseño oscuro.
 """
 
 import streamlit as st
+from analysis import (
+    calc_entry_signal, calc_trend, fetch_peer_data, get_peers,
+    render_entry_signal, render_trend, render_peers,
+)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -79,10 +83,73 @@ def _badge(rec: str) -> str:
     return f'<span class="{cls}">{rec_up}</span>'
 
 
+# ─── Tooltips por métrica ─────────────────────────────────────────────────────
+
+TOOLTIPS = {
+    "Precio Actual":      "Último precio de cierre. Referencia base para todos los cálculos de valoración.",
+    "Objetivo Analistas": "Precio medio objetivo fijado por los analistas que cubren el valor. Por encima del precio actual indica potencial alcista según consenso.",
+    "Rango":              "Rango de precios objetivo entre el analista más bajista y el más alcista. Un rango estrecho indica mayor consenso.",
+    "Recomendación":      "Consenso de recomendación de los analistas: Strong Buy > Buy > Hold > Sell > Strong Sell.",
+    "Nº Analistas":       "Número de analistas que cubren el valor. Más analistas = mayor fiabilidad del consenso.",
+
+    "PER Trailing":       "Price/Earnings Trailing: precio dividido entre el beneficio de los últimos 12 meses. Bueno: <15 (value), normal: 15-25, caro: >35. Depende mucho del sector.",
+    "PER Forward":        "Price/Earnings Forward: precio dividido entre el beneficio estimado próximos 12 meses. Más relevante que el trailing. Bueno: <15, normal: 15-25.",
+    "PEG Ratio":          "PER dividido entre tasa de crecimiento anual. Neutraliza la prima de crecimiento. PEG < 1 = potencialmente infravalorada, PEG > 2 = cara respecto a su crecimiento.",
+    "Price/Sales":        "Capitalización dividida entre ventas. Útil para empresas sin beneficios. Bueno: <2×, normal: 2-5×, caro: >10×. Varía mucho por sector.",
+    "Price/Book":         "Precio dividido entre valor contable. P/B < 1 puede indicar ganga (o problemas). Normal: 1-3×. Financieras suelen estar cerca de 1×.",
+    "EV/Revenue":         "Valor empresa dividido entre ingresos. Similar a P/S pero incluye deuda. Bueno: <3×, normal: 3-8×. Sectores de alto margen aceptan múltiplos mayores.",
+    "EV/EBITDA":          "Valor empresa dividido entre EBITDA. Métrica de valoración universal. Bueno: <8×, normal: 8-15×, caro: >20×. Energía: <6×, Tech: hasta 25× es normal.",
+    "Market Cap":         "Valor total de mercado de todas las acciones en circulación. Define el tamaño: <$2B micro/small cap, $2-10B mid cap, >$10B large cap.",
+
+    "Profit Margin":      "Beneficio neto / ingresos. Mide cuánto queda tras todos los gastos. Bueno: >15%, aceptable: 5-15%, malo: <5%. Tech suele superar el 20%.",
+    "Operating Margin":   "Beneficio operativo / ingresos. Excluye intereses e impuestos. Bueno: >15%, indica eficiencia operativa. Compara siempre dentro del mismo sector.",
+    "EBITDA Margin":      "EBITDA / ingresos. Proxy del flujo de caja operativo bruto. Bueno: >20%, excelente: >35%. Útil para comparar empresas con diferente estructura de capital.",
+    "ROE":                "Beneficio neto / patrimonio neto. Mide eficiencia del capital propio. Bueno: >15%, excelente: >25%. Muy alto puede indicar exceso de apalancamiento.",
+    "ROA":                "Beneficio neto / activos totales. Más conservador que el ROE. Bueno: >5%, excelente: >10%. No se distorsiona con el apalancamiento.",
+
+    "Total Cash":         "Efectivo y equivalentes en balance. Más caja = más seguridad y flexibilidad para invertir o recomprar acciones.",
+    "Total Debt":         "Deuda total (corto + largo plazo). Compara siempre con el EBITDA (ratio deuda/EBITDA <3× es manejable).",
+    "Debt/Equity":        "Deuda total / patrimonio neto (en %). Bueno: <50%, aceptable: 50-100%, preocupante: >200%. Utilities y REITs aceptan más deuda.",
+    "Current Ratio":      "Activos corrientes / pasivos corrientes. Mide liquidez a corto plazo. Bueno: >1.5×, aceptable: 1-1.5×, riesgo: <1×.",
+    "Free Cash Flow":     "Flujo de caja operativo menos inversiones (capex). El dinero real que genera el negocio. FCF positivo y creciente es la señal más sólida de calidad.",
+    "Operating Cash Flow":"Efectivo generado por las operaciones antes de inversiones. Diferente al beneficio contable: más difícil de manipular.",
+
+    "Revenue Growth":     "Crecimiento de ingresos año sobre año. Bueno: >10%, excelente: >25%. Crecimiento negativo es señal de alerta salvo restructuración deliberada.",
+    "Earnings Growth":    "Crecimiento del beneficio neto año sobre año. Idealmente superior al crecimiento de ingresos (expansión de márgenes). >20% es excelente.",
+    "EPS (TTM)":          "Beneficio por acción de los últimos 12 meses. Base para calcular el PER trailing. EPS creciente = negocio mejorando.",
+    "EPS (Forward)":      "Beneficio por acción estimado para los próximos 12 meses. Base para el PER Forward. Es una estimación: puede revisarse al alza o a la baja.",
+
+    "Dividend Yield":     "Dividendo anual / precio acción. Rentabilidad por dividendo. >3% es atractivo como renta, pero un yield muy alto puede indicar riesgo de recorte.",
+    "Dividend Rate":      "Dividendo anual en términos absolutos por acción.",
+    "Short Ratio":        "Días necesarios para cubrir las posiciones cortas al volumen medio. <3 días = poca presión bajista, >7 días = alta presión bajista (señal de alerta).",
+    "Beta":               "Volatilidad relativa vs el mercado. Beta >1 = más volátil que el índice, Beta <1 = más estable. Beta negativo = movimiento inverso al mercado.",
+    "52W High":           "Precio máximo de los últimos 52 semanas. Cotizar cerca del máximo puede indicar momentum positivo o sobrecompra.",
+    "52W Low":            "Precio mínimo de los últimos 52 semanas. Cotizar cerca del mínimo puede indicar una oportunidad o una empresa en problemas.",
+
+    "MM50":               "Media Móvil de 50 sesiones. Tendencia de medio plazo. Precio sobre MM50 = tendencia alcista, bajo = bajista.",
+    "Distancia MM50":     "% de diferencia entre el precio actual y la MM50. Muy por debajo de la MM50 puede ser zona de rebote.",
+    "Señal MM50":         "Interpretación direccional respecto a la MM50. Alcista si el precio está por encima.",
+    "MM200":              "Media Móvil de 200 sesiones. Tendencia de largo plazo. Es el indicador técnico más seguido por institucionales.",
+    "Distancia MM200":    "% de diferencia entre el precio actual y la MM200. Por debajo = zona de soporte histórico relevante.",
+    "Señal MM200":        "Interpretación direccional respecto a la MM200. Alcista si el precio está por encima.",
+    "Cruce MM50/MM200":   "Golden Cross (MM50 > MM200) = señal alcista histórica. Death Cross (MM50 < MM200) = señal bajista. Son señales de largo plazo.",
+}
+
 def _kv(label, value, color_class="row-val"):
+    """Fila clave-valor con tooltip opcional al pasar el cursor."""
+    tip = TOOLTIPS.get(label, "")
+    tip_html = ""
+    if tip:
+        tip_safe = tip.replace('"', '&quot;').replace("'", "&#39;")
+        tip_html = f"""
+        <span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;">
+          <span style="font-size:0.65rem;color:#1e3a5f;border:1px solid #1e3a5f;
+                       border-radius:50%;padding:0 3px;font-family:'IBM Plex Mono',monospace;">?</span>
+          <span class="tooltip-box">{tip}</span>
+        </span>"""
     return f"""
     <div class="row-kv">
-      <span class="row-key">{label}</span>
+      <span class="row-key">{label}{tip_html}</span>
       <span class="{color_class}">{value}</span>
     </div>"""
 
@@ -872,4 +939,19 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
     """, unsafe_allow_html=True)
 
     sec_label = "SEC EDGAR + Yahoo Finance" if sec else "Yahoo Finance"
+
+    # ── H · Señal de confluencia de entrada ──────────────────────────────
+    signal = calc_entry_signal(y, tech, ev)
+    render_entry_signal(signal)
+
+    # ── I · Tendencia trimestral ──────────────────────────────────────────
+    trend = calc_trend(sec)
+    render_trend(trend)
+
+    # ── J · Comparativa con competidores ─────────────────────────────────
+    with st.spinner("Cargando datos de competidores…"):
+        peers_tickers = get_peers(ticker, y.get("sector",""), y.get("company_name",""))
+        peers_data    = fetch_peer_data(peers_tickers)
+    render_peers(ticker, y, peers_data, fx_rate, ev)
+
     st.caption(f"Datos: {sec_label} · {ticker} · USD/EUR: {fx_rate:.4f} · Valoración ajustada al sector {ev['sector_label']} · No constituye asesoramiento financiero.")
