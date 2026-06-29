@@ -1005,6 +1005,36 @@ def render_report(ticker, company_name, y: dict,
     price_eur   = f" (€{price_now*fx_rate:,.2f})" if (fx_rate and currency_y=="USD") else ""
     up_color    = "#6ee7b7" if (upside or 0) > 0 else "#fca5a5"
 
+    # Métodos usados para construir el tooltip del valor objetivo
+    methods_list = ev.get("methods_used", [])
+    methods_text = " · ".join(methods_list) if methods_list else "Sin datos suficientes"
+
+    def _vtip(text):
+        safe = text.replace('"', '&quot;')
+        return (
+            f'<span title="{safe}" style="margin-left:0.3rem;cursor:help;'
+            f'font-size:0.6rem;color:#475569;border:1px solid #475569;'
+            f'border-radius:50%;padding:0 3px;font-family:monospace;'
+            f'vertical-align:middle;">?</span>'
+        )
+
+    tip_vo = _vtip(
+        f"Valor objetivo = media aritmética de hasta 4 métodos ajustados al sector {ev.get('sector_label','')}. "
+        f"Métodos aplicados: {methods_text}. "
+        "Se excluyen los métodos para los que no hay datos disponibles. "
+        "El consenso de analistas siempre se incluye si existe. "
+        "Limitación: los múltiplos sectoriales son estáticos y no reflejan el ciclo de mercado actual."
+    )
+
+    tip_risk = _vtip(
+        "Riesgo técnico (0-15%) = combinación de dos factores: "
+        f"(1) Short Ratio × 1.5, acotado a 6% máx — actualmente Short Ratio = {y.get('short_ratio') or 0:.1f} días. "
+        "Un short ratio alto indica presión bajista institucional. "
+        "(2) Distancia al máximo 52W × 0.08, acotado a 5% máx — "
+        "cuanto más lejos está el precio de sus máximos, mayor el riesgo de que los bajistas tengan razón. "
+        "Ambos factores se suman: máximo posible = 11%, redondeado al 15% como techo."
+    )
+
     st.markdown(
         f'<div class="verdict-box" style="border-left-color:{diag_color};">'
         '<div class="verdict-title">DIAGNÓSTICO GENERAL</div>'
@@ -1015,14 +1045,14 @@ def render_report(ticker, company_name, y: dict,
         f'<div class="verdict-sub" style="margin-top:0.6rem;">'
         f'<span style="color:#94a3b8;">Precio actual:</span>'
         f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#f1f5f9;"> {currency_y} {price_now:,.2f}{price_eur}</span>'
-        f'&nbsp;·&nbsp;<span style="color:#94a3b8;">Valor objetivo:</span>'
+        f'&nbsp;·&nbsp;<span style="color:#94a3b8;">Valor objetivo{tip_vo}:</span>'
         f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#f1f5f9;"> {fair_str}</span>'
         f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:700;color:{up_color};"> ({upside_str})</span>'
         '</div>'
         f'<div class="verdict-sub"><span style="color:#94a3b8;">Vs. media 52W:</span>'
         f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#fbbf24;"> {hist_str}</span></div>'
         f'<div class="verdict-sub" style="margin-top:0.4rem;">'
-        f'<span style="color:#94a3b8;">Riesgo técnico (short):</span>'
+        f'<span style="color:#94a3b8;">Riesgo técnico (short){tip_risk}:</span>'
         f'<span style="color:#e2e8f0;"> {ev["risk"]}%</span></div>'
         '</div>',
         unsafe_allow_html=True
