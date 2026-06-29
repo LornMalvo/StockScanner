@@ -623,23 +623,25 @@ def render_company_description(company_info: dict, company_name: str):
     fcf_html = ""
     if fcf_q is not None:
         if fcf_q >= 0.9:
-            fcq_col, fcq_lbl = "#6ee7b7", "Beneficio de alta calidad — se convierte en caja real"
+            fcf_col = "#6ee7b7"
+            fcf_lbl = "Beneficio de alta calidad — se convierte en caja real"
         elif fcf_q >= 0.5:
-            fcq_col, fcq_lbl = "#fbbf24", "Calidad moderada — parte del beneficio no es caja"
+            fcf_col = "#fbbf24"
+            fcf_lbl = "Calidad moderada — parte del beneficio no es caja"
         elif fcf_q >= 0:
-            fcq_col, fcq_lbl = "#fb923c", "Calidad baja — beneficio contable supera al FCF"
+            fcf_col = "#fb923c"
+            fcf_lbl = "Calidad baja — beneficio contable supera al FCF"
         else:
-            fcq_col, fcq_lbl = "#fca5a5", "FCF negativo — cuidado con la calidad del beneficio"
+            fcf_col = "#fca5a5"
+            fcf_lbl = "FCF negativo — cuidado con la calidad del beneficio"
         fcf_html = (
             f'<div style="margin-top:0.7rem;padding:0.5rem 0.7rem;background:#0f172a;border-radius:6px;'
-            f'border-left:3px solid {fcq_col};">'
+            f'border-left:3px solid {fcf_col};">'
             f'<span style="font-size:0.7rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;">Calidad del beneficio (FCF/Net Income)</span><br>'
-            f'<span style="font-family:\'IBM Plex Mono\',monospace;color:{fcq_col};font-weight:700;">{fcq_col and f"{fcq_q:.2f}×"}</span>'
-            f'<span style="font-size:0.78rem;color:{fcq_col};margin-left:0.5rem;">{fcq_lbl}</span>'
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;color:{fcf_col};font-weight:700;">{fcf_q:.2f}×</span>'
+            f'<span style="font-size:0.78rem;color:{fcf_col};margin-left:0.5rem;">{fcf_lbl}</span>'
             f'</div>'
         )
-        # fix variable name
-        fcf_html = fcf_html.replace("fcq_col and ", "").replace('f"{fcq_q:.2f}×"', f'"{fcf_q:.2f}×"')
 
     st.markdown(
         '<div class="metric-card">'
