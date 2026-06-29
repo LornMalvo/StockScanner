@@ -105,17 +105,29 @@ with tab_analisis:
             st.error(f"No se encontró **{ticker}** en Yahoo Finance.")
             st.stop()
 
+        with st.spinner("Calculando análisis técnico…"):
+            tech_data = fetch_technical_data(ticker)
+
+        # Guardar en session_state para que persista entre re-ejecuciones
+        # (necesario para que el Q&A no reinicie la app al pulsar botones)
+        st.session_state["last_ticker"]      = ticker
+        st.session_state["last_yahoo_data"]  = yahoo_data
+        st.session_state["last_tech_data"]   = tech_data
+
+    # Renderizar si hay datos en sesión (ya sea por búsqueda nueva o por botón Q&A)
+    if "last_ticker" in st.session_state:
+        ticker       = st.session_state["last_ticker"]
+        yahoo_data   = st.session_state["last_yahoo_data"]
+        tech_data    = st.session_state["last_tech_data"]
         company_name = yahoo_data.get("company_name", ticker)
+
         st.markdown(f"""
         <div style="margin:1rem 0 0.5rem 0;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:0.8rem;color:#38bdf8;">TICKER ENCONTRADO</span><br>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:0.8rem;color:#38bdf8;">TICKER ANALIZADO</span><br>
           <span style="font-size:1.15rem;font-weight:600;color:#f1f5f9;">{ticker} → {company_name}</span>
           <span style="font-size:0.8rem;color:#64748b;margin-left:0.6rem;">{yahoo_data.get('sector','')}</span>
         </div>
         """, unsafe_allow_html=True)
-
-        with st.spinner("Calculando análisis técnico…"):
-            tech_data = fetch_technical_data(ticker)
 
         render_report(ticker, company_name, yahoo_data, fx_rate, tech_data, fx_meta)
 

@@ -20,7 +20,7 @@ from gemini_client import (
     is_available as gemini_available,
     identify_competitors, analyze_strengths_weaknesses,
     generate_executive_summary,
-    render_ai_description, render_executive_summary, render_qa_widget,
+    render_ai_strengths_in_description, render_executive_summary, render_qa_widget,
 )
 
 
@@ -721,18 +721,39 @@ def render_report(ticker, company_name, y: dict,
         news_items   = fetch_recent_news(ticker)
         ea           = fetch_earnings_analysis(ticker, y)
 
-    # Identificar competidores reales con IA (si disponible)
+    # Identificar competidores reales con IA
     ai_competitors = {}
     ai_strengths   = {}
     if gemini_available():
-        with st.spinner("✨ Gemini identificando competidores y analizando ventajas competitivas…"):
+        with st.spinner("✨ Gemini identificando competidores directos…"):
             ai_competitors = identify_competitors(
                 ticker, company_name,
                 y.get("sector",""), y.get("industry",""),
                 company_info.get("description","")
             )
+        # Pre-cargar métricas de competidores para el análisis
+        ai_tickers_early = [c["ticker"] for c in ai_competitors.get("competitors",[]) if c.get("ticker")]
+        if ai_tickers_early:
+            peers_data_ai = fetch_peer_data(ai_tickers_early)
+            if peers_data_ai:
+                with st.spinner("✨ Gemini analizando fortalezas y debilidades…"):
+                    ai_strengths = analyze_strengths_weaknesses(
+                        ticker, company_name, y,
+                        peers_data_ai,
+                        ai_competitors.get("subsector", y.get("industry","")),
+                        ai_competitors.get("moat_factors", [])
+                    )
+                # Guardar para reutilizar en sección J
+                st.session_state[f"peers_data_ai_{ticker}"] = peers_data_ai
 
     render_company_description(company_info, company_name)
+
+    # Fortalezas/debilidades/moat van DENTRO del apartado de descripción
+    if ai_strengths:
+        render_ai_strengths_in_description(
+            ai_strengths,
+            ai_competitors.get("subsector", y.get("industry",""))
+        )
 
     # ════════════════════════════════════════════════════════════════════
     # C · ÚLTIMAS NOTICIAS Y ANUNCIOS
@@ -1101,51 +1122,53 @@ def render_report(ticker, company_name, y: dict,
 
     # ════════════════════════════════════════════════════════════════════
     # COMPARATIVA FRENTE A COMPETENCIA
-    # Usa competidores identificados por IA si están disponibles,
-    # o cae a la lista estática curada por sector
+    # Usa competidores identificados por IA si están disponibles
     # ════════════════════════════════════════════════════════════════════
     ai_tickers = [c["ticker"] for c in ai_competitors.get("competitors", []) if c.get("ticker")]
 
     with st.spinner("Cargando datos de competidores…"):
         if ai_tickers:
-            # Usar competidores reales identificados por Gemini
-            peers_data = fetch_peer_data(ai_tickers)
-            subsector  = ai_competitors.get("subsector", "")
+            # Reutilizar datos ya descargados en la sección B si están en caché
+            peers_data = st.session_state.get(
+                f"peers_data_ai_{ticker}",
+                fetch_peer_data(ai_tickers)
+            )
+            subsector = ai_competitors.get("subsector", "")
             if subsector:
-                _section(f"J · COMPARATIVA FRENTE A COMPETENCIA &nbsp;"
-                         f"<span style='font-size:0.7rem;color:#38bdf8;'>"
-                         f"✨ Competidores identificados por IA · {subsector}</span>")
-            # Mostrar la razón de cada competidor si la hay
-            reasons = {c["ticker"]: c.get("reason","") for c in ai_competitors.get("competitors",[])}
+                _section(
+                    f"J · COMPARATIVA FRENTE A COMPETENCIA &nbsp;"
+                    f"<span style='font-size:0.7rem;color:#38bdf8;'>"
+                    f"✨ Competidores identificados por IA · {subsector}</span>"
+                )
+            # Mostrar razón de cada competidor
+            reasons = {
+                c["ticker"]: c.get("reason","")
+                for c in ai_competitors.get("competitors",[])
+                if c.get("reason")
+            }
             if reasons:
                 rows_r = "".join(
-                    f'<div style="font-size:0.75rem;padding:0.2rem 0;border-bottom:1px solid #1a2540;">'
-                    f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#38bdf8;min-width:4rem;display:inline-block;">{t}</span>'
-                    f'<span style="color:#64748b;margin-left:0.5rem;">{r}</span></div>'
-                    for t, r in reasons.items() if r
+                    f'<div style="display:flex;gap:0.5rem;font-size:0.75rem;'
+                    f'padding:0.22rem 0;border-bottom:1px solid #1a2540;">'
+                    f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#38bdf8;'
+                    f'min-width:4rem;font-weight:600;">{t}</span>'
+                    f'<span style="color:#64748b;">{r}</span></div>'
+                    for t, r in reasons.items()
                 )
-                if rows_r:
-                    st.markdown(
-                        f'<div class="metric-card" style="border-left:3px solid #1e3a5f;padding:0.6rem 0.9rem;">'
-                        f'<div style="font-size:0.68rem;color:#475569;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.3rem;">Por qué son competidores directos</div>'
-                        f'{rows_r}</div>',
-                        unsafe_allow_html=True
-                    )
+                st.markdown(
+                    f'<div class="metric-card" style="border-left:3px solid #1e3a5f;'
+                    f'padding:0.6rem 0.9rem;margin-bottom:0.5rem;">'
+                    f'<div style="font-size:0.68rem;color:#475569;text-transform:uppercase;'
+                    f'letter-spacing:0.08em;margin-bottom:0.3rem;">Por qué son competidores directos</div>'
+                    f'{rows_r}</div>',
+                    unsafe_allow_html=True
+                )
         else:
-            # Fallback a lista estática
+            # Fallback: lista curada estática por sector
             peers_tickers = get_peers(ticker, y.get("sector",""), y.get("company_name",""))
             peers_data    = fetch_peer_data(peers_tickers)
 
     render_peers(ticker, y, peers_data, fx_rate, ev)
-
-    # Análisis IA de fortalezas/debilidades (si tenemos competidores y Gemini)
-    if gemini_available() and peers_data:
-        subsector = ai_competitors.get("subsector", y.get("industry",""))
-        with st.spinner("✨ Gemini analizando fortalezas y debilidades…"):
-            ai_strengths = analyze_strengths_weaknesses(
-                ticker, company_name, y, peers_data, subsector
-            )
-        render_ai_description(ai_strengths, subsector)
 
     # ════════════════════════════════════════════════════════════════════
     # RESUMEN EJECUTIVO IA
@@ -1154,7 +1177,9 @@ def render_report(ticker, company_name, y: dict,
         sq_data = calc_short_squeeze(y)
         with st.spinner("✨ Gemini generando resumen ejecutivo…"):
             summary = generate_executive_summary(
-                ticker, company_name, y, ev, sq_data, tech
+                ticker, company_name, y, ev, sq_data, tech,
+                ai_strengths,
+                ai_competitors.get("subsector", y.get("industry",""))
             )
         render_executive_summary(summary)
 

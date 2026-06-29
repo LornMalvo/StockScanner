@@ -1,12 +1,12 @@
 """
-gemini_client.py — v1.0
+gemini_client.py — v1.1
 Integración con la API de Gemini (Google AI Studio).
-Modelo: gemini-2.5-flash (tier gratuito: 250 req/día)
+Modelo: gemini-2.5-flash
 Endpoint: https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
 
 Funcionalidades:
   1. Identificación de competidores reales por subsector específico
-  2. Análisis de fortalezas y debilidades vs competidores
+  2. Análisis de fortalezas, debilidades y moat frente a competidores
   3. Resumen ejecutivo del análisis completo
   4. Q&A interactivo sobre la empresa
 """
@@ -16,14 +16,9 @@ import streamlit as st
 import os
 import json
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CONFIGURACIÓN
-# ─────────────────────────────────────────────────────────────────────────────
-
-GEMINI_MODEL   = "gemini-2.5-flash"
-GEMINI_BASE    = "https://generativelanguage.googleapis.com/v1beta/models"
-TIMEOUT        = 30
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_BASE  = "https://generativelanguage.googleapis.com/v1beta/models"
+TIMEOUT      = 35
 
 
 def _get_key() -> str:
@@ -34,12 +29,11 @@ def _get_key() -> str:
     return os.environ.get("GEMINI_API_KEY", "").strip()
 
 
-def _call(prompt: str, temperature: float = 0.3, max_tokens: int = 1024) -> str | None:
-    """Llamada directa a la API REST de Gemini."""
+def _call(prompt: str, temperature: float = 0.3, max_tokens: int = 1200) -> str | None:
     key = _get_key()
     if not key:
         return None
-    url = f"{GEMINI_BASE}/{GEMINI_MODEL}:generateContent?key={key}"
+    url  = f"{GEMINI_BASE}/{GEMINI_MODEL}:generateContent?key={key}"
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -50,17 +44,38 @@ def _call(prompt: str, temperature: float = 0.3, max_tokens: int = 1024) -> str 
     try:
         r = requests.post(url, json=body, timeout=TIMEOUT)
         if r.status_code == 200:
-            data = r.json()
-            parts = (data.get("candidates", [{}])[0]
-                        .get("content", {})
-                        .get("parts", [{}]))
+            parts = (r.json().get("candidates", [{}])[0]
+                              .get("content", {})
+                              .get("parts", [{}]))
             return parts[0].get("text", "").strip() if parts else None
-        else:
-            print(f"[Gemini] HTTP {r.status_code}: {r.text[:300]}")
-            return None
+        print(f"[Gemini] HTTP {r.status_code}: {r.text[:300]}")
+        return None
     except Exception as e:
         print(f"[Gemini] Error: {e}")
         return None
+
+
+def _parse_json(raw: str) -> dict:
+    """Limpia y parsea JSON de la respuesta de Gemini."""
+    if not raw:
+        return {}
+    raw = raw.strip()
+    # Eliminar bloques markdown ```json ... ```
+    if "```" in raw:
+        parts = raw.split("```")
+        for p in parts:
+            p = p.strip()
+            if p.startswith("json"):
+                p = p[4:].strip()
+            if p.startswith("{"):
+                raw = p
+                break
+    raw = raw.strip()
+    try:
+        return json.loads(raw)
+    except Exception as e:
+        print(f"[Gemini JSON] parse error: {e} — raw[:200]: {raw[:200]}")
+        return {}
 
 
 def is_available() -> bool:
@@ -75,136 +90,125 @@ def identify_competitors(ticker: str, company_name: str,
                           sector: str, industry: str,
                           description: str) -> dict:
     """
-    Usa Gemini para identificar los competidores directos reales
-    del subsegmento exacto de negocio de la empresa.
-    Devuelve lista de tickers y nombre del subsector.
+    Identifica los competidores directos reales en el subsegmento exacto.
     """
-    desc_short = (description or "")[:600]
-    prompt = f"""Eres un analista financiero experto. Analiza esta empresa y devuelve sus competidores directos reales.
+    desc_short = (description or "")[:700]
+    prompt = f"""Eres un analista financiero experto en mercados de capitales.
 
-EMPRESA: {company_name} ({ticker})
-SECTOR: {sector} / {industry}
-DESCRIPCIÓN: {desc_short}
+EMPRESA A ANALIZAR: {company_name} (ticker: {ticker})
+SECTOR: {sector}
+INDUSTRIA: {industry}
+DESCRIPCIÓN DEL NEGOCIO: {desc_short}
 
-TAREA: Identifica los 6-8 competidores que compiten DIRECTAMENTE con {company_name} en su subsegmento específico de negocio.
-NO uses empresas del sector genérico — usa competidores del nicho exacto.
+TAREA CRÍTICA: Identifica los 6-8 competidores que compiten DIRECTAMENTE con {company_name} en su subsegmento ESPECÍFICO de negocio. No uses el sector genérico.
 
-Responde ÚNICAMENTE con este JSON (sin texto adicional, sin markdown):
+Ejemplos de lo que se espera:
+- Si la empresa es Palantir (análisis de datos gubernamental/empresarial), los competidores son C3.ai, Alteryx, Verint, Snowflake — NO Microsoft ni Oracle.
+- Si la empresa es Capricor Therapeutics (terapia génica para Duchenne), los competidores son Solid Biosciences, Sarepta Therapeutics, NS Pharma — NO Pfizer ni Johnson & Johnson.
+- Si la empresa es Netflix (streaming de entretenimiento), los competidores son Disney+, Max, Paramount+, Apple TV+ — NO Comcast genérico.
+
+Devuelve ÚNICAMENTE este JSON válido, sin texto adicional ni markdown:
 {{
-  "subsector": "nombre del subsector específico en 3-5 palabras",
+  "subsector": "nombre preciso del subsector en 3-6 palabras",
   "competitors": [
-    {{"ticker": "XXXX", "name": "Nombre empresa", "reason": "Por qué compite directamente"}},
-    ...
+    {{"ticker": "XXXX", "name": "Nombre de la empresa", "reason": "por qué compite directamente con {company_name}"}},
+    {{"ticker": "YYYY", "name": "Nombre de la empresa", "reason": "por qué compite directamente con {company_name}"}}
   ],
-  "moat_factors": ["factor competitivo 1", "factor competitivo 2", "factor competitivo 3"]
+  "moat_factors": ["posible ventaja competitiva 1 de {company_name}", "posible ventaja competitiva 2", "posible ventaja competitiva 3"]
 }}
 
-Solo incluye empresas que cotizan en bolsa con ticker real. Si no sabes el ticker exacto, omite la empresa."""
+IMPORTANTE: Solo incluye empresas que cotizan en bolsa con ticker real y verificado. Máximo 8 competidores."""
 
-    raw = _call(prompt, temperature=0.1, max_tokens=800)
-    if not raw:
-        return {}
-
-    # Limpiar posibles bloques markdown
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip().rstrip("```").strip()
-
-    try:
-        data = json.loads(raw)
-        return {
-            "subsector":   data.get("subsector", ""),
-            "competitors": data.get("competitors", []),
-            "moat_factors":data.get("moat_factors", []),
-        }
-    except Exception as e:
-        print(f"[Gemini competitors] JSON parse error: {e} — raw: {raw[:200]}")
-        return {}
+    data = _parse_json(_call(prompt, temperature=0.1, max_tokens=900))
+    return {
+        "subsector":    data.get("subsector", ""),
+        "competitors":  data.get("competitors", []),
+        "moat_factors": data.get("moat_factors", []),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. ANÁLISIS DE FORTALEZAS Y DEBILIDADES
+# 2. FORTALEZAS, DEBILIDADES Y MOAT
 # ─────────────────────────────────────────────────────────────────────────────
 
 def analyze_strengths_weaknesses(ticker: str, company_name: str,
                                   y: dict, peers_data: list,
-                                  subsector: str) -> dict:
+                                  subsector: str,
+                                  moat_factors: list) -> dict:
     """
-    Compara métricas de la empresa vs sus competidores reales
-    y genera análisis cualitativo de fortalezas y debilidades.
+    Analiza fortalezas, debilidades y moat comparando métricas reales
+    contra los competidores identificados por IA.
     """
-    def pct(v): return f"{(v or 0)*100:.1f}%" if v is not None else "N/D"
-    def num(v, sfx=""): return f"{v:.1f}{sfx}" if v is not None else "N/D"
+    def pct(v):  return f"{(v or 0)*100:.1f}%" if v is not None else "N/D"
+    def num(v, s=""): return f"{v:.1f}{s}" if v is not None else "N/D"
+    def big(v):
+        if not v: return "N/D"
+        v = float(v)
+        if abs(v) >= 1e12: return f"${v/1e12:.1f}T"
+        if abs(v) >= 1e9:  return f"${v/1e9:.1f}B"
+        return f"${v/1e6:.0f}M"
 
-    # Datos de la empresa analizada
-    main_metrics = (
-        f"  - Revenue YoY: {num(y.get('revenue_yoy'), '%')}\n"
-        f"  - Margen neto: {pct(y.get('profit_margin'))}\n"
-        f"  - Margen operativo: {pct(y.get('operating_margin'))}\n"
-        f"  - ROE: {pct(y.get('roe'))}\n"
-        f"  - PER Forward: {num(y.get('pe_forward'), 'x')}\n"
-        f"  - EV/EBITDA: {num(y.get('ev_ebitda'), 'x')}\n"
-        f"  - Deuda/Equity: {num(y.get('debt_equity'), '%')}\n"
-        f"  - FCF: {'positivo' if (y.get('free_cash_flow') or 0) > 0 else 'negativo'}"
+    main = (
+        f"  Revenue YoY: {num(y.get('revenue_yoy'),'%')} | "
+        f"Margen neto: {pct(y.get('profit_margin'))} | "
+        f"Margen op: {pct(y.get('operating_margin'))} | "
+        f"ROE: {pct(y.get('roe'))} | "
+        f"PER fwd: {num(y.get('pe_forward'),'x')} | "
+        f"EV/EBITDA: {num(y.get('ev_ebitda'),'x')} | "
+        f"D/E: {num(y.get('debt_equity'),'%')} | "
+        f"FCF: {'✓ positivo' if (y.get('free_cash_flow') or 0) > 0 else '✗ negativo'} | "
+        f"Market Cap: {big(y.get('market_cap'))}"
     )
 
-    # Datos de competidores
     peers_text = ""
-    for p in peers_data[:5]:
+    for p in peers_data[:6]:
         peers_text += (
-            f"  {p['ticker']} ({p['name']}): "
+            f"  {p['ticker']} ({p['name'][:20]}): "
             f"Rev YoY {num(p.get('rev_growth'),'%')} | "
             f"Margen {num(p.get('profit_m'),'%')} | "
             f"ROE {num(p.get('roe'),'%')} | "
-            f"PER {num(p.get('pe_forward'),'x')}\n"
+            f"PER {num(p.get('pe_forward'),'x')} | "
+            f"Cap {big(p.get('market_cap'))}\n"
         )
 
-    prompt = f"""Eres un analista financiero experto en el sector {subsector}.
+    moat_hint = f"\nPosibles ventajas competitivas identificadas: {', '.join(moat_factors)}" if moat_factors else ""
 
-EMPRESA ANALIZADA: {company_name} ({ticker})
-MÉTRICAS:
-{main_metrics}
+    prompt = f"""Eres un analista financiero senior especializado en el sector {subsector}.
 
-COMPETIDORES DIRECTOS:
+EMPRESA: {company_name} ({ticker}) — subsector: {subsector}
+MÉTRICAS CLAVE:
+{main}
+
+COMPETIDORES DIRECTOS Y SUS MÉTRICAS:
 {peers_text if peers_text else "  Sin datos de competidores disponibles"}
+{moat_hint}
 
-TAREA: Basándote en los datos numéricos anteriores y tu conocimiento del sector {subsector}, analiza:
-1. Los 3-4 puntos FUERTES más relevantes de {company_name} frente a sus competidores
-2. Los 2-3 puntos DÉBILES o riesgos más importantes
-3. Lo que hace ESPECIAL o diferente a esta empresa (su moat o ventaja competitiva)
+TAREA: Basándote en los datos numéricos anteriores y tu conocimiento profundo del sector {subsector}:
 
-Responde en español, de forma concisa y directa. Máximo 3 líneas por punto.
-Responde ÚNICAMENTE con este JSON (sin texto adicional):
+1. Identifica los 3-4 PUNTOS FUERTES más relevantes de {company_name} frente a sus competidores directos. Sé específico: menciona en qué métricas supera y por qué importa en este sector.
+
+2. Identifica los 2-3 PUNTOS DÉBILES o riesgos más importantes. Sé específico y objetivo.
+
+3. Describe el MOAT o ventaja competitiva diferencial de {company_name} — qué la hace difícil de replicar. Si no tiene moat claro, dilo.
+
+4. Una frase de CONCLUSIÓN sobre la posición competitiva actual (líder, seguidor, nicho, en riesgo...).
+
+Responde en español. Máximo 2 líneas por punto. Sé directo y concreto.
+Devuelve ÚNICAMENTE este JSON válido, sin texto adicional:
 {{
-  "strengths": ["fortaleza 1", "fortaleza 2", "fortaleza 3"],
-  "weaknesses": ["debilidad 1", "debilidad 2"],
-  "differentiator": "qué hace especial a esta empresa en 2-3 frases"
+  "strengths": ["punto fuerte 1 específico", "punto fuerte 2 específico", "punto fuerte 3 específico"],
+  "weaknesses": ["punto débil 1 específico", "punto débil 2 específico"],
+  "moat": "descripción del moat en 2-3 frases. Qué la hace especial o difícil de replicar.",
+  "position": "frase de conclusión sobre posición competitiva"
 }}"""
 
-    raw = _call(prompt, temperature=0.2, max_tokens=700)
-    if not raw:
-        return {}
-
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip().rstrip("```").strip()
-
-    try:
-        data = json.loads(raw)
-        return {
-            "strengths":      data.get("strengths", []),
-            "weaknesses":     data.get("weaknesses", []),
-            "differentiator": data.get("differentiator", ""),
-        }
-    except Exception as e:
-        print(f"[Gemini strengths] JSON parse error: {e}")
-        return {}
+    data = _parse_json(_call(prompt, temperature=0.2, max_tokens=900))
+    return {
+        "strengths":  data.get("strengths", []),
+        "weaknesses": data.get("weaknesses", []),
+        "moat":       data.get("moat", ""),
+        "position":   data.get("position", ""),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -213,13 +217,14 @@ Responde ÚNICAMENTE con este JSON (sin texto adicional):
 
 def generate_executive_summary(ticker: str, company_name: str,
                                 y: dict, ev: dict, sq: dict,
-                                tech: dict | None) -> str:
+                                tech: dict | None,
+                                strengths_data: dict,
+                                subsector: str) -> str:
     """
-    Genera un resumen ejecutivo accionable del análisis completo.
-    Sintetiza todos los datos en 4-5 frases directas.
+    Genera un resumen ejecutivo completo y accionable.
     """
-    def pct(v): return f"{(v or 0)*100:.1f}%" if v is not None else "N/D"
-    def num(v, sfx=""): return f"{v:.1f}{sfx}" if v is not None else "N/D"
+    def pct(v):   return f"{(v or 0)*100:.1f}%" if v is not None else "N/D"
+    def num(v, s=""): return f"{v:.1f}{s}" if v is not None else "N/D"
     def big(v):
         if not v: return "N/D"
         v = float(v)
@@ -227,35 +232,57 @@ def generate_executive_summary(ticker: str, company_name: str,
         if abs(v) >= 1e9:  return f"${v/1e9:.1f}B"
         return f"${v/1e6:.0f}M"
 
-    rsi   = num(tech.get("rsi") if tech and not tech.get("error") else None)
-    mm50  = "por encima" if tech and not tech.get("error") and (y.get("price") or 0) > (tech.get("mm50") or 0) else "por debajo"
-    diag  = ev.get("diag", "")
-    fair  = f"${ev.get('fair_value', 0):,.2f}" if ev.get("fair_value") else "N/D"
-    upside= f"{ev.get('upside', 0):+.1f}%" if ev.get("upside") is not None else "N/D"
-    sq_lvl= sq.get("level","") if sq else ""
+    rsi  = num(tech.get("rsi")) if tech and not tech.get("error") else "N/D"
+    mm_pos = ""
+    if tech and not tech.get("error"):
+        p = y.get("price") or 0
+        if tech.get("mm50"):
+            mm_pos += f"{'▲' if p > tech['mm50'] else '▼'} MM50 "
+        if tech.get("mm200"):
+            mm_pos += f"{'▲' if p > tech['mm200'] else '▼'} MM200"
 
-    prompt = f"""Eres un analista financiero senior. Genera un resumen ejecutivo CONCISO y ACCIONABLE.
+    diag   = ev.get("diag", "")
+    fair   = f"${ev.get('fair_value', 0):,.2f}" if ev.get("fair_value") else "N/D"
+    upside = f"{ev.get('upside', 0):+.1f}%" if ev.get("upside") is not None else "N/D"
+    sq_lvl = sq.get("level","") if sq else ""
+    sq_scr = sq.get("score", 0) if sq else 0
 
-EMPRESA: {company_name} ({ticker})
-DATOS CLAVE:
+    strengths_txt  = "; ".join(strengths_data.get("strengths",[])) or "No analizadas"
+    weaknesses_txt = "; ".join(strengths_data.get("weaknesses",[])) or "No analizadas"
+    moat_txt       = strengths_data.get("moat","") or "No determinado"
+    position_txt   = strengths_data.get("position","") or ""
+
+    prompt = f"""Eres un analista financiero senior con 20 años de experiencia. Escribe un resumen ejecutivo COMPLETO de la siguiente empresa.
+
+EMPRESA: {company_name} ({ticker}) — subsector: {subsector}
+
+DATOS FUNDAMENTALES:
 - Precio: ${y.get('price', 0):,.2f} | Market Cap: {big(y.get('market_cap'))}
-- Diagnóstico app: {diag} | Valor objetivo: {fair} ({upside} upside)
+- Diagnóstico: {diag} | Valor objetivo: {fair} (upside: {upside})
 - Revenue YoY: {num(y.get('revenue_yoy'),'%')} | Beneficio YoY: {num(y.get('earnings_yoy'),'%')}
-- Margen neto: {pct(y.get('profit_margin'))} | ROE: {pct(y.get('roe'))}
-- PER Forward: {num(y.get('pe_forward'),'x')} | EV/EBITDA: {num(y.get('ev_ebitda'),'x')}
-- FCF: {'positivo ✓' if (y.get('free_cash_flow') or 0) > 0 else 'negativo ✗'}
-- RSI: {rsi} | Precio {mm50} de MM50
-- Short squeeze: {sq_lvl}
-- Deuda/Equity: {num(y.get('debt_equity'),'%')}
+- Margen neto: {pct(y.get('profit_margin'))} | Margen operativo: {pct(y.get('operating_margin'))}
+- ROE: {pct(y.get('roe'))} | PER Forward: {num(y.get('pe_forward'),'x')} | EV/EBITDA: {num(y.get('ev_ebitda'),'x')}
+- FCF: {'positivo' if (y.get('free_cash_flow') or 0) > 0 else 'negativo'} | Deuda/Equity: {num(y.get('debt_equity'),'%')}
+- RSI: {rsi} | Posición vs medias: {mm_pos}
+- Short squeeze: {sq_lvl} (score: {sq_scr}/100)
 
-INSTRUCCIONES:
-- Escribe exactamente 4-5 frases en español
-- Sé directo y accionable — qué está bien, qué preocupa, qué haría un inversor
-- No uses bullet points, escribe en prosa fluida
-- La última frase debe ser una conclusión clara sobre si el momento es bueno o no para entrar
-- No repitas los números exactos ya mostrados en la app — interprétalos"""
+ANÁLISIS COMPETITIVO:
+- Fortalezas: {strengths_txt}
+- Debilidades: {weaknesses_txt}
+- Moat/Ventaja: {moat_txt}
+- Posición: {position_txt}
 
-    result = _call(prompt, temperature=0.4, max_tokens=400)
+INSTRUCCIONES ESTRICTAS:
+- Escribe exactamente 5 párrafos cortos en español (2-3 frases cada uno)
+- Párrafo 1: situación del negocio y crecimiento
+- Párrafo 2: rentabilidad y calidad financiera
+- Párrafo 3: valoración actual y comparativa con el sector
+- Párrafo 4: posición competitiva y riesgos principales
+- Párrafo 5: conclusión clara — si es buen momento para entrar, qué esperar
+- No uses bullet points ni listas — solo prosa fluida
+- No repitas los datos en bruto — interprétalos y dales contexto"""
+
+    result = _call(prompt, temperature=0.4, max_tokens=1000)
     return result or ""
 
 
@@ -264,126 +291,140 @@ INSTRUCCIONES:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def answer_question(question: str, ticker: str, company_name: str,
-                    y: dict, ev: dict, context_extra: str = "") -> str:
-    """
-    Responde preguntas del usuario sobre la empresa analizada.
-    Usa los datos del análisis como contexto.
-    """
-    def pct(v): return f"{(v or 0)*100:.1f}%" if v is not None else "N/D"
-    def num(v, sfx=""): return f"{v:.1f}{sfx}" if v is not None else "N/D"
+                    y: dict, ev: dict) -> str:
+    def pct(v):   return f"{(v or 0)*100:.1f}%" if v is not None else "N/D"
+    def num(v, s=""): return f"{v:.1f}{s}" if v is not None else "N/D"
 
     context = f"""EMPRESA: {company_name} ({ticker})
 Sector: {y.get('sector','')} / {y.get('industry','')}
-Precio: ${y.get('price', 0):,.2f} | Market Cap: {y.get('market_cap', 0)/1e9:.1f}B
-PER Forward: {num(y.get('pe_forward'),'x')} | PEG: {num(y.get('peg_ratio'))}
-EV/EBITDA: {num(y.get('ev_ebitda'),'x')} | Price/Sales: {num(y.get('price_sales'),'x')}
-Margen neto: {pct(y.get('profit_margin'))} | Margen operativo: {pct(y.get('operating_margin'))}
+Precio: ${y.get('price', 0):,.2f} | Market Cap: {(y.get('market_cap',0) or 0)/1e9:.1f}B
+PER Forward: {num(y.get('pe_forward'),'x')} | PEG: {num(y.get('peg_ratio'))} | EV/EBITDA: {num(y.get('ev_ebitda'),'x')}
+Margen neto: {pct(y.get('profit_margin'))} | Margen op: {pct(y.get('operating_margin'))}
 ROE: {pct(y.get('roe'))} | ROA: {pct(y.get('roa'))}
 Revenue YoY: {num(y.get('revenue_yoy'),'%')} | Earnings YoY: {num(y.get('earnings_yoy'),'%')}
-FCF: {y.get('free_cash_flow', 0)/1e9:.2f}B | Deuda/Equity: {num(y.get('debt_equity'),'%')}
+FCF: {'positivo' if (y.get('free_cash_flow') or 0) > 0 else 'negativo'} | D/E: {num(y.get('debt_equity'),'%')}
 Short Ratio: {num(y.get('short_ratio'),'d')} | Beta: {num(y.get('beta'))}
-Diagnóstico: {ev.get('diag','')} | Valor objetivo: ${ev.get('fair_value', 0):,.2f} ({ev.get('upside', 0):+.1f}% upside)
-{context_extra}"""
+Diagnóstico: {ev.get('diag','')} | Valor objetivo: ${(ev.get('fair_value') or 0):,.2f} ({(ev.get('upside') or 0):+.1f}% upside)"""
 
     prompt = f"""Eres un analista financiero experto. Responde esta pregunta sobre {company_name} ({ticker}).
 
 DATOS DEL ANÁLISIS:
 {context}
 
-PREGUNTA DEL USUARIO: {question}
+PREGUNTA: {question}
 
-INSTRUCCIONES:
-- Responde en español de forma clara y directa
-- Basa tu respuesta principalmente en los datos proporcionados
-- Si la pregunta requiere información que no está en los datos, indícalo claramente
-- Máximo 150 palabras
-- No uses listas largas — responde en prosa natural"""
+Responde en español. Sé directo y específico. Máximo 200 palabras. Sin listas — prosa natural."""
 
-    result = _call(prompt, temperature=0.5, max_tokens=300)
-    return result or "No se pudo generar una respuesta. Comprueba la API key de Gemini."
+    return _call(prompt, temperature=0.5, max_tokens=400) or "No se pudo generar respuesta."
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RENDERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def render_ai_description(strengths_data: dict, subsector: str):
-    """Renderiza el bloque de fortalezas/debilidades en la descripción."""
-    if not strengths_data:
+def render_ai_strengths_in_description(strengths_data: dict, subsector: str):
+    """
+    Renderiza fortalezas, debilidades y moat DENTRO del apartado de descripción.
+    Se llama desde render_company_description en analysis.py.
+    """
+    if not strengths_data or (
+        not strengths_data.get("strengths") and
+        not strengths_data.get("weaknesses") and
+        not strengths_data.get("moat")
+    ):
         return
 
-    strengths    = strengths_data.get("strengths", [])
-    weaknesses   = strengths_data.get("weaknesses", [])
-    differentiator = strengths_data.get("differentiator", "")
-
-    if not strengths and not weaknesses:
-        return
+    strengths  = strengths_data.get("strengths", [])
+    weaknesses = strengths_data.get("weaknesses", [])
+    moat       = strengths_data.get("moat", "")
+    position   = strengths_data.get("position", "")
 
     rows_s = "".join(
-        f'<div style="display:flex;gap:0.5rem;padding:0.3rem 0;border-bottom:1px solid #1a2540;font-size:0.8rem;">'
-        f'<span style="color:#6ee7b7;font-size:0.9rem;">✔</span>'
+        f'<div style="display:flex;gap:0.5rem;padding:0.28rem 0;'
+        f'border-bottom:1px solid #1a2540;font-size:0.8rem;">'
+        f'<span style="color:#6ee7b7;min-width:1rem;">✔</span>'
         f'<span style="color:#e2e8f0;">{s}</span></div>'
         for s in strengths
     )
     rows_w = "".join(
-        f'<div style="display:flex;gap:0.5rem;padding:0.3rem 0;border-bottom:1px solid #1a2540;font-size:0.8rem;">'
-        f'<span style="color:#fca5a5;font-size:0.9rem;">✘</span>'
+        f'<div style="display:flex;gap:0.5rem;padding:0.28rem 0;'
+        f'border-bottom:1px solid #1a2540;font-size:0.8rem;">'
+        f'<span style="color:#fca5a5;min-width:1rem;">✘</span>'
         f'<span style="color:#e2e8f0;">{w}</span></div>'
         for w in weaknesses
     )
-    diff_html = (
-        f'<div style="background:#0f172a;border-left:3px solid #38bdf8;border-radius:4px;'
-        f'padding:0.5rem 0.7rem;margin-top:0.5rem;font-size:0.8rem;color:#94a3b8;line-height:1.6;">'
-        f'<span style="font-size:0.68rem;color:#38bdf8;text-transform:uppercase;letter-spacing:0.08em;">'
-        f'Ventaja competitiva</span><br>{differentiator}</div>'
-    ) if differentiator else ""
+    moat_html = (
+        f'<div style="background:#0a1628;border-left:3px solid #38bdf8;border-radius:4px;'
+        f'padding:0.55rem 0.75rem;margin-top:0.6rem;">'
+        f'<div style="font-size:0.68rem;color:#38bdf8;text-transform:uppercase;'
+        f'letter-spacing:0.08em;margin-bottom:0.2rem;">Ventaja competitiva (Moat)</div>'
+        f'<div style="font-size:0.8rem;color:#cbd5e1;line-height:1.65;">{moat}</div>'
+        f'</div>'
+    ) if moat else ""
+    pos_html = (
+        f'<div style="font-size:0.78rem;color:#fbbf24;margin-top:0.5rem;'
+        f'padding:0.3rem 0;border-top:1px solid #1a2540;">'
+        f'▸ {position}</div>'
+    ) if position else ""
 
     badge = (
-        f'<span style="background:#064e3b;color:#6ee7b7;padding:2px 8px;border-radius:4px;'
-        f'font-size:0.72rem;margin-left:0.5rem;">✨ IA · {subsector}</span>'
+        f'<span style="background:#0f2d1a;color:#6ee7b7;padding:2px 8px;border-radius:4px;'
+        f'font-size:0.7rem;margin-left:0.5rem;font-weight:600;">✨ Gemini · {subsector}</span>'
         if subsector else
-        '<span style="background:#064e3b;color:#6ee7b7;padding:2px 8px;border-radius:4px;font-size:0.72rem;margin-left:0.5rem;">✨ Análisis IA</span>'
+        '<span style="background:#0f2d1a;color:#6ee7b7;padding:2px 8px;border-radius:4px;font-size:0.7rem;margin-left:0.5rem;">✨ Gemini IA</span>'
     )
 
     st.markdown(
-        f'<div class="metric-card" style="border-left:3px solid #1e3a5f;">'
-        f'<div style="font-size:0.7rem;color:#38bdf8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.5rem;">'
-        f'Fortalezas y debilidades frente a la competencia{badge}</div>'
-        f'<div style="margin-bottom:0.4rem;">'
-        f'<div style="font-size:0.68rem;color:#6ee7b7;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.2rem;">Puntos fuertes</div>'
-        f'{rows_s}</div>'
+        f'<div class="metric-card" style="border-left:3px solid #1e3a5f;margin-top:0.5rem;">'
+        f'<div style="font-size:0.7rem;color:#94a3b8;text-transform:uppercase;'
+        f'letter-spacing:0.08em;margin-bottom:0.6rem;">'
+        f'Análisis competitivo{badge}</div>'
+        f'<div style="margin-bottom:0.5rem;">'
+        f'<div style="font-size:0.68rem;color:#6ee7b7;text-transform:uppercase;'
+        f'letter-spacing:0.06em;margin-bottom:0.25rem;">Puntos fuertes</div>'
+        f'{rows_s if rows_s else "<span style=\'color:#475569;font-size:0.78rem;\'>Sin datos</span>"}'
+        f'</div>'
         f'<div style="margin-top:0.4rem;">'
-        f'<div style="font-size:0.68rem;color:#fca5a5;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.2rem;">Puntos débiles / riesgos</div>'
-        f'{rows_w}</div>'
-        f'{diff_html}'
+        f'<div style="font-size:0.68rem;color:#fca5a5;text-transform:uppercase;'
+        f'letter-spacing:0.06em;margin-bottom:0.25rem;">Puntos débiles / riesgos</div>'
+        f'{rows_w if rows_w else "<span style=\'color:#475569;font-size:0.78rem;\'>Sin datos</span>"}'
+        f'</div>'
+        f'{moat_html}{pos_html}'
         f'</div>',
         unsafe_allow_html=True
     )
 
 
 def render_executive_summary(summary: str):
-    """Renderiza el resumen ejecutivo al inicio del informe."""
+    """Resumen ejecutivo completo al final del análisis."""
     if not summary:
         return
+    # Convertir saltos de línea en párrafos HTML
+    paragraphs = [p.strip() for p in summary.split("\n") if p.strip()]
+    html_body  = "".join(
+        f'<p style="margin:0 0 0.7rem 0;font-size:0.86rem;color:#e2e8f0;line-height:1.8;">{p}</p>'
+        for p in paragraphs
+    )
     st.markdown(
         '<div style="background:#0f172a;border:1px solid #1e3a5f;border-left:4px solid #38bdf8;'
-        'border-radius:8px;padding:1rem 1.2rem;margin-bottom:1rem;">'
-        '<div style="font-size:0.7rem;color:#38bdf8;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem;">'
-        '✨ Resumen ejecutivo · Gemini AI</div>'
-        f'<div style="font-size:0.86rem;color:#e2e8f0;line-height:1.8;">{summary}</div>'
+        'border-radius:8px;padding:1.1rem 1.3rem;margin-bottom:1rem;">'
+        '<div style="font-size:0.7rem;color:#38bdf8;text-transform:uppercase;'
+        'letter-spacing:0.1em;margin-bottom:0.7rem;">✨ Resumen ejecutivo · Gemini AI</div>'
+        f'{html_body}'
         '</div>',
         unsafe_allow_html=True
     )
 
 
 def render_qa_widget(ticker: str, company_name: str, y: dict, ev: dict):
-    """Renderiza el widget de Q&A interactivo."""
+    """
+    Widget Q&A. Usa st.form para evitar que los botones reinicien el análisis.
+    """
     st.markdown(
-        '<div class="section-header">✨ PREGUNTAS SOBRE ESTA EMPRESA · GEMINI AI</div>',
+        '<div class="section-header">✨ CONSULTA A GEMINI SOBRE ESTA EMPRESA</div>',
         unsafe_allow_html=True
     )
 
-    # Sugerencias rápidas
     suggestions = [
         f"¿Cuál es el mayor riesgo de invertir en {company_name} ahora mismo?",
         f"¿Por qué cotiza {ticker} con esa valoración respecto al sector?",
@@ -392,39 +433,43 @@ def render_qa_widget(ticker: str, company_name: str, y: dict, ev: dict):
     ]
 
     st.markdown(
-        '<div style="font-size:0.78rem;color:#64748b;margin-bottom:0.5rem;">Sugerencias:</div>',
+        '<div style="font-size:0.78rem;color:#64748b;margin-bottom:0.4rem;">'
+        'Preguntas sugeridas (cópiala en el campo de texto):</div>',
         unsafe_allow_html=True
     )
-    cols = st.columns(2)
-    for i, sug in enumerate(suggestions):
-        with cols[i % 2]:
-            if st.button(sug[:55] + "…" if len(sug) > 55 else sug,
-                         key=f"qa_sug_{i}",
-                         use_container_width=True):
-                st.session_state[f"qa_input_{ticker}"] = sug
-
-    question = st.text_input(
-        "Escribe tu pregunta",
-        value=st.session_state.get(f"qa_input_{ticker}", ""),
-        placeholder=f"Pregunta lo que quieras sobre {company_name}…",
-        key=f"qa_field_{ticker}",
-        label_visibility="collapsed",
+    # Mostrar sugerencias como texto, no como botones, para no disparar reruns
+    sug_html = "".join(
+        f'<div style="padding:0.3rem 0.5rem;margin-bottom:0.25rem;background:#0f172a;'
+        f'border:1px solid #1e2d45;border-radius:4px;font-size:0.78rem;color:#94a3b8;'
+        f'cursor:default;">{s}</div>'
+        for s in suggestions
     )
+    st.markdown(f'<div style="margin-bottom:0.6rem;">{sug_html}</div>',
+                unsafe_allow_html=True)
 
-    if st.button("Preguntar →", key=f"qa_btn_{ticker}"):
-        if question.strip():
-            with st.spinner("Gemini está analizando…"):
-                answer = answer_question(question, ticker, company_name, y, ev)
-            if answer:
-                st.markdown(
-                    '<div style="background:#111827;border:1px solid #1e2d45;border-left:3px solid #38bdf8;'
-                    'border-radius:6px;padding:0.8rem 1rem;margin-top:0.5rem;">'
-                    f'<div style="font-size:0.8rem;color:#64748b;margin-bottom:0.3rem;">Pregunta: {question}</div>'
-                    f'<div style="font-size:0.85rem;color:#e2e8f0;line-height:1.75;">{answer}</div>'
-                    '<div style="font-size:0.68rem;color:#334155;margin-top:0.4rem;">'
-                    'Generado por Gemini 2.5 Flash · Basado en datos de Yahoo Finance · No constituye asesoramiento financiero.</div>'
-                    '</div>',
-                    unsafe_allow_html=True
-                )
-        else:
-            st.warning("Escribe una pregunta primero.")
+    # Usar st.form para que el botón Enviar no provoque rerun completo de la app
+    with st.form(key=f"qa_form_{ticker}", clear_on_submit=False):
+        question = st.text_input(
+            "Tu pregunta",
+            placeholder=f"Escribe cualquier pregunta sobre {company_name}…",
+            label_visibility="collapsed",
+        )
+        submitted = st.form_submit_button("Preguntar a Gemini →")
+
+    if submitted and question.strip():
+        with st.spinner("Gemini está analizando…"):
+            answer = answer_question(question, ticker, company_name, y, ev)
+        st.markdown(
+            '<div style="background:#111827;border:1px solid #1e2d45;'
+            'border-left:3px solid #38bdf8;border-radius:6px;padding:0.85rem 1rem;margin-top:0.4rem;">'
+            f'<div style="font-size:0.75rem;color:#475569;margin-bottom:0.35rem;">'
+            f'Pregunta: {question}</div>'
+            f'<div style="font-size:0.85rem;color:#e2e8f0;line-height:1.75;">{answer}</div>'
+            '<div style="font-size:0.67rem;color:#334155;margin-top:0.4rem;">'
+            'Generado por Gemini 2.5 Flash · Basado en datos de Yahoo Finance · '
+            'No constituye asesoramiento financiero.</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
+    elif submitted:
+        st.warning("Escribe una pregunta primero.")
