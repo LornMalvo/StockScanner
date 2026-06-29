@@ -658,10 +658,26 @@ def render_company_description(company_info: dict, company_name: str):
         else:
             fcf_col = "#fca5a5"
             fcf_lbl = "FCF negativo — cuidado con la calidad del beneficio"
+        tip_fcf_q = (
+            'Calidad del beneficio = FCF / Beneficio Neto. '
+            'Mide cuánto del beneficio contable se convierte en caja real. '
+            'Valores: >0.9 = alta calidad (el beneficio es real y cobrable). '
+            '0.5-0.9 = calidad moderada. '
+            '<0.5 = calidad baja (ajustes contables inflan el beneficio). '
+            '<0 = FCF negativo (la empresa consume más caja de la que genera). '
+            'Un ratio persistentemente bajo puede indicar contabilidad agresiva.'
+        )
+        tip_html = (
+            f'<span title="{tip_fcf_q}" style="margin-left:0.3rem;cursor:help;'
+            f'font-size:0.6rem;color:#334155;border:1px solid #334155;'
+            f'border-radius:50%;padding:0 3px;font-family:monospace;'
+            f'vertical-align:middle;">?</span>'
+        )
         fcf_html = (
             f'<div style="margin-top:0.7rem;padding:0.5rem 0.7rem;background:#0f172a;border-radius:6px;'
             f'border-left:3px solid {fcf_col};">'
-            f'<span style="font-size:0.7rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;">Calidad del beneficio (FCF/Net Income)</span><br>'
+            f'<span style="font-size:0.7rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;">'
+            f'Calidad del beneficio (FCF/Net Income){tip_html}</span><br>'
             f'<span style="font-family:\'IBM Plex Mono\',monospace;color:{fcf_col};font-weight:700;">{fcf_q:.2f}×</span>'
             f'<span style="font-size:0.78rem;color:{fcf_col};margin-left:0.5rem;">{fcf_lbl}</span>'
             f'</div>'

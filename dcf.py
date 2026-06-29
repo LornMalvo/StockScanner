@@ -385,34 +385,69 @@ def render_dcf(dcf: dict | None, currency: str = "USD", fx_rate: float | None = 
     ke_pct   = wacc["ke"]   * 100
     kd_pct   = wacc["kd_after"] * 100
 
-    st.markdown(f"""
-    <div class="metric-card" style="border-left:3px solid #38bdf8;">
-      <div class="metric-label">PARÁMETROS DEL MODELO</div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.5rem;margin-top:0.5rem;">
-        <div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">
-          <div style="font-size:0.67rem;color:#64748b;">FCF base (TTM)</div>
-          <div style="font-family:'IBM Plex Mono',monospace;color:#f1f5f9;font-weight:600;font-size:0.9rem;">{fmt_big(fcf_base)}</div>
-        </div>
-        <div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">
-          <div style="font-size:0.67rem;color:#64748b;">WACC</div>
-          <div style="font-family:'IBM Plex Mono',monospace;color:#38bdf8;font-weight:600;font-size:0.9rem;">{wacc_pct:.2f}%</div>
-        </div>
-        <div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">
-          <div style="font-size:0.67rem;color:#64748b;">Rf (bono 10Y USA)</div>
-          <div style="font-family:'IBM Plex Mono',monospace;color:#f1f5f9;font-weight:600;font-size:0.9rem;">{rf:.2f}%</div>
-        </div>
-        <div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">
-          <div style="font-size:0.67rem;color:#64748b;">β · Ke · Kd(at)</div>
-          <div style="font-family:'IBM Plex Mono',monospace;color:#f1f5f9;font-weight:600;font-size:0.9rem;">{wacc["beta"]} · {ke_pct:.1f}% · {kd_pct:.1f}%</div>
-        </div>
-      </div>
-      <div style="font-size:0.7rem;color:#475569;margin-top:0.5rem;">
-        WACC = Ke×{wacc["e_weight"]*100:.0f}% + Kd(at)×{wacc["d_weight"]*100:.0f}% &nbsp;·&nbsp;
-        ERP = {wacc["erp"]*100:.1f}% (media histórica S&amp;P 500) &nbsp;·&nbsp;
-        g terminal = {g_t:.1f}% &nbsp;·&nbsp; Horizonte = {dcf["years"]} años
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+    def _tip(text: str) -> str:
+        """Genera icono ? con tooltip nativo (title=) compatible con tablas y cards."""
+        safe = text.replace('"', '&quot;')
+        return (
+            f'<span title="{safe}" style="margin-left:0.3rem;cursor:help;'
+            f'font-size:0.6rem;color:#334155;border:1px solid #334155;'
+            f'border-radius:50%;padding:0 3px;font-family:monospace;'
+            f'vertical-align:middle;">?</span>'
+        )
+
+    tip_fcf  = _tip(
+        "Free Cash Flow de los últimos 12 meses (TTM). "
+        "Es el dinero real generado por el negocio tras pagar gastos operativos e inversiones (capex). "
+        "Es la base del DCF: todo el modelo proyecta cómo crecerá este número en los próximos 10 años."
+    )
+    tip_wacc = _tip(
+        "Weighted Average Cost of Capital: coste medio ponderado del capital. "
+        "Es la tasa de descuento que aplicamos a los flujos futuros. "
+        "Combina el coste del capital propio (Ke) y el de la deuda (Kd) según su peso en la estructura financiera. "
+        "A mayor WACC, menor es el valor presente de los flujos futuros. "
+        "Rango habitual: 6-12%. >15% penaliza mucho la valoración."
+    )
+    tip_rf   = _tip(
+        "Tasa libre de riesgo: rendimiento del bono del Tesoro USA a 10 años, obtenido en tiempo real (^TNX). "
+        "Es la rentabilidad mínima exigida a cualquier inversión sin riesgo. "
+        "Cuando sube (tipos altos), el WACC sube y los valores DCF bajan, y viceversa. "
+        "Actualmente refleja el entorno de tipos vigente."
+    )
+    tip_beta = _tip(
+        "β (Beta): volatilidad de la acción respecto al mercado. Beta=1 se mueve igual que el índice, "
+        ">1 más volátil, <1 más estable. Afecta al Ke (coste del capital propio). "
+        "Ke = Rf + β × ERP, donde ERP (prima de riesgo) = 5.5% (media histórica S&P 500). "
+        "Kd(at) = coste de la deuda tras impuestos = Kd × (1 - tipo impositivo)."
+    )
+
+    st.markdown(
+        f'<div class="metric-card" style="border-left:3px solid #38bdf8;">'
+        f'<div class="metric-label">PARÁMETROS DEL MODELO</div>'
+        f'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.5rem;margin-top:0.5rem;">'
+        f'<div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">'
+        f'<div style="font-size:0.67rem;color:#64748b;">FCF base (TTM){tip_fcf}</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:600;font-size:0.9rem;">{fmt_big(fcf_base)}</div>'
+        f'</div>'
+        f'<div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">'
+        f'<div style="font-size:0.67rem;color:#64748b;">WACC{tip_wacc}</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#38bdf8;font-weight:600;font-size:0.9rem;">{wacc_pct:.2f}%</div>'
+        f'</div>'
+        f'<div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">'
+        f'<div style="font-size:0.67rem;color:#64748b;">Rf (bono 10Y USA){tip_rf}</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:600;font-size:0.9rem;">{rf:.2f}%</div>'
+        f'</div>'
+        f'<div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">'
+        f'<div style="font-size:0.67rem;color:#64748b;">β · Ke · Kd(at){tip_beta}</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:600;font-size:0.9rem;">{wacc["beta"]} · {ke_pct:.1f}% · {kd_pct:.1f}%</div>'
+        f'</div>'
+        f'</div>'
+        f'<div style="font-size:0.7rem;color:#475569;margin-top:0.5rem;">'
+        f'WACC = Ke×{wacc["e_weight"]*100:.0f}% + Kd(at)×{wacc["d_weight"]*100:.0f}% &nbsp;·&nbsp; '
+        f'ERP = {wacc["erp"]*100:.1f}% (media histórica S&amp;P 500) &nbsp;·&nbsp; '
+        f'g terminal = {g_t:.1f}% &nbsp;·&nbsp; Horizonte = {dcf["years"]} años'
+        f'</div></div>',
+        unsafe_allow_html=True
+    )
 
     # Tres escenarios
     scenario_labels = {
