@@ -19,8 +19,9 @@ from dcf import (
 from gemini_client import (
     is_available as gemini_available,
     identify_competitors, analyze_strengths_weaknesses,
-    generate_executive_summary,
-    render_ai_strengths_in_description, render_executive_summary, render_qa_widget,
+    analyze_earnings_with_ai, generate_executive_summary,
+    render_ai_strengths_in_description, render_ai_earnings_analysis,
+    render_executive_summary,
 )
 
 
@@ -725,7 +726,7 @@ def render_report(ticker, company_name, y: dict,
     ai_competitors = {}
     ai_strengths   = {}
     if gemini_available():
-        with st.spinner("✨ Gemini identificando competidores directos…"):
+        with st.spinner("Gemini identificando competidores..."):
             ai_competitors = identify_competitors(
                 ticker, company_name,
                 y.get("sector",""), y.get("industry",""),
@@ -736,7 +737,7 @@ def render_report(ticker, company_name, y: dict,
         if ai_tickers_early:
             peers_data_ai = fetch_peer_data(ai_tickers_early)
             if peers_data_ai:
-                with st.spinner("✨ Gemini analizando fortalezas y debilidades…"):
+                with st.spinner("Gemini analizando fortalezas y debilidades..."):
                     ai_strengths = analyze_strengths_weaknesses(
                         ticker, company_name, y,
                         peers_data_ai,
@@ -1104,9 +1105,15 @@ def render_report(ticker, company_name, y: dict,
     render_historical_multiples(mult_data)
 
     # ════════════════════════════════════════════════════════════════════
-    # ANÁLISIS DE ÚLTIMOS RESULTADOS
+    # ANALISIS DE ULTIMOS RESULTADOS
     # ════════════════════════════════════════════════════════════════════
     render_earnings_analysis(ea)
+
+    # Analisis cualitativo de resultados con IA
+    if gemini_available():
+        with st.spinner("Gemini analizando ultimos resultados..."):
+            ai_earnings = analyze_earnings_with_ai(ticker, company_name, y, ea)
+        render_ai_earnings_analysis(ai_earnings)
 
     # ════════════════════════════════════════════════════════════════════
     # SEÑAL DE ENTRADA
@@ -1175,19 +1182,13 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     if gemini_available():
         sq_data = calc_short_squeeze(y)
-        with st.spinner("✨ Gemini generando resumen ejecutivo…"):
+        with st.spinner("Gemini generando resumen ejecutivo..."):
             summary = generate_executive_summary(
                 ticker, company_name, y, ev, sq_data, tech,
                 ai_strengths,
                 ai_competitors.get("subsector", y.get("industry",""))
             )
         render_executive_summary(summary)
-
-    # ════════════════════════════════════════════════════════════════════
-    # Q&A INTERACTIVO CON IA
-    # ════════════════════════════════════════════════════════════════════
-    if gemini_available():
-        render_qa_widget(ticker, company_name, y, ev)
 
     st.caption(
         f"Datos: Yahoo Finance · {ticker} · USD/EUR: {fx_rate:.4f} · "
