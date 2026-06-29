@@ -13,9 +13,8 @@ from analysis import (
     calc_short_squeeze, render_short_squeeze,
 )
 from dcf import (
-    calc_dcf, fetch_risk_free_rate,
     fetch_historical_multiples,
-    render_dcf, render_historical_multiples,
+    render_historical_multiples,
 )
 
 
@@ -1030,13 +1029,10 @@ def render_report(ticker, company_name, y: dict,
     )
 
     # ════════════════════════════════════════════════════════════════════
-    # DCF — VALORACIÓN INTRÍNSECA
+    # HISTÓRICO DE MÚLTIPLOS PROPIOS
     # ════════════════════════════════════════════════════════════════════
-    with st.spinner("Calculando DCF y múltiplos históricos…"):
-        rf        = fetch_risk_free_rate()
-        dcf_data  = calc_dcf(y, rf)
+    with st.spinner("Calculando múltiplos históricos…"):
         mult_data = fetch_historical_multiples(ticker, y)
-    render_dcf(dcf_data, currency_y, fx_rate)
     render_historical_multiples(mult_data)
 
     # ════════════════════════════════════════════════════════════════════
