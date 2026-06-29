@@ -266,6 +266,34 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
                         net_income_q.append({"date": str(date)[:10], "value": val})
                     break
 
+        # ── EPS trimestral ────────────────────────────────────────────────
+        eps_q = []
+        try:
+            qe = t.quarterly_earnings
+            if qe is not None and not qe.empty:
+                for idx, row in qe.iterrows():
+                    eps_val = row.get("Earnings") if "Earnings" in row else None
+                    if eps_val is None:
+                        eps_val = row.iloc[0] if len(row) > 0 else None
+                    date_str = str(idx)[:10] if idx else ""
+                    if eps_val is not None and date_str:
+                        eps_q.append({"date": date_str, "value": float(eps_val)})
+            # Fallback: Basic EPS desde quarterly_income_stmt
+            if not eps_q and income_stmt is not None and not income_stmt.empty:
+                for label in ["Basic EPS", "Diluted EPS", "EPS"]:
+                    if label in income_stmt.index:
+                        eps_row = income_stmt.loc[label]
+                        for i, (date, val) in enumerate(eps_row.items()):
+                            if i >= 4: break
+                            if val is not None:
+                                import math
+                                if not math.isnan(float(val)):
+                                    eps_q.append({"date": str(date)[:10], "value": float(val)})
+                        if eps_q:
+                            break
+        except Exception:
+            eps_q = []
+
         ttm_revenue    = sum(q["value"] for q in ttm_quarters if q["value"] == q["value"])
         ttm_net_income = sum(q["value"] for q in net_income_q if q["value"] == q["value"])
 
@@ -357,6 +385,7 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
             "ttm_revenue":     ttm_revenue,
             "ttm_net_income":  ttm_net_income,
             "net_income_q":    net_income_q,
+            "eps_q":           eps_q,
             "ebitda":          info.get("ebitda"),
 
             # ── Metadatos de fiabilidad ───────────────────────────────────

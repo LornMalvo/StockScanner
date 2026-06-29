@@ -493,75 +493,65 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
 
 def calc_trend(y: dict | None) -> dict | None:
     """
-    Analiza la tendencia trimestral de ingresos y beneficio neto.
-    Usa ttm_quarters y net_income_q de Yahoo Finance.
-    Calcula variación QoQ (trimestre vs trimestre anterior del año pasado)
-    para evitar estacionalidad — compara Q1-2025 vs Q1-2024, etc.
+    Prepara los datos para el apartado de TENDENCIA Y EVOLUCIÓN TRIMESTRAL.
+    Muestra los valores ABSOLUTOS de Revenue y EPS de los últimos 4 trimestres
+    (no variaciones YoY) para ver la trayectoria real trimestre a trimestre.
     """
     if not y:
         return None
 
     rev_q = y.get("ttm_quarters", []) or []
-    ni_q  = y.get("net_income_q",  []) or []
+    eps_q = y.get("eps_q",         []) or []
 
-    # Necesitamos al menos 2 puntos para calcular variación
     if len(rev_q) < 2:
         return None
 
-    # Ordenar de más antiguo a más reciente
-    rev_sorted = sorted(rev_q, key=lambda x: x.get("date",""))
-    ni_sorted  = sorted(ni_q,  key=lambda x: x.get("date","")) if ni_q else []
+    # Ordenar de más antiguo a más reciente y tomar últimos 4
+    rev_sorted = sorted(rev_q, key=lambda x: x.get("date",""))[-4:]
+    eps_sorted = sorted(eps_q, key=lambda x: x.get("date",""))[-4:] if eps_q else []
 
-    def qoq(series):
-        """Variación trimestral: cada Q vs el Q anterior disponible."""
+    # Calcular variación QoQ (para el semáforo de señal)
+    def qoq_pct(series):
         out = []
         for i in range(1, len(series)):
             prev = series[i-1].get("value") or 0
-            curr = series[i].get("value")   or 0
+            curr = series[i].get("value") or 0
             if prev and prev != 0:
-                pct = (curr - prev) / abs(prev) * 100
-                # Usar solo el mes/año del trimestre como etiqueta
-                date_lbl = series[i].get("date","")[:7]  # YYYY-MM
-                out.append({
-                    "date":  date_lbl,
-                    "value": curr,
-                    "prev":  prev,
-                    "pct":   round(pct, 1),
-                })
+                out.append(round((curr - prev) / abs(prev) * 100, 1))
         return out
 
-    rev_ch = qoq(rev_sorted)
-    ni_ch  = qoq(ni_sorted)
+    rev_changes = qoq_pct(rev_sorted)
+    eps_changes = qoq_pct(eps_sorted)
 
-    if not rev_ch:
-        return None
-
-    def streak(changes):
-        if not changes: return 0, 0
-        up    = sum(1 for c in changes if c["pct"] > 0)
-        racha = 0
+    # Señal global basada en la tendencia reciente
+    def streak_up(changes):
+        if not changes: return 0
+        s = 0
         for c in reversed(changes):
-            if c["pct"] > 0: racha += 1
+            if c > 0: s += 1
             else: break
-        return up, racha
+        return s
 
-    rev_up, rev_s = streak(rev_ch)
-    ni_up,  ni_s  = streak(ni_ch)
-    total = len(rev_ch)
+    rev_streak = streak_up(rev_changes)
+    eps_streak = streak_up(eps_changes)
 
-    if rev_s >= 2 and ni_s >= 2:   sig = ("ACELERACIÓN",  "#6ee7b7")
-    elif rev_s >= 1 or ni_s >= 1:  sig = ("MEJORANDO",    "#86efac")
-    elif rev_up > total // 2:       sig = ("ESTABLE",      "#fbbf24")
-    else:                           sig = ("DETERIORANDO", "#fca5a5")
+    if rev_streak >= 2 and eps_streak >= 2:   sig = ("ACELERACIÓN",  "#6ee7b7")
+    elif rev_streak >= 1 or eps_streak >= 1:  sig = ("MEJORANDO",    "#86efac")
+    elif sum(1 for c in rev_changes if c > 0) >= len(rev_changes) // 2:
+        sig = ("ESTABLE", "#fbbf24")
+    else:
+        sig = ("DETERIORANDO", "#fca5a5")
 
     return {
-        "rev_changes":  rev_ch,
-        "ni_changes":   ni_ch,
-        "rev_streak":   rev_s,
-        "ni_streak":    ni_s,
-        "trend_signal": sig,
-        "total_q":      total,
-        "source":       "Yahoo Finance (trimestral)",
+        "rev_quarters":  rev_sorted,
+        "eps_quarters":  eps_sorted,
+        "rev_changes":   rev_changes,
+        "eps_changes":   eps_changes,
+        "rev_streak":    rev_streak,
+        "eps_streak":    eps_streak,
+        "trend_signal":  sig,
+        "total_q":       len(rev_sorted),
+        "source":        "Yahoo Finance (trimestral)",
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -911,58 +901,141 @@ def render_entry_signal(signal: dict):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
-    """Renderiza la tendencia de ingresos usando datos de Yahoo Finance TTM."""
-    st.markdown('<div class="section-header">I · TENDENCIA TRIMESTRAL</div>', unsafe_allow_html=True)
+    """
+    Renderiza TENDENCIA Y EVOLUCIÓN TRIMESTRAL.
+    Muestra barras con valores absolutos de Revenue y EPS por trimestre,
+    coloreando cada barra según si sube o baja respecto al trimestre anterior.
+    """
+    st.markdown(
+        '<div class="section-header">I · TENDENCIA Y EVOLUCIÓN TRIMESTRAL</div>',
+        unsafe_allow_html=True
+    )
 
-    if not trend and not yahoo_quarters:
-        st.markdown('<div class="metric-card"><span style="color:#64748b;">Datos insuficientes para calcular tendencia.</span></div>', unsafe_allow_html=True)
+    if not trend:
+        st.markdown(
+            '<div class="metric-card"><span style="color:#64748b;">'
+            'Datos insuficientes para calcular tendencia trimestral.</span></div>',
+            unsafe_allow_html=True
+        )
         return
 
     sig_label, sig_color = trend["trend_signal"]
-    rev_ch = trend.get("rev_changes", [])
-    ni_ch  = trend.get("ni_changes",  [])
+    rev_q = trend.get("rev_quarters", [])
+    eps_q = trend.get("eps_quarters", [])
 
-    def bar_html(changes, label, c_pos="#6ee7b7", c_neg="#fca5a5"):
-        if not changes: return ""
-        max_abs = max(abs(c["pct"]) for c in changes) or 1
+    def fmt_val(v, is_eps=False):
+        """Formatea valores para etiquetas de barra."""
+        if v is None: return "—"
+        if is_eps:
+            return f"${v:.2f}"
+        v = float(v)
+        if abs(v) >= 1e12: return f"${v/1e12:.2f}T"
+        if abs(v) >= 1e9:  return f"${v/1e9:.1f}B"
+        if abs(v) >= 1e6:  return f"${v/1e6:.0f}M"
+        return f"${v:,.0f}"
+
+    def abs_bars(quarters: list, label: str, is_eps: bool = False,
+                 c_up: str = "#6ee7b7", c_down: str = "#fca5a5",
+                 c_neutral: str = "#38bdf8") -> str:
+        """
+        Genera barras verticales con valores absolutos.
+        La altura es proporcional al valor. El color indica si subió/bajó vs trimestre anterior.
+        """
+        if not quarters:
+            return ""
+
+        values = [q.get("value") for q in quarters]
+        # Filtrar None y calcular max para escala
+        valid = [abs(v) for v in values if v is not None]
+        if not valid:
+            return ""
+        max_v = max(valid) or 1
+
         bars = ""
-        for c in changes:
-            pct  = c["pct"]
-            h    = min(abs(pct) / max_abs * 70, 70)
-            col  = c_pos if pct >= 0 else c_neg
-            sign = "+" if pct >= 0 else ""
+        for i, q in enumerate(quarters):
+            v    = q.get("value")
+            date = q.get("date","")[:7]
+            if v is None:
+                bars += (
+                    '<div style="display:flex;flex-direction:column;align-items:center;'
+                    'gap:0.15rem;flex:1;">'
+                    '<div style="font-size:0.68rem;color:#374151;">—</div>'
+                    '<div style="height:80px;"></div>'
+                    f'<div style="font-size:0.62rem;color:#64748b;">{date}</div>'
+                    '</div>'
+                )
+                continue
+
+            h   = max(int(abs(v) / max_v * 80), 4)
+            # Color: verde si sube vs anterior, rojo si baja, azul para el primero
+            if i == 0:
+                col = c_neutral
+            elif values[i-1] is not None:
+                col = c_up if v >= values[i-1] else c_down
+            else:
+                col = c_neutral
+
+            # Mostrar variación QoQ como texto pequeño sobre la barra
+            qoq_str = ""
+            if i > 0 and values[i-1] is not None and values[i-1] != 0:
+                qoq = (v - values[i-1]) / abs(values[i-1]) * 100
+                sign = "+" if qoq >= 0 else ""
+                qoq_str = f'<div style="font-size:0.6rem;color:{col};margin-bottom:0.1rem;">{sign}{qoq:.0f}%</div>'
+
             bars += (
-                '<div style="display:flex;flex-direction:column;align-items:center;gap:0.15rem;flex:1;">' +
-                f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.68rem;color:{col};font-weight:600;">{sign}{pct:.0f}%</div>' +
-                '<div style="height:70px;display:flex;align-items:flex-end;width:100%;">' +
-                f'<div style="width:100%;height:{h}px;background:{col};border-radius:3px 3px 0 0;min-height:3px;"></div>' +
-                '</div>' +
-                f'<div style="font-size:0.65rem;color:#64748b;white-space:nowrap;">{c["date"]}</div>' +
+                '<div style="display:flex;flex-direction:column;align-items:center;'
+                'gap:0.1rem;flex:1;">'
+                f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.68rem;'
+                f'color:{col};font-weight:600;">{fmt_val(v, is_eps)}</div>'
+                f'{qoq_str}'
+                '<div style="height:80px;display:flex;align-items:flex-end;width:100%;">'
+                f'<div style="width:100%;height:{h}px;background:{col};'
+                f'border-radius:3px 3px 0 0;min-height:4px;"></div>'
+                '</div>'
+                f'<div style="font-size:0.62rem;color:#64748b;white-space:nowrap;">{date}</div>'
                 '</div>'
             )
+
         return (
-            f'<div style="font-size:0.7rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.3rem;">{label}</div>' +
-            '<div style="display:flex;gap:0.25rem;align-items:flex-end;padding-bottom:1.2rem;margin-bottom:0.8rem;">' +
+            f'<div style="font-size:0.7rem;color:#94a3b8;text-transform:uppercase;'
+            f'letter-spacing:0.08em;margin-bottom:0.4rem;">{label}</div>'
+            '<div style="display:flex;gap:0.4rem;align-items:flex-end;'
+            'padding-bottom:1rem;margin-bottom:0.6rem;border-bottom:1px solid #1a2540;">'
             f'{bars}</div>'
         )
 
-    rev_bars = bar_html(rev_ch, "🟡 Crecimiento YoY — Revenue (Yahoo)")
-    ni_bars  = bar_html(ni_ch,  "🟡 Crecimiento YoY — Beneficio Neto (Yahoo)")
+    rev_bars = abs_bars(rev_q, "🟡 Revenue por trimestre (Yahoo Finance)")
+    eps_bars = abs_bars(eps_q, "🟡 EPS por trimestre (Yahoo Finance)", is_eps=True)
 
     header = (
-        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">' +
-        '<div>' +
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1rem;font-weight:700;color:{sig_color};">{sig_label}</div>' +
-        f'<div style="font-size:0.76rem;color:#64748b;margin-top:0.2rem;">' +
-        f'Racha alcista: ingresos {trend["rev_streak"]}Q · beneficio {trend["ni_streak"]}Q consecutivos</div>' +
-        '</div>' +
-        f'<div style="text-align:right;"><div style="font-size:0.7rem;color:#64748b;">Trimestres</div>' +
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.2rem;color:#f1f5f9;font-weight:600;">{trend["total_q"]}</div>' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;'
+        'margin-bottom:1rem;">'
+        '<div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1rem;'
+        f'font-weight:700;color:{sig_color};">{sig_label}</div>'
+        f'<div style="font-size:0.76rem;color:#64748b;margin-top:0.2rem;">'
+        f'Trimestres en alza: Revenue {trend["rev_streak"]}Q · EPS {trend["eps_streak"]}Q consecutivos</div>'
+        '</div>'
+        f'<div style="text-align:right;">'
+        f'<div style="font-size:0.7rem;color:#64748b;">Trimestres</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.2rem;'
+        f'color:#f1f5f9;font-weight:600;">{trend["total_q"]}</div>'
         '</div></div>'
     )
-    source_note = '<div style="font-size:0.7rem;color:#475569;margin-top:0.3rem;">Fuente: Yahoo Finance · Variaciones QoQ (trimestre sobre trimestre anterior)</div>'
-    content = header + rev_bars + ni_bars + source_note
+    legend = (
+        '<div style="font-size:0.68rem;color:#475569;margin-top:0.2rem;">'
+        '<span style="color:#6ee7b7;">■</span> Sube vs trimestre anterior &nbsp;'
+        '<span style="color:#fca5a5;">■</span> Baja vs trimestre anterior &nbsp;'
+        '<span style="color:#38bdf8;">■</span> Primer dato disponible &nbsp;·&nbsp;'
+        'El % sobre cada barra indica la variación QoQ</div>'
+    )
 
+    no_eps_note = (
+        '<div style="font-size:0.75rem;color:#64748b;padding:0.4rem 0;">'
+        'EPS trimestral no disponible para este ticker en Yahoo Finance.</div>'
+    ) if not eps_q else ""
+
+    content = header + rev_bars + (eps_bars or no_eps_note) + legend
     st.markdown(f'<div class="metric-card">{content}</div>', unsafe_allow_html=True)
 
 
