@@ -491,31 +491,50 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
 # TENDENCIA TRIMESTRAL
 # ─────────────────────────────────────────────────────────────────────────────
 
-def calc_trend(fmp: dict | None) -> dict | None:
+def calc_trend(y: dict | None) -> dict | None:
     """
-    Analiza la tendencia de ingresos y beneficio neto año a año.
-    Usa el historial anual de FMP (income statement 10-K).
+    Analiza la tendencia trimestral de ingresos y beneficio neto.
+    Usa ttm_quarters y net_income_q de Yahoo Finance.
+    Calcula variación QoQ (trimestre vs trimestre anterior del año pasado)
+    para evitar estacionalidad — compara Q1-2025 vs Q1-2024, etc.
     """
-    if not fmp:
-        return None
-    income  = fmp.get("income") or {}
-    history = income.get("history", [])
-    if len(history) < 2:
+    if not y:
         return None
 
-    def yoy(key):
+    rev_q = y.get("ttm_quarters", []) or []
+    ni_q  = y.get("net_income_q",  []) or []
+
+    # Necesitamos al menos 2 puntos para calcular variación
+    if len(rev_q) < 2:
+        return None
+
+    # Ordenar de más antiguo a más reciente
+    rev_sorted = sorted(rev_q, key=lambda x: x.get("date",""))
+    ni_sorted  = sorted(ni_q,  key=lambda x: x.get("date","")) if ni_q else []
+
+    def qoq(series):
+        """Variación trimestral: cada Q vs el Q anterior disponible."""
         out = []
-        for i in range(1, len(history)):
-            prev = history[i-1].get(key) or 0
-            curr = history[i].get(key) or 0
+        for i in range(1, len(series)):
+            prev = series[i-1].get("value") or 0
+            curr = series[i].get("value")   or 0
             if prev and prev != 0:
                 pct = (curr - prev) / abs(prev) * 100
-                out.append({"date":  history[i].get("fiscal_year", history[i].get("date","")[:4]),
-                            "value": curr, "prev": prev, "pct": round(pct, 1)})
+                # Usar solo el mes/año del trimestre como etiqueta
+                date_lbl = series[i].get("date","")[:7]  # YYYY-MM
+                out.append({
+                    "date":  date_lbl,
+                    "value": curr,
+                    "prev":  prev,
+                    "pct":   round(pct, 1),
+                })
         return out
 
-    rev_ch = yoy("revenue")
-    ni_ch  = yoy("net_income")
+    rev_ch = qoq(rev_sorted)
+    ni_ch  = qoq(ni_sorted)
+
+    if not rev_ch:
+        return None
 
     def streak(changes):
         if not changes: return 0, 0
@@ -530,15 +549,20 @@ def calc_trend(fmp: dict | None) -> dict | None:
     ni_up,  ni_s  = streak(ni_ch)
     total = len(rev_ch)
 
-    if rev_s >= 3 and ni_s >= 3:   sig = ("ACELERACIÓN", "#6ee7b7")
-    elif rev_s >= 2 or ni_s >= 2:  sig = ("MEJORANDO",   "#86efac")
-    elif rev_up > total // 2:       sig = ("ESTABLE",     "#fbbf24")
-    else:                           sig = ("DETERIORANDO","#fca5a5")
+    if rev_s >= 2 and ni_s >= 2:   sig = ("ACELERACIÓN",  "#6ee7b7")
+    elif rev_s >= 1 or ni_s >= 1:  sig = ("MEJORANDO",    "#86efac")
+    elif rev_up > total // 2:       sig = ("ESTABLE",      "#fbbf24")
+    else:                           sig = ("DETERIORANDO", "#fca5a5")
 
-    return {"rev_changes": rev_ch, "ni_changes": ni_ch,
-            "rev_streak": rev_s, "ni_streak": ni_s,
-            "trend_signal": sig, "total_q": total,
-            "source": "FMP Income Statement anual (10-K)"}
+    return {
+        "rev_changes":  rev_ch,
+        "ni_changes":   ni_ch,
+        "rev_streak":   rev_s,
+        "ni_streak":    ni_s,
+        "trend_signal": sig,
+        "total_q":      total,
+        "source":       "Yahoo Finance (trimestral)",
+    }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ÚLTIMO CRUCE MM50/MM200
@@ -914,13 +938,13 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
         '<div>' +
         f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1rem;font-weight:700;color:{sig_color};">{sig_label}</div>' +
         f'<div style="font-size:0.76rem;color:#64748b;margin-top:0.2rem;">' +
-        f'Racha alcista: ingresos {trend["rev_streak"]}Y · beneficio {trend["ni_streak"]}Y consecutivos</div>' +
+        f'Racha alcista: ingresos {trend["rev_streak"]}Q · beneficio {trend["ni_streak"]}Q consecutivos</div>' +
         '</div>' +
-        f'<div style="text-align:right;"><div style="font-size:0.7rem;color:#64748b;">Años analizados</div>' +
+        f'<div style="text-align:right;"><div style="font-size:0.7rem;color:#64748b;">Trimestres</div>' +
         f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.2rem;color:#f1f5f9;font-weight:600;">{trend["total_q"]}</div>' +
         '</div></div>'
     )
-    source_note = '<div style="font-size:0.7rem;color:#475569;margin-top:0.3rem;">Fuente: Yahoo Finance · Variaciones año sobre año</div>'
+    source_note = '<div style="font-size:0.7rem;color:#475569;margin-top:0.3rem;">Fuente: Yahoo Finance · Variaciones QoQ (trimestre sobre trimestre anterior)</div>'
     content = header + rev_bars + ni_bars + source_note
 
     st.markdown(f'<div class="metric-card">{content}</div>', unsafe_allow_html=True)
@@ -989,14 +1013,17 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
     hs = "padding:0.4rem 0.5rem;font-size:0.68rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;text-align:right;border-bottom:1px solid #1e2d45;"
 
     # Tooltips en cabeceras de columna
+    # IMPORTANTE: dentro de tablas los tooltips necesitan position:fixed
+    # para escapar del contexto de overflow:hidden del contenedor
     def th(label, tip, align="right"):
         tip_safe = tip.replace('"','&quot;')
         return (
             f'<th style="{hs}text-align:{align};">'
             f'{label}'
-            f'<span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;">'
-            f'<span style="font-size:0.6rem;color:#1e3a5f;border:1px solid #1e3a5f;border-radius:50%;padding:0 3px;">?</span>'
-            f'<span class="tooltip-box">{tip_safe}</span>'
+            f'<span style="margin-left:0.3rem;position:relative;cursor:help;display:inline-block;">'
+            f'<span style="font-size:0.6rem;color:#1e3a5f;border:1px solid #1e3a5f;'
+            f'border-radius:50%;padding:0 3px;font-family:\'IBM Plex Mono\',monospace;" '
+            f'title="{tip_safe}">?</span>'
             f'</span></th>'
         )
 

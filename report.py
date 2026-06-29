@@ -11,6 +11,11 @@ from analysis import (
     fetch_last_cross_date, render_company_description, render_news,
     render_earnings_analysis, get_sector_benchmarks,
 )
+from dcf import (
+    calc_dcf, fetch_risk_free_rate,
+    fetch_historical_multiples,
+    render_dcf, render_historical_multiples,
+)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -1018,6 +1023,16 @@ def render_report(ticker, company_name, y: dict,
     )
 
     # ════════════════════════════════════════════════════════════════════
+    # DCF — VALORACIÓN INTRÍNSECA
+    # ════════════════════════════════════════════════════════════════════
+    with st.spinner("Calculando DCF y múltiplos históricos…"):
+        rf        = fetch_risk_free_rate()
+        dcf_data  = calc_dcf(y, rf)
+        mult_data = fetch_historical_multiples(ticker, y)
+    render_dcf(dcf_data, currency_y, fx_rate)
+    render_historical_multiples(mult_data)
+
+    # ════════════════════════════════════════════════════════════════════
     # ANÁLISIS DE ÚLTIMOS RESULTADOS
     # ════════════════════════════════════════════════════════════════════
     render_earnings_analysis(ea)
@@ -1031,19 +1046,18 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     # TENDENCIA TRIMESTRAL
     # ════════════════════════════════════════════════════════════════════
-    trend = calc_trend(None)
+    trend = calc_trend(y)
     render_trend(trend)
 
     # ════════════════════════════════════════════════════════════════════
-    # COMPARATIVA CON COMPETIDORES
+    # COMPARATIVA FRENTE A COMPETENCIA
     # ════════════════════════════════════════════════════════════════════
     with st.spinner("Cargando datos de competidores…"):
         peers_tickers = get_peers(ticker, y.get("sector",""), y.get("company_name",""))
         peers_data    = fetch_peer_data(peers_tickers)
     render_peers(ticker, y, peers_data, fx_rate, ev)
 
-    sec_label = "Yahoo Finance"
     st.caption(
-        f"Datos: {sec_label} · {ticker} · USD/EUR: {fx_rate:.4f} · "
+        f"Datos: Yahoo Finance · {ticker} · USD/EUR: {fx_rate:.4f} · "
         f"Sector: {ev['sector_label']} · No constituye asesoramiento financiero."
     )
