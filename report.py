@@ -10,7 +10,6 @@ from analysis import (
     fetch_company_description, fetch_recent_news, fetch_earnings_analysis,
     fetch_last_cross_date, render_company_description, render_news,
     render_earnings_analysis, get_sector_benchmarks,
-    translate_description_to_spanish,
 )
 
 

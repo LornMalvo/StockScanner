@@ -130,67 +130,6 @@ def fetch_company_description(ticker: str) -> dict:
         return {}
 
 
-def translate_description_to_spanish(description: str) -> str:
-    """
-    Traduce la descripción al castellano usando la API de Claude.
-    La API key se lee de st.secrets["ANTHROPIC_API_KEY"] o la variable
-    de entorno ANTHROPIC_API_KEY.
-    """
-    if not description or len(description) < 20:
-        return description
-
-    # Obtener API key
-    api_key = None
-    try:
-        import streamlit as st
-        api_key = st.secrets.get("ANTHROPIC_API_KEY", None)
-    except Exception:
-        pass
-    if not api_key:
-        import os
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-
-    if not api_key:
-        print("[Translate] Sin API key — mostrando descripción en inglés")
-        return description
-
-    try:
-        import requests as req
-        resp = req.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "Content-Type":      "application/json",
-                "x-api-key":         api_key,
-                "anthropic-version": "2023-06-01",
-            },
-            json={
-                "model":      "claude-haiku-4-5-20251001",   # rápido y barato para traducciones
-                "max_tokens": 1000,
-                "messages": [{
-                    "role":    "user",
-                    "content": (
-                        "Traduce el siguiente texto empresarial al castellano de forma natural "
-                        "y profesional. Devuelve ÚNICAMENTE la traducción, sin explicaciones, "
-                        "sin comillas, sin encabezados:\n\n"
-                        + description[:1400]
-                    )
-                }]
-            },
-            timeout=25
-        )
-        if resp.status_code == 200:
-            blocks = resp.json().get("content", [])
-            text   = " ".join(b.get("text","") for b in blocks if b.get("type") == "text").strip()
-            if text:
-                return text
-        else:
-            print(f"[Translate] HTTP {resp.status_code}: {resp.text[:200]}")
-    except Exception as e:
-        print(f"[Translate] Error: {e}")
-
-    return description  # fallback en inglés si algo falla
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # NOTICIAS RECIENTES  — compatible con yfinance >= 0.2.40
 # ─────────────────────────────────────────────────────────────────────────────
@@ -601,19 +540,14 @@ def render_company_description(company_info: dict, company_name: str):
         st.markdown('<div class="metric-card"><span style="color:#64748b;">Descripción no disponible.</span></div>', unsafe_allow_html=True)
         return
 
-    desc_raw  = company_info.get("description","")
+    desc      = company_info.get("description","")
     industry  = company_info.get("industry","")
     country   = company_info.get("country","")
     employees = company_info.get("employees")
     website   = company_info.get("website","")
     emp_str   = f"{employees:,}" if employees else "N/A"
     web_html  = f'<a href="{website}" target="_blank" style="color:#38bdf8;">{website}</a>' if website else "N/A"
-
-    # Traducir al castellano
-    with st.spinner("Traduciendo descripción al castellano…"):
-        desc = translate_description_to_spanish(desc_raw)
-
-    desc_short = desc if len(desc) <= 800 else desc[:800] + "…"
+    desc_short = desc if len(desc) <= 900 else desc[:900] + "…"
 
     tags = ""
     if industry:  tags += f'<span style="background:#1e2d45;color:#94a3b8;padding:2px 9px;border-radius:4px;font-size:0.75rem;margin-right:0.4rem;">{industry}</span>'
