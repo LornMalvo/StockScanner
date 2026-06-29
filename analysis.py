@@ -110,6 +110,10 @@ def get_peers(ticker: str, sector: str, company_name: str) -> list:
 # DESCRIPCIÓN DE LA EMPRESA
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DESCRIPCIÓN DE LA EMPRESA (con traducción al castellano vía Claude API)
+# ─────────────────────────────────────────────────────────────────────────────
+
 def fetch_company_description(ticker: str) -> dict:
     try:
         t    = yf.Ticker(ticker)
@@ -125,31 +129,153 @@ def fetch_company_description(ticker: str) -> dict:
     except Exception:
         return {}
 
+
+def translate_description_to_spanish(description: str) -> str:
+    """Traduce la descripción de la empresa al castellano usando la API de Claude."""
+    if not description or len(description) < 20:
+        return description
+    try:
+        import requests as req
+        resp = req.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"Content-Type": "application/json"},
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 800,
+                "messages": [{
+                    "role": "user",
+                    "content": (
+                        f"Traduce este texto al castellano de forma natural y profesional. "
+                        f"Devuelve SOLO la traducción, sin explicaciones ni comillas:\n\n{description[:1200]}"
+                    )
+                }]
+            },
+            timeout=20
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            blocks = data.get("content", [])
+            text = " ".join(b.get("text","") for b in blocks if b.get("type") == "text").strip()
+            if text:
+                return text
+    except Exception as e:
+        print(f"[Translate] Error: {e}")
+    return description  # fallback: texto original en inglés
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# NOTICIAS RECIENTES
+# NOTICIAS RECIENTES  — compatible con yfinance >= 0.2.40
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _extract_news_url(item: dict) -> str:
+    """Extrae la URL de una noticia independientemente de la versión de yfinance."""
+    # yfinance >= 0.2.40: estructura anidada en 'content'
+    content = item.get("content", {})
+    if content:
+        # canonicalUrl es el más fiable
+        canon = content.get("canonicalUrl", {})
+        if isinstance(canon, dict):
+            url = canon.get("url", "")
+            if url:
+                return url
+        # clickThroughUrl como alternativa
+        click = content.get("clickThroughUrl", {})
+        if isinstance(click, dict):
+            url = click.get("url", "")
+            if url:
+                return url
+    # Versiones antiguas
+    return item.get("link","") or item.get("url","") or ""
+
+
+def _extract_news_title(item: dict) -> str:
+    """Extrae el título de una noticia."""
+    content = item.get("content", {})
+    if content:
+        return content.get("title","") or item.get("title","")
+    return item.get("title","")
+
+
+def _extract_news_publisher(item: dict) -> str:
+    """Extrae el publisher de una noticia."""
+    content = item.get("content", {})
+    if content:
+        provider = content.get("provider", {})
+        if isinstance(provider, dict):
+            return provider.get("displayName","") or provider.get("name","")
+    return item.get("publisher","") or item.get("source","")
+
+
+def _extract_news_timestamp(item: dict) -> int:
+    """Extrae el timestamp de publicación."""
+    content = item.get("content", {})
+    if content:
+        pub_date = content.get("pubDate","") or content.get("publishedAt","")
+        if pub_date:
+            try:
+                from datetime import datetime, timezone
+                # Formato ISO: "2024-01-15T10:30:00Z"
+                dt = datetime.fromisoformat(pub_date.replace("Z","+00:00"))
+                return int(dt.timestamp())
+            except Exception:
+                pass
+    # Versiones antiguas: timestamp unix directo
+    return item.get("providerPublishTime", 0) or item.get("publishTime", 0) or 0
+
+
 def fetch_recent_news(ticker: str, max_items: int = 8) -> list:
+    """
+    Obtiene noticias recientes de yfinance.
+    Compatible con versiones antiguas y nuevas de la API.
+    """
     try:
-        t      = yf.Ticker(ticker)
-        news   = t.news or []
+        t    = yf.Ticker(ticker)
+        raw  = t.news or []
+
+        if not raw:
+            print(f"[News] Sin noticias para {ticker}")
+            return []
+
+        print(f"[News] {ticker}: {len(raw)} noticias raw, keys ejemplo: {list(raw[0].keys()) if raw else []}")
+
         now    = datetime.now(timezone.utc).timestamp()
-        cutoff = now - (90 * 24 * 3600)
+        cutoff = now - (90 * 24 * 3600)  # 90 días
         items  = []
-        for n in news:
-            ts = n.get("providerPublishTime") or n.get("publishTime") or 0
-            if ts < cutoff:
+
+        for n in raw:
+            ts        = _extract_news_timestamp(n)
+            title     = _extract_news_title(n)
+            url       = _extract_news_url(n)
+            publisher = _extract_news_publisher(n)
+
+            if not title:
                 continue
+            # Si no hay timestamp fiable, incluir igualmente (últimas noticias)
+            if ts and ts < cutoff:
+                continue
+
+            date_str = ""
+            if ts:
+                try:
+                    date_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+                except Exception:
+                    date_str = ""
+
             items.append({
-                "title":     n.get("title",""),
-                "publisher": n.get("publisher",""),
-                "url":       n.get("link","") or n.get("url",""),
-                "ts":        ts,
-                "date":      datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d"),
+                "title":     title[:150],
+                "publisher": publisher,
+                "url":       url,
+                "ts":        ts or 0,
+                "date":      date_str,
             })
+
         items.sort(key=lambda x: x["ts"], reverse=True)
-        return items[:max_items]
-    except Exception:
+        result = items[:max_items]
+        print(f"[News] {ticker}: {len(result)} noticias válidas tras filtrado")
+        return result
+
+    except Exception as e:
+        print(f"[News] Error para {ticker}: {e}")
         return []
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -441,19 +567,24 @@ def fetch_peer_data(peers: list) -> list:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_company_description(company_info: dict, company_name: str):
-    st.markdown('<div class="section-header">DESCRIPCIÓN DE LA EMPRESA</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">B · DESCRIPCIÓN DE LA EMPRESA</div>', unsafe_allow_html=True)
     if not company_info or not company_info.get("description"):
         st.markdown('<div class="metric-card"><span style="color:#64748b;">Descripción no disponible.</span></div>', unsafe_allow_html=True)
         return
 
-    desc      = company_info.get("description","")
+    desc_raw  = company_info.get("description","")
     industry  = company_info.get("industry","")
     country   = company_info.get("country","")
     employees = company_info.get("employees")
     website   = company_info.get("website","")
     emp_str   = f"{employees:,}" if employees else "N/A"
     web_html  = f'<a href="{website}" target="_blank" style="color:#38bdf8;">{website}</a>' if website else "N/A"
-    desc_short= desc if len(desc) <= 700 else desc[:700] + "…"
+
+    # Traducir al castellano
+    with st.spinner("Traduciendo descripción al castellano…"):
+        desc = translate_description_to_spanish(desc_raw)
+
+    desc_short = desc if len(desc) <= 800 else desc[:800] + "…"
 
     tags = ""
     if industry:  tags += f'<span style="background:#1e2d45;color:#94a3b8;padding:2px 9px;border-radius:4px;font-size:0.75rem;margin-right:0.4rem;">{industry}</span>'

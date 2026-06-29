@@ -380,57 +380,112 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
 # SEC EDGAR
 # ─────────────────────────────────────────────────────────────────────────────
 
-SEC_HEADERS = {"User-Agent": "AnalisisFundamental contacto@ejemplo.com"}
+# SEC exige User-Agent con nombre + email, formato: "AppName/Version (email)"
+SEC_HEADERS = {
+    "User-Agent":      "StockScannerApp/1.0 (analisis@stockscanner.app)",
+    "Accept":          "application/json",
+    "Accept-Encoding": "gzip, deflate",
+}
+
+# Conceptos de ingresos en orden de preferencia
+REVENUE_CONCEPTS = [
+    "Revenues",
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "RevenueFromContractWithCustomerIncludingAssessedTax",
+    "SalesRevenueNet",
+    "SalesRevenueGoodsNet",
+    "RevenueNet",
+    "InterestAndDividendIncomeOperating",
+    "RevenuesNetOfInterestExpense",
+    "HealthCareOrganizationRevenue",
+]
+
+NET_INCOME_CONCEPTS = [
+    "NetIncomeLoss",
+    "NetIncomeLossAvailableToCommonStockholdersBasic",
+    "ProfitLoss",
+]
 
 
 def _get_cik(ticker: str) -> str | None:
+    """Obtiene el CIK de la SEC para un ticker dado."""
     try:
-        r    = requests.get("https://www.sec.gov/files/company_tickers.json",
-                            headers=SEC_HEADERS, timeout=10)
+        r = requests.get(
+            "https://www.sec.gov/files/company_tickers.json",
+            headers=SEC_HEADERS, timeout=12
+        )
+        if r.status_code != 200:
+            print(f"[SEC CIK] HTTP {r.status_code}")
+            return None
         data = r.json()
         for entry in data.values():
             if entry.get("ticker", "").upper() == ticker.upper():
-                return str(entry["cik_str"]).zfill(10)
+                cik = str(entry["cik_str"]).zfill(10)
+                return cik
     except Exception as e:
         print(f"[SEC CIK] Error: {e}")
     return None
 
 
 def _get_concept(cik: str, concept: str, unit: str = "USD") -> list:
+    """Descarga una serie de datos del SEC EDGAR XBRL API."""
     url = f"https://data.sec.gov/api/xbrl/companyconcept/CIK{cik}/us-gaap/{concept}.json"
     try:
-        r = requests.get(url, headers=SEC_HEADERS, timeout=15)
+        r = requests.get(url, headers=SEC_HEADERS, timeout=20)
+        if r.status_code == 404:
+            return []
         if r.status_code != 200:
+            print(f"[SEC {concept}] HTTP {r.status_code}")
             return []
         data     = r.json()
         units    = data.get("units", {}).get(unit, [])
-        quarterly = [u for u in units if u.get("form") in ("10-Q", "10-K") and u.get("frame") is None]
-        quarterly.sort(key=lambda x: x.get("end", ""), reverse=True)
-        return quarterly
+        filtered = [
+            u for u in units
+            if u.get("form") in ("10-Q", "10-K")
+            and u.get("end")
+            and u.get("val") is not None
+        ]
+        filtered.sort(key=lambda x: x.get("end", ""), reverse=True)
+        return filtered
     except Exception as e:
-        print(f"[SEC concept {concept}] Error: {e}")
+        print(f"[SEC {concept}] Error: {e}")
         return []
 
 
 def _last_4_quarters(series: list) -> list:
+    """
+    Extrae los 4 últimos trimestres estancos.
+    Acepta períodos 60-135 días para cubrir calendarios fiscales atípicos.
+    Excluye 10-K (acumulados anuales) — solo usa 10-Q estancos.
+    """
     from datetime import datetime as dt
-    quarterly  = []
-    seen_ends  = set()
+    quarterly = []
+    seen_ends = set()
     for item in series:
         start = item.get("start", "")
-        end   = item.get("end", "")
-        if not start or not end:
+        end   = item.get("end",   "")
+        form  = item.get("form",  "")
+        if not start or not end or form != "10-Q":
             continue
         try:
             days = (dt.strptime(end, "%Y-%m-%d") - dt.strptime(start, "%Y-%m-%d")).days
         except Exception:
             continue
-        if 60 <= days <= 120 and end not in seen_ends:
+        if 60 <= days <= 135 and end not in seen_ends:
             quarterly.append(item)
             seen_ends.add(end)
         if len(quarterly) == 4:
             break
     return quarterly
+
+
+def _fetch_first_concept(cik: str, concepts: list) -> list:
+    """Prueba conceptos en orden y devuelve el primero con datos."""
+    for concept in concepts:
+        data = _get_concept(cik, concept)
+        if data:
+            return data
+    return []
 
 
 def fetch_sec_data(ticker: str) -> dict | None:
@@ -439,9 +494,9 @@ def fetch_sec_data(ticker: str) -> dict | None:
     if not cik:
         return None
 
-    rev_series = _get_concept(cik, "Revenues") or _get_concept(cik, "RevenueFromContractWithCustomerExcludingAssessedTax")
+    rev_series = _fetch_first_concept(cik, REVENUE_CONCEPTS)
     rev_q      = _last_4_quarters(rev_series)
-    ni_series  = _get_concept(cik, "NetIncomeLoss")
+    ni_series  = _fetch_first_concept(cik, NET_INCOME_CONCEPTS)
     ni_q       = _last_4_quarters(ni_series)
 
     if not rev_q:
@@ -450,15 +505,19 @@ def fetch_sec_data(ticker: str) -> dict | None:
     ttm_revenue    = sum(q.get("val", 0) for q in rev_q)
     ttm_net_income = sum(q.get("val", 0) for q in ni_q) if ni_q else None
 
-    quarters_fmt = [{"date": q["end"], "value": q["val"], "filed": q.get("filed", "")} for q in rev_q]
-    ni_fmt       = [{"date": q["end"], "value": q["val"], "filed": q.get("filed", "")} for q in ni_q] if ni_q else []
+    quarters_fmt = [
+        {"date": q["end"], "value": q["val"], "filed": q.get("filed",""), "form": q.get("form","")}
+        for q in rev_q
+    ]
+    ni_fmt = [
+        {"date": q["end"], "value": q["val"], "filed": q.get("filed",""), "form": q.get("form","")}
+        for q in ni_q
+    ] if ni_q else []
 
-    # Frescura: fecha del último filing presentado
-    latest_filed = rev_q[0].get("filed", "") if rev_q else ""
     latest_end   = rev_q[0].get("end",   "") if rev_q else ""
-    days_filed   = _days_since(latest_filed)
+    latest_filed = rev_q[0].get("filed", "") if rev_q else ""
     days_end     = _days_since(latest_end)
-    # Usamos días desde el final del trimestre (más relevante para el inversor)
+    days_filed   = _days_since(latest_filed)
     sec_freshness = _freshness_status(days_end, STALE_SEC)
 
     return {
@@ -468,18 +527,19 @@ def fetch_sec_data(ticker: str) -> dict | None:
         "quarters":       quarters_fmt,
         "ni_quarters":    ni_fmt,
         "currency":       "USD",
-        # Metadatos
         "meta": {
-            "fetch_time":    _now().strftime("%Y-%m-%d %H:%M UTC"),
-            "latest_end":    latest_end,
-            "latest_filed":  latest_filed,
-            "days_since_end":    days_end,
-            "days_since_filed":  days_filed,
-            "freshness":     sec_freshness,
-            "trust":         TRUST["OFICIAL"],
-            "source":        f"SEC EDGAR (CIK {cik}) — último trimestre: {latest_end}",
+            "fetch_time":       _now().strftime("%Y-%m-%d %H:%M UTC"),
+            "latest_end":       latest_end,
+            "latest_filed":     latest_filed,
+            "days_since_end":   days_end,
+            "days_since_filed": days_filed,
+            "freshness":        sec_freshness,
+            "trust":            TRUST["OFICIAL"],
+            "source":           f"SEC EDGAR (CIK {cik}) — último trimestre: {latest_end}, filing: {latest_filed}",
+            "n_quarters_found": len(rev_q),
         },
     }
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
