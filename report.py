@@ -744,9 +744,23 @@ def render_report(ticker, company_name, y: dict, fmp: dict | None, cross: dict |
             unsafe_allow_html=True
         )
     else:
+        from fmp_client import diagnose_fmp_connection
+        diag = diagnose_fmp_connection()
+        if diag["key_found"] and not diag["api_reachable"]:
+            err_msg = f"🔴 Key encontrada ({diag['key_preview']}) pero la API no responde: {diag['error']}"
+            err_col = "#fca5a5"
+        elif not diag["key_found"]:
+            err_msg = f"🔴 {diag['error']}"
+            err_col = "#fca5a5"
+        else:
+            err_msg = "🟡 Solo Yahoo Finance — FMP no disponible o sin API key configurada"
+            err_col = "#fbbf24"
         st.markdown(
-            '<div class="metric-card"><div class="metric-label">FUENTE DE DATOS</div>'
-            '<span class="audit-warn">🟡 Solo Yahoo Finance — FMP no disponible o sin API key configurada</span></div>',
+            f'<div class="metric-card"><div class="metric-label">FUENTE DE DATOS</div>'
+            f'<span style="color:{err_col};font-size:0.82rem;">{err_msg}</span>'
+            f'<div style="font-size:0.71rem;color:#64748b;margin-top:0.4rem;">'
+            f'Comprueba que FMP_API_KEY está correctamente configurada en Streamlit → Settings → Secrets</div>'
+            f'</div>',
             unsafe_allow_html=True
         )
 

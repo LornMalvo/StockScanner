@@ -23,14 +23,20 @@ STALE_FMP = 100   # días antes de marcar como desfasado
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _get_fmp_key() -> str:
-    """Lee la FMP API key desde st.secrets o variable de entorno."""
+    """
+    Lee la FMP API key desde st.secrets o variable de entorno.
+    Streamlit secrets se accede con st.secrets["KEY"], no con .get().
+    """
+    # Método 1: Streamlit secrets (Streamlit Cloud)
     try:
-        key = st.secrets.get("FMP_API_KEY", "")
-        if key:
-            return key
+        return str(st.secrets["FMP_API_KEY"]).strip()
     except Exception:
         pass
-    return os.environ.get("FMP_API_KEY", "")
+    # Método 2: Variable de entorno (ejecución local)
+    key = os.environ.get("FMP_API_KEY", "").strip()
+    if key:
+        return key
+    return ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -105,6 +111,64 @@ def _fmt_date(date_str: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. PERFIL DE EMPRESA
 # ─────────────────────────────────────────────────────────────────────────────
+
+def diagnose_fmp_connection() -> dict:
+    """
+    Diagnóstico completo de la conexión FMP.
+    Devuelve estado de la key y un test real a la API.
+    """
+    result = {
+        "key_found":     False,
+        "key_source":    "ninguna",
+        "key_preview":   "",
+        "api_reachable": False,
+        "api_status":    "",
+        "error":         "",
+    }
+
+    key = _get_fmp_key()
+    if not key:
+        try:
+            available = list(st.secrets.keys()) if hasattr(st, 'secrets') else []
+            result["error"] = f"FMP_API_KEY no encontrada. Secrets disponibles: {available}"
+        except Exception as e:
+            result["error"] = f"FMP_API_KEY no encontrada. Error al leer secrets: {e}"
+        return result
+
+    result["key_found"]   = True
+    result["key_preview"] = key[:6] + "..." + key[-4:] if len(key) > 10 else "***"
+
+    try:
+        st.secrets["FMP_API_KEY"]
+        result["key_source"] = "Streamlit Secrets"
+    except Exception:
+        result["key_source"] = "Variable de entorno"
+
+    # Test real
+    try:
+        r = requests.get(
+            f"{FMP_BASE}/profile",
+            params={"symbol": "AAPL", "apikey": key},
+            timeout=10
+        )
+        result["api_status"] = f"HTTP {r.status_code}"
+        if r.status_code == 200:
+            data = r.json()
+            if data and isinstance(data, list) and data[0].get("companyName"):
+                result["api_reachable"] = True
+            else:
+                result["error"] = f"Respuesta inesperada: {str(data)[:200]}"
+        elif r.status_code == 401:
+            result["error"] = "API key inválida (HTTP 401)"
+        elif r.status_code == 403:
+            result["error"] = "Acceso denegado — endpoint no disponible en tu plan (HTTP 403)"
+        else:
+            result["error"] = f"Error HTTP {r.status_code}: {r.text[:200]}"
+    except Exception as e:
+        result["error"] = f"No se pudo conectar: {e}"
+
+    return result
+
 
 def fetch_fmp_profile(ticker: str) -> dict | None:
     """
