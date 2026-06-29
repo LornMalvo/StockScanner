@@ -582,345 +582,36 @@ def _evaluate(y: dict, sec: dict | None) -> dict:
     }
 
 
+
+
 # ─── Render principal ─────────────────────────────────────────────────────────
 
-def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict | None, fx_rate: float | None = None, tech: dict | None = None, fx_meta: dict | None = None):
+def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict | None,
+                  fx_rate: float | None = None, tech: dict | None = None,
+                  fx_meta: dict | None = None):
+
     st.markdown("---")
 
     currency_y = y.get("currency", "USD")
-    meta_y     = y.get("meta", {})
-    meta_sec   = sec.get("meta", {}) if sec else {}
-    meta_tech  = {k: tech.get(k) for k in ("last_date","days_old","freshness","trust","source")} if tech and not tech.get("error") else {}
+    meta_y     = y.get("meta", {}) or {}
+    meta_sec   = (sec.get("meta", {}) or {}) if sec else {}
+    meta_tech  = {}
+    if tech and not tech.get("error"):
+        meta_tech = {k: tech.get(k) for k in ("last_date","days_old","freshness","trust","source")}
 
-    # ══════════════════════════════════════════════════════════════════════
-    # PANEL DE FIABILIDAD Y FRESCURA DE DATOS
-    # ══════════════════════════════════════════════════════════════════════
-    _section("FIABILIDAD Y FRESCURA DE DATOS")
-
-    def trust_badge(trust: dict) -> str:
-        if not trust:
-            return ""
-        return f'<span style="background:#1e293b;border:1px solid #334155;border-radius:4px;padding:1px 7px;font-size:0.72rem;color:{trust["color"]};font-family:\'IBM Plex Mono\',monospace;">{trust["icon"]} {trust["label"]}</span>'
-
-    def fresh_badge(f: dict) -> str:
-        if not f:
-            return ""
-        return f'<span style="font-size:0.75rem;color:{f["color"]};">{f.get("icon","")} {f.get("label","")}</span>'
-
-    # Alertas globales
-    alerts = []
-    pf = meta_y.get("price_freshness", {})
-    ff = meta_y.get("fund_freshness",  {})
-    sf = meta_sec.get("freshness",     {})
-    tf = meta_tech.get("freshness",    {})
-    xf = fx_meta.get("freshness",      {}) if fx_meta else {}
-
-    for name, f in [("Precio",pf),("Fundamentales Yahoo",ff),("SEC EDGAR",sf),("Técnico",tf)]:
-        if f.get("ok") is False:
-            alerts.append(f'⚠️ <b>{name}</b>: {f.get("label","")}')
-
-    if alerts:
-        alerts_html = "".join(f'<div style="padding:0.2rem 0;font-size:0.8rem;color:#fbbf24;">{a}</div>' for a in alerts)
-        st.markdown(f"""
-        <div style="background:#1c1408;border:1px solid #92400e;border-left:4px solid #f59e0b;
-                    border-radius:8px;padding:0.8rem 1rem;margin-bottom:0.8rem;">
-          <div style="font-family:'IBM Plex Mono',monospace;font-size:0.72rem;color:#f59e0b;
-                      text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.4rem;">
-            ⚠ ALERTAS DE FRESCURA — VERIFICA ESTOS DATOS ANTES DE OPERAR
-          </div>
-          {alerts_html}
-        </div>
-        """, unsafe_allow_html=True)
-
-    # Tabla de fuentes y fechas
-    rows = [
-        ("Precio actual",                    meta_y.get("trust_price",         {}), meta_y.get("price_date","N/A"),    pf),
-        ("Fundamentales (márgenes, ratios…)",meta_y.get("trust_fundamentals",  {}), meta_y.get("earnings_date","N/A"), ff),
-        ("Objetivos / consenso analistas",   meta_y.get("trust_consensus",     {}), "Yahoo no expone fecha de consenso", {}),
-        ("Crecimiento YoY / TTM",            meta_y.get("trust_growth",        {}), f"Basado en {meta_y.get('earnings_date','N/A')}", {}),
-        ("Ingresos / Beneficio neto (SEC)",  meta_sec.get("trust",             {}), meta_sec.get("latest_end","N/A"),  sf),
-        ("Técnico — RSI, MM50, MM200",       meta_tech.get("trust",            {}), meta_tech.get("last_date","N/A"),  tf),
-        ("Tipo de cambio USD/EUR",           fx_meta.get("trust",{}) if fx_meta else {}, fx_meta.get("market_time","N/A") if fx_meta else "N/A", xf),
-    ]
-
-    rows_html = ""
-    for label, trust, date, fresh in rows:
-        if not trust:
-            continue
-        rows_html += f"""
-        <div style="display:grid;grid-template-columns:2fr 1fr 2fr;gap:0.5rem;
-                    padding:0.4rem 0;border-bottom:1px solid #1a2540;align-items:center;">
-          <span style="font-size:0.8rem;color:#e2e8f0;">{label}</span>
-          <span>{trust_badge(trust)}</span>
-          <span style="font-size:0.74rem;color:#94a3b8;">{date}&nbsp;&nbsp;{fresh_badge(fresh)}</span>
-        </div>"""
-
-    legend_html = " &nbsp;·&nbsp; ".join([
-        '<span style="color:#6ee7b7;">🟢 Oficial SEC</span>',
-        '<span style="color:#fbbf24;">🟡 Yahoo Finance</span>',
-        '<span style="color:#fb923c;">🟠 Calculado por app</span>',
-        '<span style="color:#fca5a5;">🔴 Estimado (analistas)</span>',
-    ])
-
-    st.markdown(f"""
-    <div class="metric-card">
-      <div style="display:grid;grid-template-columns:2fr 1fr 2fr;
-                  padding:0.3rem 0;border-bottom:1px solid #1e2d45;margin-bottom:0.3rem;">
-        <span style="font-size:0.68rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;">Dato</span>
-        <span style="font-size:0.68rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;">Fuente</span>
-        <span style="font-size:0.68rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;">Última actualización</span>
-      </div>
-      {rows_html}
-      <div style="margin-top:0.7rem;font-size:0.72rem;">{legend_html}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── Auditoría de fuentes ─────────────────────────────────────────────
-    _section("AUDITORÍA DE DATOS")
-
-    # ── Panel de fiabilidad y frescura de datos ──────────────────────────
-    _section("FIABILIDAD Y FRESCURA DE DATOS")
-
-    meta_y   = y.get("meta", {})
-    meta_sec = sec.get("meta", {}) if sec else {}
-
-    def _trust_badge(trust: dict) -> str:
-        return (f'<span style="background:#1e293b;border:1px solid #334155;border-radius:4px;'
-                f'padding:1px 7px;font-size:0.72rem;font-family:\'IBM Plex Mono\',monospace;'
-                f'color:{trust["color"]};">{trust["icon"]} {trust["label"]}</span>')
-
-    def _fresh_row(label: str, info: str, freshness: dict) -> str:
-        icon  = freshness.get("icon",  "⚪")
-        flbl  = freshness.get("label", "—")
-        color = freshness.get("color", "#64748b")
-        return (f'<div style="display:flex;justify-content:space-between;align-items:center;'
-                f'padding:0.35rem 0;border-bottom:1px solid #1a2540;font-size:0.8rem;">'
-                f'<span style="color:#94a3b8;">{label}</span>'
-                f'<span style="color:#64748b;font-size:0.75rem;">{info}</span>'
-                f'<span style="font-family:\'IBM Plex Mono\',monospace;color:{color};'
-                f'font-size:0.75rem;">{icon} {flbl}</span></div>')
-
-    # Alertas de desfase
-    alerts = []
-    pf = meta_y.get("price_freshness", {})
-    ff = meta_y.get("fund_freshness",  {})
-    sf = meta_sec.get("freshness",     {})
-    if pf.get("ok") is False:
-        alerts.append(("🚨 PRECIO", pf.get("label",""), "#fca5a5"))
-    if ff.get("ok") is False:
-        alerts.append(("⚠️ FUNDAMENTALES", ff.get("label",""), "#fbbf24"))
-    if sf.get("ok") is False:
-        alerts.append(("⚠️ SEC EDGAR", sf.get("label",""), "#fbbf24"))
-
-    alerts_html = ""
-    if alerts:
-        for a_label, a_desc, a_color in alerts:
-            alerts_html += (f'<div style="background:#1a0a0a;border:1px solid {a_color};'
-                            f'border-left:4px solid {a_color};border-radius:6px;'
-                            f'padding:0.5rem 0.8rem;margin-bottom:0.5rem;font-size:0.8rem;">'
-                            f'<span style="color:{a_color};font-weight:700;">{a_label}</span>'
-                            f'<span style="color:#94a3b8;margin-left:0.5rem;">{a_desc}</span>'
-                            f'<div style="color:#64748b;font-size:0.72rem;margin-top:0.2rem;">'
-                            f'Verifica este dato directamente en la fuente antes de tomar decisiones.</div></div>')
-
-    rows_html = ""
-    rows_html += _fresh_row(
-        "Precio de mercado",
-        meta_y.get("price_date", "N/A"),
-        meta_y.get("price_freshness", {"icon":"⚪","label":"N/A","color":"#64748b"}))
-    rows_html += _fresh_row(
-        "Fundamentales (último trimestre)",
-        meta_y.get("earnings_date", "N/A"),
-        meta_y.get("fund_freshness", {"icon":"⚪","label":"N/A","color":"#64748b"}))
-    if meta_sec:
-        rows_html += _fresh_row(
-            "SEC EDGAR (fin trimestre)",
-            meta_sec.get("latest_end", "N/A"),
-            meta_sec.get("freshness", {"icon":"⚪","label":"N/A","color":"#64748b"}))
-        rows_html += _fresh_row(
-            "SEC EDGAR (fecha filing)",
-            meta_sec.get("latest_filed", "N/A"),
-            {"icon":"📄","label":f"presentado el {meta_sec.get('latest_filed','N/A')}","color":"#64748b"})
-
-    if fx_meta:
-        rows_html += _fresh_row(
-            "Tipo de cambio USD/EUR",
-            fx_meta.get("market_time", "N/A"),
-            fx_meta.get("freshness", {"icon":"⚪","label":"N/A","color":"#64748b"}))
-
-    trust_legend = (
-        f'{_trust_badge({"icon":"🟢","label":"Oficial SEC","color":"#6ee7b7"})}&nbsp;'
-        f'{_trust_badge({"icon":"🟡","label":"Yahoo Finance","color":"#fbbf24"})}&nbsp;'
-        f'{_trust_badge({"icon":"🟠","label":"Calculado app","color":"#fb923c"})}&nbsp;'
-        f'{_trust_badge({"icon":"🔴","label":"Estimación","color":"#fca5a5"})}')
-
-    fetch_time = meta_y.get("fetch_time", "N/A")
-
-    st.markdown(f"""
-    <div class="metric-card" style="border-left:3px solid #334155;">
-      {alerts_html}
-      <div style="font-size:0.7rem;color:#64748b;margin-bottom:0.6rem;">
-        Consulta realizada: <span style="color:#94a3b8;">{fetch_time}</span>
-      </div>
-      {rows_html}
-      <div style="margin-top:0.8rem;font-size:0.7rem;color:#64748b;line-height:1.8;">
-        <b style="color:#94a3b8;">Leyenda de fiabilidad:</b><br>{trust_legend}
-      </div>
-      <div style="margin-top:0.6rem;font-size:0.7rem;color:#64748b;line-height:1.6;">
-        ⚠ Yahoo Finance no es una fuente oficial. Los datos fundamentales pueden diferir
-        de los reportes originales. Usa SEC EDGAR o los informes trimestrales de la empresa
-        para verificar cifras clave antes de operar.
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── Auditoría cruzada SEC vs Yahoo ────────────────────────────────────
-    if cross:
-        status_map = {
-            "OK":      ("✔ DATOS VERIFICADOS (diferencia < 2%)", "audit-ok"),
-            "WARN":    ("⚠ DIFERENCIA MENOR (2-10%)", "audit-warn"),
-            "ERROR":   ("✘ DIFERENCIA SIGNIFICATIVA (>10%) — usar SEC como referencia", "audit-err"),
-            "NO_DATA": ("— SEC no disponible para este ticker", "audit-warn"),
-        }
-        label, cls = status_map.get(cross["status"], ("—", ""))
-        fx_label   = f"&nbsp;·&nbsp; USD/EUR: {fx_rate:.4f}" if fx_rate else ""
-
-        st.markdown(f"""
-        <div class="metric-card">
-          <div class="metric-label">VERIFICACIÓN CRUZADA SEC EDGAR vs YAHOO FINANCE{fx_label}</div>
-          <div class="row-kv">
-            <span class="row-key">🟢 SEC EDGAR TTM Revenue</span>
-            <span class="row-val">{_fmt_big(cross.get('sec_ttm'),'')}</span>
-          </div>
-          <div class="row-kv">
-            <span class="row-key">🟡 Yahoo Finance TTM Revenue</span>
-            <span class="row-val">{_fmt_big(cross.get('yahoo_ttm'),'')}</span>
-          </div>
-          <div class="row-kv">
-            <span class="row-key">Diferencia</span>
-            <span class="row-val {'audit-ok' if cross['status']=='OK' else 'audit-warn'}">
-              {_fmt_big(cross.get('diff'),'') if cross.get('diff') is not None else 'N/A'}
-              ({_fmt_num(cross.get('pct'), 2, suffix='%') if cross.get('pct') is not None else 'N/A'})
-            </span>
-          </div>
-          <div style="margin-top:0.5rem;">
-            <span class="{cls}" style="font-family:'IBM Plex Mono',monospace;font-size:0.85rem;font-weight:600;">{label}</span>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown(f"""
-        <div class="metric-card">
-          <div class="metric-label">FUENTE DE DATOS</div>
-          <span class="audit-warn" style="font-size:0.85rem;">
-            🟡 Solo Yahoo Finance — SEC EDGAR no disponible para este ticker (puede ser empresa no-USA)
-          </span>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # ── Desglose TTM comparativo SEC vs Yahoo ───────────────────────────
-    sec_quarters   = sec.get("quarters", [])   if sec else []
-    yahoo_quarters = y.get("ttm_quarters", [])
-
-    has_sec   = bool(sec_quarters)
-    has_yahoo = bool(yahoo_quarters)
-
-    if has_sec or has_yahoo:
-        trust_ttm = "🟢 SEC EDGAR + 🟡 Yahoo Finance" if (has_sec and has_yahoo) else ("🟢 SEC EDGAR" if has_sec else "🟡 Yahoo Finance")
-        _section(f"DESGLOSE TTM &nbsp;<span style='font-size:0.7rem;'>{trust_ttm}</span>")
-
-        # Construir tabla comparativa
-        def ttm_val_html(val):
-            if val is None: return "—"
-            return _fmt_big(val, "")
-
-        # Alinear por índice de trimestre (0=más reciente)
-        max_q = max(len(sec_quarters), len(yahoo_quarters), 1)
-        header = ""
-        if has_sec and has_yahoo:
-            header = (
-                '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;'
-                'padding:0.3rem 0;border-bottom:1px solid #1e2d45;margin-bottom:0.3rem;">'
-                '<span style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">Trimestre</span>'
-                '<span style="font-size:0.68rem;color:#6ee7b7;text-transform:uppercase;">🟢 SEC EDGAR</span>'
-                '<span style="font-size:0.68rem;color:#fbbf24;text-transform:uppercase;">🟡 Yahoo Finance</span>'
-                '</div>'
-            )
-        else:
-            header = ""
-
-        rows_ttm = ""
-        sec_total   = 0
-        yahoo_total = 0
-        for i in range(min(max_q, 4)):
-            sq = sec_quarters[i]   if i < len(sec_quarters)   else None
-            yq = yahoo_quarters[i] if i < len(yahoo_quarters) else None
-            sv = sq.get("value", 0) or 0 if sq else None
-            yv = yq.get("value", 0) or 0 if yq else None
-            if sv: sec_total   += sv
-            if yv: yahoo_total += yv
-            s_date = (sq.get("date","")[:10]) if sq else "—"
-            y_date = (yq.get("date","")[:10]) if yq else "—"
-            label  = f"Q{i+1} ({s_date or y_date})"
-
-            if has_sec and has_yahoo:
-                rows_ttm += (
-                    '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;'
-                    'padding:0.35rem 0;border-bottom:1px solid #1a2540;font-size:0.82rem;">'
-                    f'<span style="color:#94a3b8;">{label}</span>'
-                    f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#6ee7b7;">{ttm_val_html(sv)}</span>'
-                    f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#fbbf24;">{ttm_val_html(yv)}</span>'
-                    '</div>'
-                )
-            else:
-                val   = sv if has_sec else yv
-                color = "#6ee7b7" if has_sec else "#fbbf24"
-                rows_ttm += (
-                    '<div class="ttm-row">'
-                    f'<span>{label}</span>'
-                    f'<span style="font-family:\'IBM Plex Mono\',monospace;color:{color};">{ttm_val_html(val)}</span>'
-                    '</div>'
-                )
-
-        # Totales
-        if has_sec and has_yahoo:
-            diff_ttm = abs(sec_total - yahoo_total)
-            diff_pct = diff_ttm / max(sec_total, yahoo_total) * 100 if max(sec_total, yahoo_total) else 0
-            diff_col = "#6ee7b7" if diff_pct < 2 else "#fbbf24" if diff_pct < 10 else "#fca5a5"
-            rows_ttm += (
-                '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;'
-                'padding:0.4rem 0;margin-top:0.2rem;font-weight:700;font-size:0.85rem;">'
-                '<span style="color:#f1f5f9;">TOTAL TTM</span>'
-                f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#6ee7b7;">{ttm_val_html(sec_total)}</span>'
-                f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#fbbf24;">{ttm_val_html(yahoo_total)}</span>'
-                '</div>'
-                '<div style="font-size:0.72rem;margin-top:0.3rem;">'
-                f'<span style="color:#64748b;">Diferencia SEC vs Yahoo: </span>'
-                f'<span style="color:{diff_col};font-family:\'IBM Plex Mono\',monospace;">{ttm_val_html(diff_ttm)} ({diff_pct:.1f}%)</span>'
-                '</div>'
-            )
-        else:
-            total = sec_total if has_sec else yahoo_total
-            color = "#6ee7b7" if has_sec else "#fbbf24"
-            rows_ttm += f'<div class="ttm-row"><span>TOTAL TTM</span><span style="color:{color};">{ttm_val_html(total)}</span></div>'
-
-        st.markdown(f'<div class="metric-card">{header}{rows_ttm}</div>', unsafe_allow_html=True)
-
-    # ── Columnas principales ─────────────────────────────────────────────
     from analysis import get_sector_benchmarks
     sbm = get_sector_benchmarks(y.get("sector",""))
 
-    def _kv_bench(label, value, bench_val, bench_label, color_class="row-val", low_good=True):
-        """Fila con valor actual + media del sector."""
-        tip = TOOLTIPS.get(label, "")
+    # ── helper: fila con benchmark de sector ─────────────────────────────
+    def _kv_bench(label, value, bench_val, bench_label, color_class="row-val"):
+        tip      = TOOLTIPS.get(label, "")
         tip_html = ""
         if tip:
-            tip_safe = tip.replace('"','&quot;').replace("'","&#39;")
             tip_html = (
                 '<span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;">'
-                '<span style="font-size:0.65rem;color:#1e3a5f;border:1px solid #1e3a5f;border-radius:50%;padding:0 3px;font-family:\'IBM Plex Mono\',monospace;">?</span>'
-                f'<span class="tooltip-box">{tip}</span>'
-                '</span>'
+                '<span style="font-size:0.65rem;color:#1e3a5f;border:1px solid #1e3a5f;'
+                'border-radius:50%;padding:0 3px;font-family:\'IBM Plex Mono\',monospace;">?</span>'
+                f'<span class="tooltip-box">{tip}</span></span>'
             )
         bench_html = ""
         if bench_val is not None:
@@ -935,174 +626,379 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
             '</div>'
         )
 
+    # ════════════════════════════════════════════════════════════════════
+    # A · FIABILIDAD Y FRESCURA DE DATOS
+    # ════════════════════════════════════════════════════════════════════
+    _section("A · FIABILIDAD Y FRESCURA DE DATOS")
+
+    pf = meta_y.get("price_freshness",    {}) or {}
+    ff = meta_y.get("fund_freshness",     {}) or {}
+    sf = meta_sec.get("freshness",        {}) or {}
+    tf = meta_tech.get("freshness",       {}) or {}
+    xf = (fx_meta.get("freshness",        {}) or {}) if fx_meta else {}
+
+    # Alertas
+    alert_rows = ""
+    for name, f in [("Precio de mercado", pf), ("Fundamentales Yahoo", ff),
+                    ("SEC EDGAR", sf), ("Técnico RSI/MMs", tf)]:
+        if f.get("ok") is False:
+            col = f.get("color","#fbbf24")
+            alert_rows += (
+                f'<div style="background:#1c1408;border:1px solid {col};border-left:4px solid {col};'
+                f'border-radius:6px;padding:0.5rem 0.8rem;margin-bottom:0.4rem;font-size:0.8rem;">'
+                f'<span style="color:{col};font-weight:700;">⚠ {name.upper()}</span>'
+                f'<span style="color:#94a3b8;margin-left:0.5rem;">{f.get("label","")}</span>'
+                f'<div style="color:#64748b;font-size:0.71rem;margin-top:0.15rem;">'
+                f'Verifica este dato directamente en la fuente antes de operar.</div></div>'
+            )
+    if alert_rows:
+        st.markdown(alert_rows, unsafe_allow_html=True)
+
+    # Tabla de datos/fuente/fecha
+    def _source_row(dato, trust, fecha, fresh):
+        if not trust:
+            return ""
+        t_col   = trust.get("color","#94a3b8")
+        t_icon  = trust.get("icon","")
+        t_label = trust.get("label","")
+        f_col   = fresh.get("color","#64748b") if fresh else "#64748b"
+        f_icon  = fresh.get("icon","") if fresh else ""
+        f_label = fresh.get("label","") if fresh else ""
+        return (
+            '<div style="display:grid;grid-template-columns:2fr 1fr 2fr;gap:0.4rem;'
+            'padding:0.38rem 0;border-bottom:1px solid #1a2540;align-items:center;">'
+            f'<span style="font-size:0.8rem;color:#e2e8f0;">{dato}</span>'
+            f'<span style="font-size:0.72rem;color:{t_col};font-family:\'IBM Plex Mono\',monospace;">{t_icon} {t_label}</span>'
+            f'<span style="font-size:0.73rem;color:{f_col};">{f_icon} {f_label}&nbsp;'
+            f'<span style="color:#64748b;font-size:0.68rem;">({fecha})</span></span>'
+            '</div>'
+        )
+
+    TRUST_AGRE = {"icon":"🟡","label":"Yahoo Finance","color":"#fbbf24"}
+    TRUST_OFIC = {"icon":"🟢","label":"Oficial SEC",  "color":"#6ee7b7"}
+    TRUST_CALC = {"icon":"🟠","label":"Calculado",    "color":"#fb923c"}
+    TRUST_ESTI = {"icon":"🔴","label":"Estimado",     "color":"#fca5a5"}
+
+    table_rows = (
+        _source_row("Precio actual",               TRUST_AGRE, meta_y.get("price_date","N/A"),    pf)
+      + _source_row("Fundamentales (márgenes, ratios)", TRUST_AGRE, meta_y.get("earnings_date","N/A"), ff)
+      + _source_row("Objetivos / consenso analistas",   TRUST_ESTI, "Yahoo no expone fecha exacta", {})
+      + _source_row("Crecimiento YoY / TTM",        TRUST_CALC, meta_y.get("earnings_date","N/A"), {})
+      + (_source_row("Ingresos/Beneficio neto SEC", TRUST_OFIC, meta_sec.get("latest_end","N/A"),  sf) if meta_sec else "")
+      + (_source_row("Técnico — RSI, MM50/200",     TRUST_AGRE, meta_tech.get("last_date","N/A"), tf) if meta_tech else "")
+      + (_source_row("Tipo de cambio USD/EUR",       TRUST_AGRE, fx_meta.get("market_time","N/A") if fx_meta else "N/A", xf) if fx_meta else "")
+    )
+
+    header_grid = (
+        '<div style="display:grid;grid-template-columns:2fr 1fr 2fr;gap:0.4rem;'
+        'padding:0.25rem 0;border-bottom:1px solid #1e2d45;margin-bottom:0.2rem;">'
+        '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;letter-spacing:0.06em;">Dato</span>'
+        '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;letter-spacing:0.06em;">Fuente</span>'
+        '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;letter-spacing:0.06em;">Última actualización</span>'
+        '</div>'
+    )
+    legend = (
+        '<div style="margin-top:0.6rem;font-size:0.71rem;color:#64748b;">'
+        '🟢 Oficial SEC &nbsp;·&nbsp; 🟡 Yahoo Finance &nbsp;·&nbsp; '
+        '🟠 Calculado por app &nbsp;·&nbsp; 🔴 Estimado (analistas)</div>'
+        '<div style="margin-top:0.4rem;font-size:0.7rem;color:#475569;line-height:1.55;">'
+        '⚠ Yahoo Finance no es una fuente oficial. Verifica cifras clave en los informes '
+        'trimestrales o en SEC EDGAR antes de operar.</div>'
+    )
+    fetch_time = meta_y.get("fetch_time","N/A")
+    st.markdown(
+        f'<div class="metric-card" style="border-left:3px solid #334155;">'
+        f'<div style="font-size:0.69rem;color:#475569;margin-bottom:0.5rem;">'
+        f'Consulta: <span style="color:#64748b;">{fetch_time}</span></div>'
+        f'{header_grid}{table_rows}{legend}</div>',
+        unsafe_allow_html=True
+    )
+
+    # Verificación cruzada SEC vs Yahoo
+    if cross and cross.get("status") != "NO_DATA":
+        status_map = {
+            "OK":    ("✔ VERIFICADOS — diferencia < 2%",             "audit-ok"),
+            "WARN":  ("⚠ DIFERENCIA MENOR (2-10%)",                   "audit-warn"),
+            "ERROR": ("✘ DIFERENCIA SIGNIFICATIVA >10% — usar SEC",   "audit-err"),
+        }
+        lbl, cls = status_map.get(cross["status"], ("—",""))
+        fx_lbl   = f" &nbsp;·&nbsp; USD/EUR: {fx_rate:.4f}" if fx_rate else ""
+        st.markdown(
+            f'<div class="metric-card">'
+            f'<div class="metric-label">VERIFICACIÓN CRUZADA SEC vs YAHOO{fx_lbl}</div>'
+            + _kv("🟢 SEC EDGAR TTM Revenue",   _fmt_big(cross.get("sec_ttm"),""))
+            + _kv("🟡 Yahoo Finance TTM Revenue",_fmt_big(cross.get("yahoo_ttm"),""))
+            + _kv("Diferencia",
+                  f'{_fmt_big(cross.get("diff"),"") if cross.get("diff") is not None else "N/A"}'
+                  f' ({_fmt_num(cross.get("pct"),2,suffix="%") if cross.get("pct") is not None else "N/A"})',
+                  "audit-ok" if cross["status"]=="OK" else "audit-warn")
+            + f'<div style="margin-top:0.4rem;"><span class="{cls}" style="font-family:\'IBM Plex Mono\','
+              f'monospace;font-size:0.85rem;font-weight:600;">{lbl}</span></div>'
+            + '</div>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            '<div class="metric-card"><div class="metric-label">FUENTE DE DATOS</div>'
+            '<span class="audit-warn">🟡 Solo Yahoo Finance — SEC no disponible (empresa no-USA)</span></div>',
+            unsafe_allow_html=True
+        )
+
+    # ════════════════════════════════════════════════════════════════════
+    # B · DESCRIPCIÓN DE LA EMPRESA
+    # ════════════════════════════════════════════════════════════════════
+    with st.spinner("Cargando descripción, noticias y análisis de resultados…"):
+        company_info = fetch_company_description(ticker)
+        news_items   = fetch_recent_news(ticker)
+        ea           = fetch_earnings_analysis(ticker, y)
+
+    render_company_description(company_info, company_name)
+
+    # ════════════════════════════════════════════════════════════════════
+    # C · ÚLTIMAS NOTICIAS Y ANUNCIOS
+    # ════════════════════════════════════════════════════════════════════
+    render_news(news_items)
+
+    # ════════════════════════════════════════════════════════════════════
+    # D · DESGLOSE TTM  (SEC verde | Yahoo amarillo)
+    # ════════════════════════════════════════════════════════════════════
+    sec_quarters   = sec.get("quarters", []) if sec else []
+    yahoo_quarters = y.get("ttm_quarters", []) or []
+    has_sec   = bool(sec_quarters)
+    has_yahoo = bool(yahoo_quarters)
+
+    if has_sec or has_yahoo:
+        trust_ttm = "🟢 SEC EDGAR + 🟡 Yahoo Finance" if (has_sec and has_yahoo) else ("🟢 SEC EDGAR" if has_sec else "🟡 Yahoo Finance")
+        _section(f"D · DESGLOSE TTM &nbsp;<span style='font-size:0.7rem;'>{trust_ttm}</span>")
+
+        def ttm_fmt(v):
+            if v is None: return "—"
+            return _fmt_big(v, "")
+
+        hdr = ""
+        if has_sec and has_yahoo:
+            hdr = (
+                '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;'
+                'padding:0.25rem 0;border-bottom:1px solid #1e2d45;margin-bottom:0.2rem;">'
+                '<span style="font-size:0.67rem;color:#64748b;text-transform:uppercase;">Trimestre</span>'
+                '<span style="font-size:0.67rem;color:#6ee7b7;text-transform:uppercase;">🟢 SEC EDGAR</span>'
+                '<span style="font-size:0.67rem;color:#fbbf24;text-transform:uppercase;">🟡 Yahoo Finance</span>'
+                '</div>'
+            )
+
+        rows_t = ""
+        sec_tot = yahoo_tot = 0
+        for i in range(min(4, max(len(sec_quarters), len(yahoo_quarters)))):
+            sq  = sec_quarters[i]   if i < len(sec_quarters)   else None
+            yq  = yahoo_quarters[i] if i < len(yahoo_quarters) else None
+            sv  = (sq.get("value") or 0) if sq else None
+            yv  = (yq.get("value") or 0) if yq else None
+            if sv: sec_tot   += sv
+            if yv: yahoo_tot += yv
+            d   = (sq or yq or {}).get("date","")[:10]
+            lbl = f"Q{i+1} ({d})"
+
+            if has_sec and has_yahoo:
+                rows_t += (
+                    '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;'
+                    'padding:0.33rem 0;border-bottom:1px solid #1a2540;font-size:0.82rem;">'
+                    f'<span style="color:#94a3b8;">{lbl}</span>'
+                    f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#6ee7b7;">{ttm_fmt(sv)}</span>'
+                    f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#fbbf24;">{ttm_fmt(yv)}</span>'
+                    '</div>'
+                )
+            else:
+                val = sv if has_sec else yv
+                col = "#6ee7b7" if has_sec else "#fbbf24"
+                rows_t += (
+                    f'<div class="ttm-row"><span>{lbl}</span>'
+                    f'<span style="color:{col};font-family:\'IBM Plex Mono\',monospace;">{ttm_fmt(val)}</span></div>'
+                )
+
+        if has_sec and has_yahoo:
+            dp  = abs(sec_tot-yahoo_tot)/max(sec_tot,yahoo_tot)*100 if max(sec_tot,yahoo_tot) else 0
+            dc  = "#6ee7b7" if dp<2 else "#fbbf24" if dp<10 else "#fca5a5"
+            rows_t += (
+                '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;'
+                'padding:0.38rem 0;font-weight:700;font-size:0.85rem;">'
+                '<span style="color:#f1f5f9;">TOTAL TTM</span>'
+                f'<span style="color:#6ee7b7;font-family:\'IBM Plex Mono\',monospace;">{ttm_fmt(sec_tot)}</span>'
+                f'<span style="color:#fbbf24;font-family:\'IBM Plex Mono\',monospace;">{ttm_fmt(yahoo_tot)}</span>'
+                '</div>'
+                f'<div style="font-size:0.71rem;margin-top:0.2rem;color:#64748b;">'
+                f'Diferencia: <span style="color:{dc};font-family:\'IBM Plex Mono\',monospace;">'
+                f'{ttm_fmt(abs(sec_tot-yahoo_tot))} ({dp:.1f}%)</span></div>'
+            )
+        else:
+            tot = sec_tot if has_sec else yahoo_tot
+            col = "#6ee7b7" if has_sec else "#fbbf24"
+            rows_t += f'<div class="ttm-row"><span>TOTAL TTM</span><span style="color:{col};">{ttm_fmt(tot)}</span></div>'
+
+        st.markdown(f'<div class="metric-card">{hdr}{rows_t}</div>', unsafe_allow_html=True)
+
+    # ════════════════════════════════════════════════════════════════════
+    # E–J · MÉTRICAS EN DOS COLUMNAS
+    # ════════════════════════════════════════════════════════════════════
     col_a, col_b = st.columns(2)
 
     with col_a:
-        # A. Mercado y consenso
-        _section("A · MERCADO Y CONSENSO &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo · 🔴 Consenso analistas</span>")
-        html = ""
-        rec = y.get("recommendation", "N/A")
-        html += _kv("Precio Actual",     _fmt_price(y.get("price"), currency_y, fx_rate))
-        html += _kv("Objetivo Analistas",_fmt_price(y.get("target_mean"), currency_y, fx_rate))
-        html += _kv("Rango", f"{_fmt_price(y.get('target_low'), currency_y, fx_rate)} – {_fmt_price(y.get('target_high'), currency_y, fx_rate)}")
+        # E · Mercado y consenso
+        _section("E · MERCADO Y CONSENSO &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo · 🔴 Consenso analistas</span>")
+        rec = y.get("recommendation","N/A")
+        html  = _kv("Precio Actual",      _fmt_price(y.get("price"), currency_y, fx_rate))
+        html += _kv("Objetivo Analistas", _fmt_price(y.get("target_mean"), currency_y, fx_rate))
+        html += _kv("Rango",
+            f"{_fmt_price(y.get('target_low'),currency_y,fx_rate)} – {_fmt_price(y.get('target_high'),currency_y,fx_rate)}")
         html += _kv("Recomendación", _badge(rec))
         html += _kv("Nº Analistas", str(y.get("analyst_count") or "N/A"))
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
-        # C. Rentabilidad — con benchmarks de sector
-        _section("C · RENTABILIDAD &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance &nbsp;·&nbsp; <span style=\"color:#475569;\">sect: media del sector</span></span>")
-        html = ""
-        html += _kv_bench("Profit Margin",
-            _fmt_num((y.get("profit_margin") or 0)*100, 2, suffix="%"),
-            sbm.get("profit_m"), f"{sbm.get('profit_m')}%",
-            _color_pct(y.get("profit_margin")))
+        # G · Rentabilidad
+        _section("G · RENTABILIDAD &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo &nbsp;·&nbsp; <span style=\"color:#475569;\">sect: media sector</span></span>")
+        html  = _kv_bench("Profit Margin",
+            _fmt_num((y.get("profit_margin") or 0)*100,2,suffix="%"),
+            sbm.get("profit_m"), f"{sbm.get('profit_m')}%", _color_pct(y.get("profit_margin")))
         html += _kv_bench("Operating Margin",
-            _fmt_num((y.get("operating_margin") or 0)*100, 2, suffix="%"),
-            sbm.get("op_m"), f"{sbm.get('op_m')}%",
-            _color_pct(y.get("operating_margin")))
+            _fmt_num((y.get("operating_margin") or 0)*100,2,suffix="%"),
+            sbm.get("op_m"), f"{sbm.get('op_m')}%", _color_pct(y.get("operating_margin")))
         html += _kv("EBITDA Margin",
-            _fmt_num((y.get("ebitda_margin") or 0)*100, 2, suffix="%"),
-            _color_pct(y.get("ebitda_margin")))
+            _fmt_num((y.get("ebitda_margin") or 0)*100,2,suffix="%"), _color_pct(y.get("ebitda_margin")))
         html += _kv_bench("ROE",
-            _fmt_num((y.get("roe") or 0)*100, 2, suffix="%"),
-            sbm.get("roe"), f"{sbm.get('roe')}%",
-            _color_pct(y.get("roe")))
+            _fmt_num((y.get("roe") or 0)*100,2,suffix="%"),
+            sbm.get("roe"), f"{sbm.get('roe')}%", _color_pct(y.get("roe")))
         html += _kv("ROA",
-            _fmt_num((y.get("roa") or 0)*100, 2, suffix="%"),
-            _color_pct(y.get("roa")))
+            _fmt_num((y.get("roa") or 0)*100,2,suffix="%"), _color_pct(y.get("roa")))
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
-        # E. Crecimiento
-        _section("E · CRECIMIENTO YoY &nbsp;<span style='font-size:0.7rem;'>🟠 Calculado por app</span>")
-        html = ""
+        # I · Crecimiento YoY
+        _section("I · CRECIMIENTO YoY &nbsp;<span style='font-size:0.7rem;'>🟠 Calculado por app</span>")
         rev_yoy  = y.get("revenue_yoy")
         earn_yoy = y.get("earnings_yoy")
-        html += _kv("Revenue Growth",  _fmt_num(rev_yoy, 2, suffix="%") if rev_yoy is not None else "N/A",  _color_pct(rev_yoy))
-        html += _kv("Earnings Growth", _fmt_num(earn_yoy, 2, suffix="%") if earn_yoy is not None else "N/A", _color_pct(earn_yoy))
-        html += _kv("EPS (TTM)",       _fmt_price(y.get("eps_ttm"), currency_y, fx_rate))
-        html += _kv("EPS (Forward)",   _fmt_price(y.get("eps_forward"), currency_y, fx_rate))
+        html  = _kv("Revenue Growth",
+            _fmt_num(rev_yoy,2,suffix="%") if rev_yoy is not None else "N/A", _color_pct(rev_yoy))
+        html += _kv("Earnings Growth",
+            _fmt_num(earn_yoy,2,suffix="%") if earn_yoy is not None else "N/A", _color_pct(earn_yoy))
+        html += _kv("EPS (TTM)",     _fmt_price(y.get("eps_ttm"),    currency_y, fx_rate))
+        html += _kv("EPS (Forward)", _fmt_price(y.get("eps_forward"), currency_y, fx_rate))
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
     with col_b:
-        # B. Valoración — con benchmarks de sector
-        _section("B · VALORACIÓN &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo · 🔴 Forward (estimado) &nbsp;·&nbsp; <span style=\"color:#475569;\">sect: media del sector</span></span>")
-        html = ""
-        html += _kv_bench("PER Trailing", _fmt_num(y.get("pe_trailing"), 2),
-            None, None)
-        html += _kv_bench("PER Forward", _fmt_num(y.get("pe_forward"), 2),
+        # F · Valoración
+        _section("F · VALORACIÓN &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo · 🔴 Forward estimado &nbsp;·&nbsp; <span style=\"color:#475569;\">sect: media sector</span></span>")
+        html  = _kv("PER Trailing", _fmt_num(y.get("pe_trailing"),2))
+        html += _kv_bench("PER Forward", _fmt_num(y.get("pe_forward"),2),
             sbm.get("pe_fwd"), f"{sbm.get('pe_fwd')}x")
-        html += _kv_bench("PEG Ratio", _fmt_num(y.get("peg_ratio"), 4),
-            sbm.get("peg"), f"{sbm.get('peg')}")
-        html += _kv_bench("Price/Sales",  _fmt_num(y.get("price_sales"), 4), None, None)
-        html += _kv_bench("Price/Book",   _fmt_num(y.get("price_book"), 4),  None, None)
-        html += _kv_bench("EV/Revenue",   _fmt_num(y.get("ev_revenue"), 4),  None, None)
-        html += _kv_bench("EV/EBITDA",    _fmt_num(y.get("ev_ebitda"), 4),
+        html += _kv_bench("PEG Ratio",   _fmt_num(y.get("peg_ratio"),4),
+            sbm.get("peg"),    f"{sbm.get('peg')}")
+        html += _kv("Price/Sales",  _fmt_num(y.get("price_sales"),4))
+        html += _kv("Price/Book",   _fmt_num(y.get("price_book"),4))
+        html += _kv("EV/Revenue",   _fmt_num(y.get("ev_revenue"),4))
+        html += _kv_bench("EV/EBITDA", _fmt_num(y.get("ev_ebitda"),4),
             sbm.get("ev_ebitda"), f"{sbm.get('ev_ebitda')}x")
-        html += _kv("Market Cap",    _fmt_big(y.get("market_cap"), "$", fx_rate))
+        html += _kv("Market Cap",   _fmt_big(y.get("market_cap"),"$",fx_rate))
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
-        # D. Balance
-        _section("D · BALANCE Y CAJA &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
-        html = ""
-        html += _kv("Total Cash",          _fmt_big(y.get("total_cash"), "$", fx_rate))
-        html += _kv("Total Debt",          _fmt_big(y.get("total_debt"), "$", fx_rate))
-        html += _kv("Debt/Equity",         _fmt_num(y.get("debt_equity"), 2))
-        html += _kv("Current Ratio",       _fmt_num(y.get("current_ratio"), 2))
-        html += _kv("Free Cash Flow",      _fmt_big(y.get("free_cash_flow"), "$", fx_rate))
-        html += _kv("Operating Cash Flow", _fmt_big(y.get("operating_cf"), "$", fx_rate))
+        # H · Balance y caja
+        _section("H · BALANCE Y CAJA &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
+        html  = _kv("Total Cash",          _fmt_big(y.get("total_cash"),       "$", fx_rate))
+        html += _kv("Total Debt",          _fmt_big(y.get("total_debt"),       "$", fx_rate))
+        html += _kv("Debt/Equity",         _fmt_num(y.get("debt_equity"),2))
+        html += _kv("Current Ratio",       _fmt_num(y.get("current_ratio"),2))
+        html += _kv("Free Cash Flow",      _fmt_big(y.get("free_cash_flow"),   "$", fx_rate))
+        html += _kv("Operating Cash Flow", _fmt_big(y.get("operating_cf"),     "$", fx_rate))
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
-        # F. Dividendos y otros
-        _section("F · DIVIDENDOS Y OTROS &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
-        html = ""
-        dy = y.get("dividend_yield")
-        html += _kv("Dividend Yield", _fmt_num((dy or 0)*100, 2, suffix="%") if dy else "N/A")
-        html += _kv("Dividend Rate",  _fmt_price(y.get("dividend_rate"), currency_y, fx_rate) if y.get("dividend_rate") else "N/A")
-        html += _kv("Short Ratio",    _fmt_num(y.get("short_ratio"), 2))
-        html += _kv("Beta",           _fmt_num(y.get("beta"), 2))
-        html += _kv("52W High",       _fmt_price(y.get("52w_high"), currency_y, fx_rate))
-        html += _kv("52W Low",        _fmt_price(y.get("52w_low"), currency_y, fx_rate))
+        # J · Dividendos y otros
+        _section("J · DIVIDENDOS Y OTROS &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
+        dy   = y.get("dividend_yield")
+        html  = _kv("Dividend Yield",
+            _fmt_num((dy or 0)*100,2,suffix="%") if dy else "N/A")
+        html += _kv("Dividend Rate",
+            _fmt_price(y.get("dividend_rate"),currency_y,fx_rate) if y.get("dividend_rate") else "N/A")
+        html += _kv("Short Ratio",  _fmt_num(y.get("short_ratio"),2))
+        html += _kv("Beta",         _fmt_num(y.get("beta"),2))
+        html += _kv("52W High",     _fmt_price(y.get("52w_high"), currency_y, fx_rate))
+        html += _kv("52W Low",      _fmt_price(y.get("52w_low"),  currency_y, fx_rate))
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
-    # ── G. Análisis Técnico ──────────────────────────────────────────────
-    tech_date = tech.get("last_date", "N/A") if tech and not tech.get("error") else "N/A"
-    _section(f"G · ANÁLISIS TÉCNICO &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance · último dato: {tech_date}</span>")
+    # ════════════════════════════════════════════════════════════════════
+    # K · ANÁLISIS TÉCNICO
+    # ════════════════════════════════════════════════════════════════════
+    tech_date = tech.get("last_date","N/A") if tech and not tech.get("error") else "N/A"
+    _section(f"K · ANÁLISIS TÉCNICO &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance · último dato: {tech_date}</span>")
 
     if tech and not tech.get("error"):
         col_t1, col_t2 = st.columns(2)
 
         with col_t1:
-            # RSI
             rsi_val = tech.get("rsi")
-            rsi_lbl = tech.get("rsi_label", "N/A")
-            rsi_cls = tech.get("rsi_css", "")
-
-            # Barra RSI
+            rsi_lbl = tech.get("rsi_label","N/A")
             rsi_pct = min(max(rsi_val or 0, 0), 100)
-            if rsi_pct >= 70:
-                bar_color = "#fca5a5"
-            elif rsi_pct <= 30:
-                bar_color = "#6ee7b7"
-            else:
-                bar_color = "#38bdf8"
-
-            st.markdown(f"""
-            <div class="metric-card">
-              <div class="metric-label">RSI (14 períodos)</div>
-              <div style="display:flex;align-items:baseline;gap:0.6rem;">
-                <div class="metric-value">{_fmt_num(rsi_val, 2)}</div>
-                <span class="row-val {rsi_cls}" style="font-size:0.82rem;">{rsi_lbl}</span>
-              </div>
-              <div class="progress-bar-bg" style="margin-top:0.6rem;position:relative;">
-                <div style="height:8px;border-radius:4px;background:{bar_color};width:{rsi_pct}%;"></div>
-              </div>
-              <div style="display:flex;justify-content:space-between;font-size:0.7rem;color:#64748b;margin-top:0.2rem;">
-                <span>0 — Sobreventa</span><span>50</span><span>Sobrecompra — 100</span>
-              </div>
-              <div style="margin-top:0.5rem;font-size:0.78rem;color:#94a3b8;">
-                ▸ RSI &lt; 30: sobreventa (posible rebote) &nbsp;|&nbsp; RSI &gt; 70: sobrecompra (posible corrección)
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
+            bar_col = "#fca5a5" if rsi_pct >= 70 else "#6ee7b7" if rsi_pct <= 30 else "#38bdf8"
+            rsi_css = tech.get("rsi_css","")
+            st.markdown(
+                '<div class="metric-card">'
+                '<div class="metric-label">RSI (14 períodos)</div>'
+                '<div style="display:flex;align-items:baseline;gap:0.6rem;">'
+                f'<div class="metric-value">{_fmt_num(rsi_val,2)}</div>'
+                f'<span class="row-val {rsi_css}" style="font-size:0.82rem;">{rsi_lbl}</span>'
+                '</div>'
+                '<div class="progress-bar-bg" style="margin-top:0.6rem;">'
+                f'<div style="height:8px;border-radius:4px;background:{bar_col};width:{rsi_pct}%;"></div>'
+                '</div>'
+                '<div style="display:flex;justify-content:space-between;font-size:0.7rem;'
+                'color:#64748b;margin-top:0.2rem;">'
+                '<span>0 — Sobreventa</span><span>50</span><span>Sobrecompra — 100</span>'
+                '</div>'
+                '<div style="margin-top:0.5rem;font-size:0.78rem;color:#94a3b8;">'
+                '▸ RSI &lt; 30: sobreventa (posible rebote) &nbsp;|&nbsp; RSI &gt; 70: sobrecompra'
+                '</div></div>',
+                unsafe_allow_html=True
+            )
 
         with col_t2:
-            # MM50 y MM200
-            mm50  = tech.get("mm50")
-            mm200 = tech.get("mm200")
-            d50   = tech.get("dist_mm50")
-            d200  = tech.get("dist_mm200")
+            mm50      = tech.get("mm50")
+            mm200     = tech.get("mm200")
+            d50       = tech.get("dist_mm50")
+            d200      = tech.get("dist_mm200")
             cross_sig = tech.get("cross_signal")
 
-            html = ""
-            html += _kv("MM50",  _fmt_price(mm50, currency_y, fx_rate), f"row-val {tech.get('mm50_css','')}")
-            html += _kv("Distancia MM50", _fmt_num(d50, 2, suffix="%") if d50 is not None else "N/A",
-                        "row-val green" if (d50 or 0) >= 0 else "row-val red")
-            html += _kv("Señal MM50", tech.get("mm50_signal","N/A"), f"row-val {tech.get('mm50_css','')}")
-            html += _kv("MM200", _fmt_price(mm200, currency_y, fx_rate) if mm200 else "N/A", f"row-val {tech.get('mm200_css','')}")
-            html += _kv("Distancia MM200", _fmt_num(d200, 2, suffix="%") if d200 is not None else "N/A",
-                        "row-val green" if (d200 or 0) >= 0 else "row-val red")
+            html  = _kv("MM50",  _fmt_price(mm50, currency_y, fx_rate), f"row-val {tech.get('mm50_css','')}")
+            html += _kv("Distancia MM50",
+                _fmt_num(d50,2,suffix="%") if d50 is not None else "N/A",
+                "row-val green" if (d50 or 0) >= 0 else "row-val red")
+            html += _kv("Señal MM50",  tech.get("mm50_signal","N/A"),  f"row-val {tech.get('mm50_css','')}")
+            html += _kv("MM200", _fmt_price(mm200,currency_y,fx_rate) if mm200 else "N/A",
+                f"row-val {tech.get('mm200_css','')}")
+            html += _kv("Distancia MM200",
+                _fmt_num(d200,2,suffix="%") if d200 is not None else "N/A",
+                "row-val green" if (d200 or 0) >= 0 else "row-val red")
             html += _kv("Señal MM200", tech.get("mm200_signal","N/A"), f"row-val {tech.get('mm200_css','')}")
-
             if cross_sig:
-                cross_label, cross_css = cross_sig
-                html += _kv("Cruce MM50/MM200", cross_label, f"row-val {cross_css}")
+                c_label, c_css = cross_sig
+                html += _kv("Cruce MM50/MM200", c_label, f"row-val {c_css}")
 
             # Último cruce con fecha
             last_cross = fetch_last_cross_date(ticker)
             if last_cross.get("date"):
-                lc_type  = last_cross["type"]
-                lc_date  = last_cross["date"]
-                lc_color = "green" if lc_type == "GOLDEN CROSS" else "red"
-                html += _kv("Último cruce (fecha)", f"{lc_type} el {lc_date}", f"row-val {lc_color}")
+                lc_color = "green" if last_cross["type"] == "GOLDEN CROSS" else "red"
+                html += _kv("Último cruce (fecha)",
+                    f'{last_cross["type"]} — {last_cross["date"]}', f"row-val {lc_color}")
 
             st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
     elif tech and tech.get("error"):
-        st.markdown(f'<div class="metric-card"><span class="audit-warn">No se pudo calcular el análisis técnico: {tech["error"]}</span></div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="metric-card"><span class="audit-warn">No se pudo calcular el análisis técnico: {tech["error"]}</span></div>',
+            unsafe_allow_html=True)
     else:
-        st.markdown('<div class="metric-card"><span class="audit-warn">Análisis técnico no disponible.</span></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="metric-card"><span class="audit-warn">Análisis técnico no disponible.</span></div>',
+            unsafe_allow_html=True)
 
-    # ── Evaluación final ─────────────────────────────────────────────────
+    # ════════════════════════════════════════════════════════════════════
+    # EVALUACIÓN FINAL + DIAGNÓSTICO GENERAL
+    # ════════════════════════════════════════════════════════════════════
     ev = _evaluate(y, sec)
 
     _section("EVALUACIÓN FINAL")
@@ -1112,172 +1008,137 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
     upside       = ev["upside"]
     vs_hist      = ev["vs_hist"]
     price_now    = y.get("price") or 0
-    diag_color   = ev.get("diag_color", "#f1f5f9")
-    diag_icon    = ev.get("diag_icon", "")
+    diag_color   = ev.get("diag_color","#f1f5f9")
+    diag_icon    = ev.get("diag_icon","")
 
-    # ── Bloque sector ────────────────────────────────────────────────────
-    st.markdown(f"""
-    <div class="metric-card" style="border-left:3px solid #38bdf8;">
-      <div class="metric-label">CONTEXTO SECTORIAL</div>
-      <div style="font-size:0.95rem;font-weight:600;color:#f1f5f9;margin-bottom:0.4rem;">
-        {ev['sector_label']}
-      </div>
-      <div style="font-size:0.8rem;color:#94a3b8;line-height:1.6;">{ev['sector_nota']}</div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.5rem;margin-top:0.8rem;">
-        <div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">
-          <div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">PER justo sector</div>
-          <div style="font-family:'IBM Plex Mono',monospace;color:#38bdf8;font-weight:600;">{ev['pe_ref']}×</div>
-        </div>
-        <div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">
-          <div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">PEG aceptable</div>
-          <div style="font-family:'IBM Plex Mono',monospace;color:#38bdf8;font-weight:600;">&lt;{ev['peg_ok']}</div>
-        </div>
-        <div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">
-          <div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">EV/EBITDA justo</div>
-          <div style="font-family:'IBM Plex Mono',monospace;color:#38bdf8;font-weight:600;">{ev['ev_ebitda_fair']}×</div>
-        </div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Contexto sectorial
+    st.markdown(
+        '<div class="metric-card" style="border-left:3px solid #38bdf8;">'
+        '<div class="metric-label">CONTEXTO SECTORIAL</div>'
+        f'<div style="font-size:0.95rem;font-weight:600;color:#f1f5f9;margin-bottom:0.4rem;">{ev["sector_label"]}</div>'
+        f'<div style="font-size:0.8rem;color:#94a3b8;line-height:1.6;">{ev["sector_nota"]}</div>'
+        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.5rem;margin-top:0.8rem;">'
+        '<div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">'
+        f'<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">PER justo sector</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#38bdf8;font-weight:600;">{ev["pe_ref"]}×</div></div>'
+        '<div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">'
+        f'<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">PEG aceptable</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#38bdf8;font-weight:600;">&lt;{ev["peg_ok"]}</div></div>'
+        '<div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">'
+        f'<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">EV/EBITDA justo</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#38bdf8;font-weight:600;">{ev["ev_ebitda_fair"]}×</div></div>'
+        '</div></div>',
+        unsafe_allow_html=True
+    )
 
-    # ── Salud fundamental con desglose ────────────────────────────────────
-    bar_color_health = "#6ee7b7" if health_score >= 70 else "#fbbf24" if health_score >= 45 else "#fca5a5"
-    breakdown_html = "".join([
+    # Salud fundamental
+    bar_col_h = "#6ee7b7" if health_score>=70 else "#fbbf24" if health_score>=45 else "#fca5a5"
+    bd_html = "".join(
         f'<div style="font-size:0.75rem;color:#94a3b8;padding:0.2rem 0;border-bottom:1px solid #1a2540;">▸ {b}</div>'
         for b in ev["health_breakdown"]
-    ])
+    )
+    with st.expander(f"SALUD FUNDAMENTAL: {health_score}/100 — ver desglose", expanded=False):
+        st.markdown(
+            '<div style="background:#111827;border-radius:8px;padding:0.8rem 1rem;">'
+            f'<div style="display:flex;align-items:baseline;gap:0.8rem;margin-bottom:0.5rem;">'
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:1.6rem;font-weight:600;color:{bar_col_h};">{health_score}</span>'
+            f'<span style="color:#64748b;font-size:0.85rem;">/ 100 — sector: <b style="color:#f1f5f9;">{ev["sector_label"]}</b></span>'
+            '</div>'
+            f'<div style="background:#1e2d45;border-radius:4px;height:8px;margin-bottom:1rem;">'
+            f'<div style="height:8px;border-radius:4px;background:{bar_col_h};width:{health_score}%;"></div></div>'
+            f'{bd_html}</div>',
+            unsafe_allow_html=True
+        )
 
-    with st.expander(f"SALUD FUNDAMENTAL: {health_score}/100 — ver desglose por criterio", expanded=False):
-        st.markdown(f"""
-        <div style="background:#111827;border-radius:8px;padding:0.8rem 1rem;">
-          <div style="display:flex;align-items:baseline;gap:0.8rem;margin-bottom:0.5rem;">
-            <span style="font-family:'IBM Plex Mono',monospace;font-size:1.6rem;
-                         font-weight:600;color:{bar_color_health};">{health_score}</span>
-            <span style="color:#64748b;font-size:0.85rem;">/ 100 — umbrales ajustados al sector <b style="color:#f1f5f9;">{ev['sector_label']}</b></span>
-          </div>
-          <div style="background:#1e2d45;border-radius:4px;height:8px;margin-bottom:1rem;">
-            <div style="height:8px;border-radius:4px;background:{bar_color_health};width:{health_score}%;"></div>
-          </div>
-          {breakdown_html}
-        </div>
-        """, unsafe_allow_html=True)
-
-    # ── Métodos de valoración usados ──────────────────────────────────────
-    methods_html = "".join([
-        f'<div style="font-size:0.76rem;color:#94a3b8;padding:0.18rem 0;">▸ {m}</div>'
-        for m in ev.get("methods_used", [])
-    ]) or '<div style="font-size:0.76rem;color:#64748b;">No hay datos suficientes para calcular valor objetivo.</div>'
-
+    # Metodología de valoración
+    mh = "".join(f'<div style="font-size:0.76rem;color:#94a3b8;padding:0.18rem 0;">▸ {m}</div>'
+                 for m in ev.get("methods_used",[])
+    ) or '<div style="font-size:0.76rem;color:#64748b;">Sin datos suficientes para calcular valor objetivo.</div>'
     with st.expander("METODOLOGÍA DE VALORACIÓN — ver cálculo del valor objetivo", expanded=False):
-        st.markdown(f"""
-        <div style="background:#111827;border-radius:8px;padding:0.8rem 1rem;">
-          <div style="font-size:0.72rem;color:#38bdf8;text-transform:uppercase;
-                      letter-spacing:0.08em;margin-bottom:0.5rem;">
-            Métodos aplicados (sector: {ev['sector_label']})
-          </div>
-          {methods_html}
-          <div style="margin-top:0.6rem;font-size:0.72rem;color:#64748b;">
-            El valor objetivo es la media aritmética de todos los métodos disponibles
-            más el consenso de analistas cuando existe.
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            '<div style="background:#111827;border-radius:8px;padding:0.8rem 1rem;">'
+            f'<div style="font-size:0.72rem;color:#38bdf8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.5rem;">'
+            f'Métodos aplicados (sector: {ev["sector_label"]})</div>'
+            f'{mh}'
+            '<div style="margin-top:0.6rem;font-size:0.72rem;color:#64748b;">'
+            'El valor objetivo es la media aritmética de los métodos disponibles más el consenso de analistas.</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
 
-    # ── Comparativa vs sector ─────────────────────────────────────────────
-    vs_items = ev.get("vs_sector", "")
-    if vs_items and " · " in vs_items:
-        items = vs_items.split(" · ")
-        vs_html = "".join([
-            f'<div style="font-size:0.8rem;color:#e2e8f0;padding:0.25rem 0;'
-            f'border-bottom:1px solid #1a2540;">▸ {item}</div>'
-            for item in items
-        ])
+    # Múltiplos vs sector
+    vs_items = ev.get("vs_sector","")
+    if " · " in vs_items:
+        vs_html = "".join(
+            f'<div style="font-size:0.8rem;color:#e2e8f0;padding:0.25rem 0;border-bottom:1px solid #1a2540;">▸ {item}</div>'
+            for item in vs_items.split(" · ")
+        )
     else:
         vs_html = f'<div style="font-size:0.8rem;color:#94a3b8;">{vs_items}</div>'
+    st.markdown(
+        f'<div class="metric-card"><div class="metric-label">MÚLTIPLOS VS BENCHMARKS DEL SECTOR</div>{vs_html}</div>',
+        unsafe_allow_html=True
+    )
 
-    st.markdown(f"""
-    <div class="metric-card">
-      <div class="metric-label">MÚLTIPLOS ACTUALES VS BENCHMARKS DEL SECTOR</div>
-      {vs_html}
-    </div>
-    """, unsafe_allow_html=True)
+    # Diagnóstico general
+    upside_str  = f"{upside:+.2f}%" if upside is not None else "N/A"
+    fair_usd    = f"{currency_y} {fair:,.2f}" if fair else "N/A"
+    fair_eur    = f" (€{fair*fx_rate:,.2f})" if (fair and fx_rate and currency_y=="USD") else ""
+    fair_str    = f"{fair_usd}{fair_eur}" if fair else "N/A"
+    hist_str    = f"{vs_hist:+.2f}% vs media 52W" if vs_hist is not None else "N/A"
+    price_eur   = f" (€{price_now*fx_rate:,.2f})" if (fx_rate and currency_y=="USD") else ""
+    up_color    = "#6ee7b7" if (upside or 0) > 0 else "#fca5a5"
 
-    # ── Veredicto principal ───────────────────────────────────────────────
-    upside_str = f"{upside:+.2f}%" if upside is not None else "N/A"
-    fair_usd   = f"{currency_y} {fair:,.2f}" if fair else "N/A"
-    fair_eur   = f" (€{fair*fx_rate:,.2f})" if (fair and fx_rate and currency_y == "USD") else ""
-    fair_str   = f"{fair_usd}{fair_eur}" if fair else "N/A"
-    hist_str   = f"{vs_hist:+.2f}% vs media 52W" if vs_hist is not None else "N/A"
-    price_eur  = f" (€{price_now*fx_rate:,.2f})" if (fx_rate and currency_y == "USD") else ""
-    upside_color = "#6ee7b7" if (upside or 0) > 0 else "#fca5a5"
+    st.markdown(
+        f'<div class="verdict-box" style="border-left-color:{diag_color};">'
+        '<div class="verdict-title">DIAGNÓSTICO GENERAL</div>'
+        '<div style="display:flex;align-items:center;gap:0.7rem;margin-bottom:0.5rem;">'
+        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:1.4rem;font-weight:700;color:{diag_color};">{diag_icon}</span>'
+        f'<span class="verdict-main" style="color:{diag_color};">{ev["diag"]}</span>'
+        '</div>'
+        f'<div class="verdict-sub" style="margin-top:0.6rem;">'
+        f'<span style="color:#94a3b8;">Precio actual:</span>'
+        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#f1f5f9;"> {currency_y} {price_now:,.2f}{price_eur}</span>'
+        f'&nbsp;·&nbsp;<span style="color:#94a3b8;">Valor objetivo:</span>'
+        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#f1f5f9;"> {fair_str}</span>'
+        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:700;color:{up_color};"> ({upside_str})</span>'
+        '</div>'
+        f'<div class="verdict-sub"><span style="color:#94a3b8;">Vs. media 52W:</span>'
+        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#fbbf24;"> {hist_str}</span></div>'
+        f'<div class="verdict-sub" style="margin-top:0.4rem;">'
+        f'<span style="color:#94a3b8;">Riesgo técnico (short):</span>'
+        f'<span style="color:#e2e8f0;"> {ev["risk"]}%</span></div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
-    st.markdown(f"""
-    <div class="verdict-box" style="border-left-color:{diag_color};">
-      <div class="verdict-title">DIAGNÓSTICO GENERAL</div>
-      <div style="display:flex;align-items:center;gap:0.7rem;margin-bottom:0.5rem;">
-        <span style="font-family:'IBM Plex Mono',monospace;font-size:1.4rem;
-                     font-weight:700;color:{diag_color};">{diag_icon}</span>
-        <span class="verdict-main" style="color:{diag_color};">{ev['diag']}</span>
-      </div>
-
-      <div class="verdict-sub" style="margin-top:0.6rem;">
-        <span style="color:#94a3b8;">Precio actual:</span>
-        <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;color:#f1f5f9;">
-          {currency_y} {price_now:,.2f}{price_eur}
-        </span>
-        &nbsp;·&nbsp;
-        <span style="color:#94a3b8;">Valor objetivo (sector-ajustado):</span>
-        <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;color:#f1f5f9;">
-          {fair_str}
-        </span>
-        <span style="font-family:'IBM Plex Mono',monospace;font-weight:700;color:{upside_color};">
-          ({upside_str})
-        </span>
-      </div>
-
-      <div class="verdict-sub">
-        <span style="color:#94a3b8;">Vs. media 52W:</span>
-        <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;color:#fbbf24;">
-          {hist_str}
-        </span>
-      </div>
-
-      <div class="verdict-sub" style="margin-top:0.4rem;">
-        <span style="color:#94a3b8;">Presión vendedora (short ratio):</span>
-        <span style="color:#e2e8f0;"> riesgo técnico estimado {ev['risk']}%</span>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    sec_label = "SEC EDGAR + Yahoo Finance" if sec else "Yahoo Finance"
-
-    # ── Descripción de la empresa ─────────────────────────────────────────
-    with st.spinner("Cargando descripción, noticias y análisis de resultados…"):
-        company_info = fetch_company_description(ticker)
-        news_items   = fetch_recent_news(ticker)
-        ea           = fetch_earnings_analysis(ticker, y)
-
-    render_company_description(company_info, company_name)
-
-    # ── Noticias recientes ────────────────────────────────────────────────
-    render_news(news_items)
-
-    # ── Análisis de últimos resultados ────────────────────────────────────
+    # ════════════════════════════════════════════════════════════════════
+    # ANÁLISIS DE ÚLTIMOS RESULTADOS
+    # ════════════════════════════════════════════════════════════════════
     render_earnings_analysis(ea)
 
-    # ── H · Señal de confluencia de entrada ──────────────────────────────
+    # ════════════════════════════════════════════════════════════════════
+    # SEÑAL DE ENTRADA
+    # ════════════════════════════════════════════════════════════════════
     signal = calc_entry_signal(y, tech, ev)
     render_entry_signal(signal)
 
-    # ── I · Tendencia trimestral (SEC + comparativa Yahoo) ───────────────
+    # ════════════════════════════════════════════════════════════════════
+    # TENDENCIA TRIMESTRAL
+    # ════════════════════════════════════════════════════════════════════
     trend = calc_trend(sec)
-    yahoo_quarters = y.get("ttm_quarters")
     render_trend(trend, yahoo_quarters)
 
-    # ── J · Comparativa con competidores ─────────────────────────────────
+    # ════════════════════════════════════════════════════════════════════
+    # COMPARATIVA CON COMPETIDORES
+    # ════════════════════════════════════════════════════════════════════
     with st.spinner("Cargando datos de competidores…"):
         peers_tickers = get_peers(ticker, y.get("sector",""), y.get("company_name",""))
         peers_data    = fetch_peer_data(peers_tickers)
     render_peers(ticker, y, peers_data, fx_rate, ev)
 
-    st.caption(f"Datos: {sec_label} · {ticker} · USD/EUR: {fx_rate:.4f} · Valoración ajustada al sector {ev['sector_label']} · No constituye asesoramiento financiero.")
+    sec_label = "SEC EDGAR + Yahoo Finance" if sec else "Yahoo Finance"
+    st.caption(
+        f"Datos: {sec_label} · {ticker} · USD/EUR: {fx_rate:.4f} · "
+        f"Sector: {ev['sector_label']} · No constituye asesoramiento financiero."
+    )
