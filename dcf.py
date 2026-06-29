@@ -528,13 +528,14 @@ def render_historical_multiples(mult: dict | None):
         )
 
     discount_str = f"{discount:+.1f}%" if discount is not None else "N/A"
+    per_cur_str  = f"{per_cur:.1f}×" if per_cur is not None else "N/A"
 
     st.markdown(
         '<div class="metric-card">'
         '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0.5rem;margin-bottom:0.8rem;">'
         f'<div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">PER actual</div>'
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:{sig_color};font-weight:600;">{per_cur:.1f}×</div></div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:{sig_color};font-weight:600;">{per_cur_str}</div></div>'
         f'<div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">Media 5 años</div>'
         f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:600;">{per_mean}×</div></div>'
