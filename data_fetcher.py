@@ -337,7 +337,13 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
             "dividend_rate":  info.get("dividendRate"),
 
             # Otros
-            "short_ratio":      info.get("shortRatio"),
+            "short_ratio":            info.get("shortRatio"),
+            "shares_short":           info.get("sharesShort"),
+            "shares_short_prior":     info.get("sharesShortPriorMonth"),
+            "short_percent_of_float": info.get("shortPercentOfFloat"),
+            "float_shares":           info.get("floatShares"),
+            "shares_outstanding":     info.get("sharesOutstanding"),
+            "date_short_interest":    info.get("dateShortInterest"),
             "eps_ttm":          info.get("trailingEps"),
             "eps_forward":      info.get("forwardEps"),
             "market_cap":       info.get("marketCap"),

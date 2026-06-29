@@ -1064,3 +1064,257 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
 
     st.markdown(f'<div class="metric-card" style="padding:0.8rem 0.5rem;">{table}</div>', unsafe_allow_html=True)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ANÁLISIS DE SHORT INTEREST Y PROBABILIDAD DE SHORT SQUEEZE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def calc_short_squeeze(y: dict) -> dict:
+    """
+    Calcula la probabilidad de short squeeze basándose en:
+      1. Short Ratio (días para cubrir): días que tardarían los bajistas en
+         cerrar sus posiciones al volumen medio. >5 días = presión relevante.
+      2. Short % of Float: porcentaje del float en posiciones cortas.
+         >10% = significativo, >20% = muy elevado, >30% = extremo.
+      3. Variación mensual del short interest: si sube agresivamente
+         puede indicar acumulación bajista o anticipación de malas noticias.
+      4. RSI bajo + short alto = condiciones clásicas de squeeze potencial.
+
+    El squeeze ocurre cuando los bajistas se ven forzados a comprar para cubrir
+    sus posiciones, acelerando la subida del precio.
+    """
+    short_ratio    = y.get("short_ratio") or 0
+    pct_float      = (y.get("short_percent_of_float") or 0) * 100
+    shares_short   = y.get("shares_short") or 0
+    shares_prior   = y.get("shares_short_prior") or 0
+    float_shares   = y.get("float_shares") or 0
+    date_si        = y.get("date_short_interest")
+
+    # Variación mensual del short interest
+    monthly_change = None
+    monthly_change_pct = None
+    if shares_short and shares_prior and shares_prior > 0:
+        monthly_change     = shares_short - shares_prior
+        monthly_change_pct = (monthly_change / shares_prior) * 100
+
+    # ── Puntuación por factor (0-100 total) ──────────────────────────────
+    score = 0
+    factors = []
+
+    # Factor 1: Short Ratio (0-35 pts)
+    if short_ratio >= 10:
+        f1, f1_lbl = 35, f"Ratio extremo: {short_ratio:.1f} días para cubrir"
+    elif short_ratio >= 7:
+        f1, f1_lbl = 25, f"Ratio muy alto: {short_ratio:.1f} días para cubrir"
+    elif short_ratio >= 5:
+        f1, f1_lbl = 15, f"Ratio relevante: {short_ratio:.1f} días para cubrir"
+    elif short_ratio >= 3:
+        f1, f1_lbl = 7,  f"Ratio moderado: {short_ratio:.1f} días para cubrir"
+    else:
+        f1, f1_lbl = 0,  f"Ratio bajo: {short_ratio:.1f} días — presión bajista mínima"
+    score += f1
+    factors.append(("Short Ratio", f1, 35, f1_lbl))
+
+    # Factor 2: % del Float (0-40 pts)
+    if pct_float >= 30:
+        f2, f2_lbl = 40, f"{pct_float:.1f}% del float vendido en corto — nivel extremo"
+    elif pct_float >= 20:
+        f2, f2_lbl = 28, f"{pct_float:.1f}% del float vendido en corto — muy elevado"
+    elif pct_float >= 10:
+        f2, f2_lbl = 16, f"{pct_float:.1f}% del float vendido en corto — significativo"
+    elif pct_float >= 5:
+        f2, f2_lbl = 6,  f"{pct_float:.1f}% del float vendido en corto — moderado"
+    else:
+        f2, f2_lbl = 0,  f"{pct_float:.1f}% del float vendido en corto — bajo"
+    score += f2
+    factors.append(("Short % del Float", f2, 40, f2_lbl))
+
+    # Factor 3: Cambio mensual (0-25 pts)
+    if monthly_change_pct is not None:
+        if monthly_change_pct >= 25:
+            f3, f3_lbl = 25, f"Short interest subió +{monthly_change_pct:.0f}% en el último mes — acumulación bajista agresiva"
+        elif monthly_change_pct >= 10:
+            f3, f3_lbl = 12, f"Short interest subió +{monthly_change_pct:.0f}% en el último mes"
+        elif monthly_change_pct <= -20:
+            f3, f3_lbl = -5, f"Short interest bajó {monthly_change_pct:.0f}% — bajistas cerrando posiciones (señal positiva)"
+        else:
+            f3, f3_lbl = 0, f"Short interest estable ({monthly_change_pct:+.0f}% vs mes anterior)"
+        score += f3
+        factors.append(("Variación mensual", max(f3,0), 25, f3_lbl))
+    else:
+        factors.append(("Variación mensual", 0, 25, "Sin dato de mes anterior"))
+
+    score = max(0, min(100, score))
+
+    # ── Clasificación de probabilidad ─────────────────────────────────────
+    if score >= 70:
+        level   = "MUY ALTA"
+        color   = "#fca5a5"
+        icon    = "🔥"
+        summary = ("Confluencia de factores bajistas extremos. El potencial de squeeze es muy elevado "
+                   "si llega un catalizador alcista (buenos resultados, noticia positiva, upgrade de analista). "
+                   "Alto riesgo/oportunidad: movimientos de +20/30% en días no son inusuales en estos casos.")
+    elif score >= 45:
+        level   = "MODERADA-ALTA"
+        color   = "#fb923c"
+        icon    = "⚡"
+        summary = ("Presión bajista significativa. Un catalizador positivo podría desencadenar coberturas "
+                   "forzadas y amplificar el movimiento alcista más allá de lo que justificarían los fundamentales.")
+    elif score >= 25:
+        level   = "MODERADA"
+        color   = "#fbbf24"
+        icon    = "⚠️"
+        summary = ("Short interest notable pero no en niveles de squeeze inminente. "
+                   "Vigilar si continúa aumentando en los próximos meses.")
+    elif score >= 10:
+        level   = "BAJA"
+        color   = "#6ee7b7"
+        icon    = "✓"
+        summary = "Presión bajista limitada. Poco riesgo de squeeze pero también poca presión compradora forzada."
+    else:
+        level   = "MUY BAJA"
+        color   = "#38bdf8"
+        icon    = "○"
+        summary = "Posiciones cortas mínimas. El mercado no muestra desconfianza bajista significativa."
+
+    # Fecha del último reporte de short interest
+    date_str = "N/A"
+    if date_si:
+        try:
+            from datetime import datetime, timezone
+            if isinstance(date_si, (int, float)):
+                date_str = datetime.fromtimestamp(date_si, tz=timezone.utc).strftime("%Y-%m-%d")
+            else:
+                date_str = str(date_si)[:10]
+        except Exception:
+            date_str = str(date_si)[:10]
+
+    return {
+        "score":              score,
+        "level":              level,
+        "color":              color,
+        "icon":               icon,
+        "summary":            summary,
+        "short_ratio":        short_ratio,
+        "pct_float":          pct_float,
+        "shares_short":       shares_short,
+        "float_shares":       float_shares,
+        "monthly_change_pct": monthly_change_pct,
+        "date_si":            date_str,
+        "factors":            factors,
+    }
+
+
+def render_short_squeeze(sq: dict):
+    """Renderiza el análisis de short interest y probabilidad de short squeeze."""
+    st.markdown(
+        '<div class="section-header">ANÁLISIS SHORT INTEREST &amp; SHORT SQUEEZE</div>',
+        unsafe_allow_html=True
+    )
+
+    if not sq or sq.get("short_ratio", 0) == 0:
+        st.markdown(
+            '<div class="metric-card"><span style="color:#64748b;">'
+            'Datos de short interest no disponibles para este ticker.</span></div>',
+            unsafe_allow_html=True
+        )
+        return
+
+    score    = sq["score"]
+    level    = sq["level"]
+    color    = sq["color"]
+    icon     = sq["icon"]
+    summary  = sq["summary"]
+    factors  = sq["factors"]
+
+    def fmt_shares(v):
+        if not v: return "N/A"
+        if v >= 1e9:  return f"{v/1e9:.2f}B"
+        if v >= 1e6:  return f"{v/1e6:.1f}M"
+        if v >= 1e3:  return f"{v/1e3:.0f}K"
+        return str(int(v))
+
+    def tip(text):
+        safe = text.replace('"','&quot;')
+        return (
+            f'<span title="{safe}" style="margin-left:0.3rem;cursor:help;'
+            f'font-size:0.6rem;color:#334155;border:1px solid #334155;'
+            f'border-radius:50%;padding:0 3px;font-family:monospace;'
+            f'vertical-align:middle;">?</span>'
+        )
+
+    # Desglose de factores
+    factor_rows = ""
+    for fname, pts, max_pts, flbl in factors:
+        pct_bar = (pts / max_pts * 100) if max_pts else 0
+        bar_col = color if pts > 0 else "#1e2d45"
+        factor_rows += (
+            f'<div style="margin-bottom:0.5rem;">'
+            f'<div style="display:flex;justify-content:space-between;font-size:0.78rem;margin-bottom:0.2rem;">'
+            f'<span style="color:#94a3b8;">{fname}</span>'
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;color:{color if pts>0 else "#64748b"};">'
+            f'{pts}/{max_pts}</span>'
+            f'</div>'
+            f'<div style="background:#1e2d45;border-radius:3px;height:6px;">'
+            f'<div style="width:{pct_bar:.0f}%;height:6px;border-radius:3px;background:{bar_col};"></div>'
+            f'</div>'
+            f'<div style="font-size:0.72rem;color:#64748b;margin-top:0.15rem;">{flbl}</div>'
+            f'</div>'
+        )
+
+    # Métricas numéricas
+    tip_sr  = tip("Días que necesitarían todos los bajistas para cerrar sus posiciones al volumen medio diario. >5d = presión relevante, >10d = muy alta.")
+    tip_pf  = tip("Porcentaje del float (acciones en circulación real) vendido en corto. >10% significativo, >20% muy alto, >30% extremo y propenso a squeeze.")
+    tip_sq  = tip("El short squeeze ocurre cuando una subida del precio fuerza a los bajistas a comprar para cubrir pérdidas, acelerando aún más la subida. Requiere catalizador + alto short interest + bajo float.")
+
+    date_note = f'Último reporte: {sq["date_si"]}' if sq["date_si"] != "N/A" else ""
+
+    st.markdown(
+        f'<div class="metric-card">'
+        # Cabecera con probabilidad
+        f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">'
+        f'<div>'
+        f'<div style="font-size:0.7rem;color:#64748b;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.2rem;">'
+        f'Probabilidad de Short Squeeze{tip_sq}</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.2rem;font-weight:700;color:{color};">'
+        f'{icon} {level}</div>'
+        f'</div>'
+        f'<div style="text-align:right;">'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:2rem;font-weight:700;color:{color};">'
+        f'{score}<span style="font-size:1rem;color:#64748b;">/100</span></div>'
+        f'<div style="font-size:0.68rem;color:#64748b;">{date_note}</div>'
+        f'</div>'
+        f'</div>'
+        # Barra de score
+        f'<div style="background:#1e2d45;border-radius:4px;height:8px;margin-bottom:1rem;">'
+        f'<div style="height:8px;border-radius:4px;background:{color};width:{score}%;"></div>'
+        f'</div>'
+        # Métricas clave en grid
+        f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.5rem;margin-bottom:1rem;">'
+        f'<div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">'
+        f'<div style="font-size:0.67rem;color:#64748b;">Short Ratio{tip_sr}</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:{color};font-weight:700;">'
+        f'{sq["short_ratio"]:.1f} días</div></div>'
+        f'<div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">'
+        f'<div style="font-size:0.67rem;color:#64748b;">Short % del Float{tip_pf}</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:{color};font-weight:700;">'
+        f'{sq["pct_float"]:.1f}%</div></div>'
+        f'<div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">'
+        f'<div style="font-size:0.67rem;color:#64748b;">Acciones en corto</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:600;">'
+        f'{fmt_shares(sq["shares_short"])}</div></div>'
+        f'</div>'
+        # Desglose por factor
+        f'<div style="font-size:0.7rem;color:#38bdf8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.5rem;">'
+        f'Desglose de factores</div>'
+        f'{factor_rows}'
+        # Resumen
+        f'<div style="background:#0f172a;border-radius:6px;padding:0.6rem 0.8rem;margin-top:0.5rem;">'
+        f'<div style="font-size:0.78rem;color:#cbd5e1;line-height:1.6;">{summary}</div>'
+        f'</div>'
+        f'<div style="font-size:0.68rem;color:#475569;margin-top:0.5rem;">'
+        f'Fuente: Yahoo Finance · El short squeeze no es predecible con certeza — requiere un catalizador externo.'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True
+    )

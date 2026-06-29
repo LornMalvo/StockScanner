@@ -10,6 +10,7 @@ from analysis import (
     fetch_company_description, fetch_recent_news, fetch_earnings_analysis,
     fetch_last_cross_date, render_company_description, render_news,
     render_earnings_analysis, get_sector_benchmarks,
+    calc_short_squeeze, render_short_squeeze,
 )
 from dcf import (
     calc_dcf, fetch_risk_free_rate,
@@ -905,6 +906,12 @@ def render_report(ticker, company_name, y: dict,
         st.markdown(
             '<div class="metric-card"><span class="audit-warn">Análisis técnico no disponible.</span></div>',
             unsafe_allow_html=True)
+
+    # ════════════════════════════════════════════════════════════════════
+    # SHORT INTEREST & SHORT SQUEEZE
+    # ════════════════════════════════════════════════════════════════════
+    sq_data = calc_short_squeeze(y)
+    render_short_squeeze(sq_data)
 
     # ════════════════════════════════════════════════════════════════════
     # EVALUACIÓN FINAL + DIAGNÓSTICO GENERAL
