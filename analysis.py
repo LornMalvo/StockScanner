@@ -86,6 +86,10 @@ SECTOR_PEERS = {
 }
 
 def get_peers(ticker: str, sector: str, company_name: str) -> list:
+    """
+    Obtiene competidores directos usando la lista curada por sector/subsector.
+    Prioriza encontrar el subsector correcto buscando el ticker en las listas.
+    """
     sector_map = None
     for key in SECTOR_PEERS:
         if key != "_default" and key.lower() in (sector or "").lower():
@@ -93,31 +97,88 @@ def get_peers(ticker: str, sector: str, company_name: str) -> list:
             break
     if not sector_map:
         sector_map = SECTOR_PEERS["_default"]
+
     if len(sector_map) == 1:
         peers = list(sector_map.values())[0]
     else:
         chosen = None
+        # Primero: buscar el ticker directamente en las listas de subsector
         for subsector, tickers in sector_map.items():
-            if subsector in ("General Technology", "General"):
-                continue
-            if ticker.upper() in tickers:
+            if ticker.upper() in [t.upper() for t in tickers]:
                 chosen = tickers
                 break
-        peers = chosen or list(sector_map.values())[-1]
+        # Segundo: buscar por palabras del nombre de empresa
+        if not chosen:
+            name_lower = (company_name or "").lower()
+            for subsector, tickers in sector_map.items():
+                if subsector in ("General Technology", "General"):
+                    continue
+                sub_words = subsector.lower().replace("/", " ").replace("-", " ").split()
+                if any(w in name_lower for w in sub_words if len(w) > 3):
+                    chosen = tickers
+                    break
+        # Fallback: primer subsector no genérico
+        if not chosen:
+            for subsector, tickers in sector_map.items():
+                if subsector not in ("General Technology", "General", "_default"):
+                    chosen = tickers
+                    break
+        peers = chosen or list(sector_map.values())[0]
+
     return [p for p in peers if p.upper() != ticker.upper()][:8]
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DESCRIPCIÓN DE LA EMPRESA
-# ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DESCRIPCIÓN DE LA EMPRESA (con traducción al castellano vía Claude API)
+# DESCRIPCIÓN DE LA EMPRESA + INSIDERS + CALIDAD DEL BENEFICIO
 # ─────────────────────────────────────────────────────────────────────────────
 
 def fetch_company_description(ticker: str) -> dict:
+    """
+    Obtiene descripción + datos de insiders + calidad del beneficio (FCF/NI).
+    """
     try:
         t    = yf.Ticker(ticker)
         info = t.info
+
+        # Insider transactions
+        insiders = []
+        try:
+            insider_df = t.insider_transactions
+            if insider_df is not None and not insider_df.empty:
+                for _, row in insider_df.head(12).iterrows():
+                    try:
+                        date_val = row.get("startDate") or row.get("Date","")
+                        date_str = str(date_val)[:10] if date_val else "N/A"
+                        text     = str(row.get("text","") or row.get("Transaction",""))
+                        relation = str(row.get("relationship","") or row.get("Insider",""))
+                        shares   = row.get("shares") or row.get("Shares") or 0
+                        value    = row.get("value")  or row.get("Value")  or 0
+                        is_buy   = any(w in text.lower() for w in
+                                       ["purchase","buy","acquisition","bought"])
+                        is_sell  = any(w in text.lower() for w in
+                                       ["sale","sell","sold","disposition"])
+                        if not text: continue
+                        insiders.append({
+                            "date":     date_str,
+                            "text":     text[:70],
+                            "relation": relation[:45],
+                            "shares":   int(float(shares)) if shares else 0,
+                            "value":    float(value) if value else 0,
+                            "is_buy":   is_buy,
+                            "is_sell":  is_sell,
+                        })
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        # Calidad del beneficio: FCF / Net Income
+        fcf     = info.get("freeCashflow")
+        net_inc = info.get("netIncomeToCommon") or info.get("netIncome")
+        fcf_quality = None
+        if fcf and net_inc and net_inc != 0:
+            fcf_quality = round(fcf / abs(net_inc), 2)
+
         return {
             "description": info.get("longBusinessSummary",""),
             "sector":      info.get("sector",""),
@@ -125,6 +186,8 @@ def fetch_company_description(ticker: str) -> dict:
             "employees":   info.get("fullTimeEmployees"),
             "website":     info.get("website",""),
             "country":     info.get("country",""),
+            "insiders":    insiders,
+            "fcf_quality": fcf_quality,
         }
     except Exception:
         return {}
@@ -547,28 +610,92 @@ def render_company_description(company_info: dict, company_name: str):
     website   = company_info.get("website","")
     emp_str   = f"{employees:,}" if employees else "N/A"
     web_html  = f'<a href="{website}" target="_blank" style="color:#38bdf8;">{website}</a>' if website else "N/A"
-    desc_short = desc if len(desc) <= 900 else desc[:900] + "…"
+    desc_short = desc if len(desc) <= 1000 else desc[:1000] + "…"
+    insiders   = company_info.get("insiders", [])
+    fcf_q      = company_info.get("fcf_quality")
 
     tags = ""
     if industry:  tags += f'<span style="background:#1e2d45;color:#94a3b8;padding:2px 9px;border-radius:4px;font-size:0.75rem;margin-right:0.4rem;">{industry}</span>'
     if country:   tags += f'<span style="background:#1e2d45;color:#94a3b8;padding:2px 9px;border-radius:4px;font-size:0.75rem;margin-right:0.4rem;">🌍 {country}</span>'
     if employees: tags += f'<span style="background:#1e2d45;color:#94a3b8;padding:2px 9px;border-radius:4px;font-size:0.75rem;">👥 {emp_str} empleados</span>'
 
+    # Calidad del beneficio
+    fcf_html = ""
+    if fcf_q is not None:
+        if fcf_q >= 0.9:
+            fcq_col, fcq_lbl = "#6ee7b7", "Beneficio de alta calidad — se convierte en caja real"
+        elif fcf_q >= 0.5:
+            fcq_col, fcq_lbl = "#fbbf24", "Calidad moderada — parte del beneficio no es caja"
+        elif fcf_q >= 0:
+            fcq_col, fcq_lbl = "#fb923c", "Calidad baja — beneficio contable supera al FCF"
+        else:
+            fcq_col, fcq_lbl = "#fca5a5", "FCF negativo — cuidado con la calidad del beneficio"
+        fcf_html = (
+            f'<div style="margin-top:0.7rem;padding:0.5rem 0.7rem;background:#0f172a;border-radius:6px;'
+            f'border-left:3px solid {fcq_col};">'
+            f'<span style="font-size:0.7rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;">Calidad del beneficio (FCF/Net Income)</span><br>'
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;color:{fcq_col};font-weight:700;">{fcq_col and f"{fcq_q:.2f}×"}</span>'
+            f'<span style="font-size:0.78rem;color:{fcq_col};margin-left:0.5rem;">{fcq_lbl}</span>'
+            f'</div>'
+        )
+        # fix variable name
+        fcf_html = fcf_html.replace("fcq_col and ", "").replace('f"{fcq_q:.2f}×"', f'"{fcf_q:.2f}×"')
+
     st.markdown(
         '<div class="metric-card">'
         f'<div style="margin-bottom:0.7rem;">{tags}</div>'
         f'<div style="font-size:0.85rem;color:#cbd5e1;line-height:1.75;">{desc_short}</div>'
+        f'{fcf_html}'
         f'<div style="margin-top:0.6rem;font-size:0.75rem;color:#64748b;">🌐 {web_html}</div>'
         '</div>',
         unsafe_allow_html=True
     )
+
+    # Insider transactions
+    if insiders:
+        buys  = [i for i in insiders if i["is_buy"]]
+        sells = [i for i in insiders if i["is_sell"]]
+        net_signal = ""
+        if len(buys) > len(sells) * 1.5:
+            net_signal = '<span style="color:#6ee7b7;font-weight:700;">🟢 SEÑAL ALCISTA — más compras que ventas de insiders</span>'
+        elif len(sells) > len(buys) * 2:
+            net_signal = '<span style="color:#fca5a5;font-weight:700;">🔴 SEÑAL BAJISTA — ventas significativas de insiders</span>'
+        else:
+            net_signal = '<span style="color:#64748b;">Actividad mixta de insiders</span>'
+
+        rows_ins = ""
+        for ins in insiders[:8]:
+            col  = "#6ee7b7" if ins["is_buy"] else "#fca5a5" if ins["is_sell"] else "#94a3b8"
+            icon = "▲" if ins["is_buy"] else "▼" if ins["is_sell"] else "—"
+            val_str = f"${ins['value']/1e6:.1f}M" if ins["value"] > 1e6 else (f"${ins['value']:,.0f}" if ins["value"] else "")
+            rows_ins += (
+                f'<div style="display:grid;grid-template-columns:0.8fr 2fr 2fr 1fr;gap:0.3rem;'
+                f'padding:0.3rem 0;border-bottom:1px solid #1a2540;font-size:0.76rem;">'
+                f'<span style="color:{col};font-weight:700;">{icon} {ins["date"]}</span>'
+                f'<span style="color:#94a3b8;">{ins["relation"]}</span>'
+                f'<span style="color:#e2e8f0;">{ins["text"]}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;color:{col};text-align:right;">{val_str}</span>'
+                f'</div>'
+            )
+
+        st.markdown(
+            '<div class="metric-card" style="border-left:3px solid #334155;">'
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.6rem;">'
+            '<span style="font-size:0.7rem;color:#38bdf8;text-transform:uppercase;letter-spacing:0.1em;">Transacciones de Insiders (últimas)</span>'
+            f'<span style="font-size:0.78rem;">{net_signal}</span>'
+            '</div>'
+            f'{rows_ins}'
+            '<div style="font-size:0.68rem;color:#475569;margin-top:0.4rem;">Fuente: Yahoo Finance · Las compras de insiders son señal alcista frecuente</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RENDER — NOTICIAS RECIENTES
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_news(news_items: list):
-    st.markdown('<div class="section-header">NOTICIAS Y ANUNCIOS RECIENTES (últimos 3 meses)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">C · NOTICIAS Y ANUNCIOS RECIENTES (últimos 3 meses)</div>', unsafe_allow_html=True)
     if not news_items:
         st.markdown('<div class="metric-card"><span style="color:#64748b;">No se encontraron noticias recientes.</span></div>', unsafe_allow_html=True)
         return
@@ -742,11 +869,11 @@ def render_entry_signal(signal: dict):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
-    """Renderiza la tendencia anual de ingresos y beneficio neto usando datos FMP."""
-    st.markdown('<div class="section-header">I · TENDENCIA ANUAL (FMP / SEC 10-K)</div>', unsafe_allow_html=True)
+    """Renderiza la tendencia de ingresos usando datos de Yahoo Finance TTM."""
+    st.markdown('<div class="section-header">I · TENDENCIA TRIMESTRAL</div>', unsafe_allow_html=True)
 
-    if not trend:
-        st.markdown('<div class="metric-card"><span style="color:#64748b;">Datos FMP no disponibles para calcular tendencia.</span></div>', unsafe_allow_html=True)
+    if not trend and not yahoo_quarters:
+        st.markdown('<div class="metric-card"><span style="color:#64748b;">Datos insuficientes para calcular tendencia.</span></div>', unsafe_allow_html=True)
         return
 
     sig_label, sig_color = trend["trend_signal"]
@@ -777,8 +904,8 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
             f'{bars}</div>'
         )
 
-    rev_bars = bar_html(rev_ch, "🟢 Crecimiento YoY — Revenue (FMP 10-K)")
-    ni_bars  = bar_html(ni_ch,  "🟢 Crecimiento YoY — Beneficio Neto (FMP 10-K)")
+    rev_bars = bar_html(rev_ch, "🟡 Crecimiento YoY — Revenue (Yahoo)")
+    ni_bars  = bar_html(ni_ch,  "🟡 Crecimiento YoY — Beneficio Neto (Yahoo)")
 
     header = (
         '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">' +
@@ -791,7 +918,7 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
         f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.2rem;color:#f1f5f9;font-weight:600;">{trend["total_q"]}</div>' +
         '</div></div>'
     )
-    source_note = '<div style="font-size:0.7rem;color:#475569;margin-top:0.3rem;">Fuente: FMP / SEC 10-K anual · Variaciones año sobre año</div>'
+    source_note = '<div style="font-size:0.7rem;color:#475569;margin-top:0.3rem;">Fuente: Yahoo Finance · Variaciones año sobre año</div>'
     content = header + rev_bars + ni_bars + source_note
 
     st.markdown(f'<div class="metric-card">{content}</div>', unsafe_allow_html=True)
@@ -803,7 +930,7 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
 
 def render_peers(main_ticker: str, main_data: dict, peers_data: list,
                  fx_rate: float | None, ev: dict):
-    st.markdown('<div class="section-header">J · COMPARATIVA CON COMPETIDORES</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">J · COMPARATIVA FRENTE A COMPETENCIA</div>', unsafe_allow_html=True)
     if not peers_data:
         st.markdown('<div class="metric-card"><span style="color:#64748b;">No se pudieron obtener datos de competidores.</span></div>', unsafe_allow_html=True)
         return
@@ -859,19 +986,36 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
     peer_rows = "".join(make_row(p["ticker"], p["name"], p) for p in peers_data)
     hs = "padding:0.4rem 0.5rem;font-size:0.68rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;text-align:right;border-bottom:1px solid #1e2d45;"
 
+    # Tooltips en cabeceras de columna
+    def th(label, tip, align="right"):
+        tip_safe = tip.replace('"','&quot;')
+        return (
+            f'<th style="{hs}text-align:{align};">'
+            f'{label}'
+            f'<span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;">'
+            f'<span style="font-size:0.6rem;color:#1e3a5f;border:1px solid #1e3a5f;border-radius:50%;padding:0 3px;">?</span>'
+            f'<span class="tooltip-box">{tip_safe}</span>'
+            f'</span></th>'
+        )
+
     table = (
         '<div style="overflow-x:auto;">'
         '<table style="width:100%;border-collapse:collapse;font-size:0.83rem;">'
         '<thead><tr style="background:#0a0e1a;">'
         f'<th style="{hs}text-align:left;">Empresa</th>'
-        f'<th style="{hs}">PER Fwd</th><th style="{hs}">PEG</th>'
-        f'<th style="{hs}">EV/EBITDA</th><th style="{hs}">Margen</th>'
-        f'<th style="{hs}">ROE</th><th style="{hs}">Crec.</th><th style="{hs}">Mkt Cap</th>'
-        '</tr></thead>'
+        + th("PER Fwd",   f"PER Forward: precio / beneficio estimado próximos 12 meses. Referencia sector: {pe_ref}×. Verde si está por debajo.")
+        + th("PEG",       f"PEG = PER / crecimiento anual. <1 = empresa barata respecto a su crecimiento. Referencia sector: <{peg_ref}.")
+        + th("EV/EBITDA", f"Valor empresa / EBITDA. Métrica universal de valoración. Referencia sector: {ev_ref}×. Verde si está por debajo.")
+        + th("Margen",    "Margen de beneficio neto (%). Verde si supera el 10%. Cuanto más alto, más rentable el negocio.")
+        + th("ROE",       "Return on Equity: beneficio / patrimonio neto (%). Verde si supera el 12%. Mide eficiencia del capital.")
+        + th("Crec.",     "Crecimiento de ingresos YoY (%). Verde si supera el 5%. Indica capacidad de expansión del negocio.")
+        + th("Mkt Cap",   "Capitalización bursátil total. T = billones, B = miles de millones, M = millones.")
+        + '</tr></thead>'
         f'<tbody>{main_row}{peer_rows}</tbody>'
         '</table></div>'
         f'<div style="font-size:0.7rem;color:#64748b;margin-top:0.5rem;">'
-        f'Verde = mejor que referencia sector · Rojo = peor · PER ref: {pe_ref}x · PEG ref: {peg_ref} · EV/EBITDA ref: {ev_ref}x</div>'
+        f'Verde = mejor que referencia sector · Rojo = peor · Ref: PER {pe_ref}× · PEG {peg_ref} · EV/EBITDA {ev_ref}×</div>'
     )
 
     st.markdown(f'<div class="metric-card" style="padding:0.8rem 0.5rem;">{table}</div>', unsafe_allow_html=True)
+
