@@ -1,5 +1,6 @@
 import streamlit as st
-from data_fetcher import fetch_sec_data, fetch_yahoo_data, verify_cross_data, fetch_usd_eur_rate, fetch_technical_data
+from data_fetcher import fetch_yahoo_data, fetch_usd_eur_rate, fetch_technical_data
+from fmp_client import fetch_fmp_data, verify_fmp_vs_yahoo
 from report import render_report
 from stock_scanner import render_scanner
 
@@ -211,13 +212,13 @@ with tab_analisis:
         </div>
         """, unsafe_allow_html=True)
 
-        with st.spinner("Obteniendo datos, verificando con SEC EDGAR y calculando análisis técnico…"):
-            sec_data        = fetch_sec_data(ticker)
-            cross           = verify_cross_data(sec_data, yahoo_data) if sec_data else None
+        with st.spinner("Obteniendo datos FMP, Yahoo Finance y análisis técnico…"):
+            fmp_data         = fetch_fmp_data(ticker)
+            cross            = verify_fmp_vs_yahoo(fmp_data, yahoo_data) if fmp_data else None
             fx_rate, fx_meta = fetch_usd_eur_rate()
-            tech_data       = fetch_technical_data(ticker)
+            tech_data        = fetch_technical_data(ticker)
 
-        render_report(ticker, company_name, yahoo_data, sec_data, cross, fx_rate, tech_data, fx_meta)
+        render_report(ticker, company_name, yahoo_data, fmp_data, cross, fx_rate, tech_data, fx_meta)
 
     elif buscar and not ticker_input:
         st.warning("Introduce un ticker para continuar.")

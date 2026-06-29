@@ -131,36 +131,64 @@ def fetch_company_description(ticker: str) -> dict:
 
 
 def translate_description_to_spanish(description: str) -> str:
-    """Traduce la descripción de la empresa al castellano usando la API de Claude."""
+    """
+    Traduce la descripción al castellano usando la API de Claude.
+    La API key se lee de st.secrets["ANTHROPIC_API_KEY"] o la variable
+    de entorno ANTHROPIC_API_KEY.
+    """
     if not description or len(description) < 20:
         return description
+
+    # Obtener API key
+    api_key = None
+    try:
+        import streamlit as st
+        api_key = st.secrets.get("ANTHROPIC_API_KEY", None)
+    except Exception:
+        pass
+    if not api_key:
+        import os
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    if not api_key:
+        print("[Translate] Sin API key — mostrando descripción en inglés")
+        return description
+
     try:
         import requests as req
         resp = req.post(
             "https://api.anthropic.com/v1/messages",
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type":      "application/json",
+                "x-api-key":         api_key,
+                "anthropic-version": "2023-06-01",
+            },
             json={
-                "model": "claude-sonnet-4-6",
-                "max_tokens": 800,
+                "model":      "claude-haiku-4-5-20251001",   # rápido y barato para traducciones
+                "max_tokens": 1000,
                 "messages": [{
-                    "role": "user",
+                    "role":    "user",
                     "content": (
-                        f"Traduce este texto al castellano de forma natural y profesional. "
-                        f"Devuelve SOLO la traducción, sin explicaciones ni comillas:\n\n{description[:1200]}"
+                        "Traduce el siguiente texto empresarial al castellano de forma natural "
+                        "y profesional. Devuelve ÚNICAMENTE la traducción, sin explicaciones, "
+                        "sin comillas, sin encabezados:\n\n"
+                        + description[:1400]
                     )
                 }]
             },
-            timeout=20
+            timeout=25
         )
         if resp.status_code == 200:
-            data = resp.json()
-            blocks = data.get("content", [])
-            text = " ".join(b.get("text","") for b in blocks if b.get("type") == "text").strip()
+            blocks = resp.json().get("content", [])
+            text   = " ".join(b.get("text","") for b in blocks if b.get("type") == "text").strip()
             if text:
                 return text
+        else:
+            print(f"[Translate] HTTP {resp.status_code}: {resp.text[:200]}")
     except Exception as e:
         print(f"[Translate] Error: {e}")
-    return description  # fallback: texto original en inglés
+
+    return description  # fallback en inglés si algo falla
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -461,30 +489,31 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
 # TENDENCIA TRIMESTRAL
 # ─────────────────────────────────────────────────────────────────────────────
 
-def calc_trend(sec: dict | None) -> dict | None:
-    if not sec:
+def calc_trend(fmp: dict | None) -> dict | None:
+    """
+    Analiza la tendencia de ingresos y beneficio neto año a año.
+    Usa el historial anual de FMP (income statement 10-K).
+    """
+    if not fmp:
         return None
-    rev_q = sec.get("quarters", [])
-    ni_q  = sec.get("ni_quarters", [])
-    if len(rev_q) < 2:
+    income  = fmp.get("income") or {}
+    history = income.get("history", [])
+    if len(history) < 2:
         return None
 
-    rev_sorted = sorted(rev_q, key=lambda x: x.get("date",""))
-    ni_sorted  = sorted(ni_q,  key=lambda x: x.get("date","")) if ni_q else []
-
-    def qoq(series):
+    def yoy(key):
         out = []
-        for i in range(1, len(series)):
-            prev = series[i-1].get("value") or 0
-            curr = series[i].get("value") or 0
+        for i in range(1, len(history)):
+            prev = history[i-1].get(key) or 0
+            curr = history[i].get(key) or 0
             if prev and prev != 0:
                 pct = (curr - prev) / abs(prev) * 100
-                out.append({"date": series[i].get("date","")[:7],
-                            "value": curr, "prev": prev, "pct": round(pct,1)})
+                out.append({"date":  history[i].get("fiscal_year", history[i].get("date","")[:4]),
+                            "value": curr, "prev": prev, "pct": round(pct, 1)})
         return out
 
-    rev_ch = qoq(rev_sorted)
-    ni_ch  = qoq(ni_sorted)
+    rev_ch = yoy("revenue")
+    ni_ch  = yoy("net_income")
 
     def streak(changes):
         if not changes: return 0, 0
@@ -504,10 +533,10 @@ def calc_trend(sec: dict | None) -> dict | None:
     elif rev_up > total // 2:       sig = ("ESTABLE",     "#fbbf24")
     else:                           sig = ("DETERIORANDO","#fca5a5")
 
-    return {"rev_quarters": rev_sorted, "ni_quarters": ni_sorted,
-            "rev_changes": rev_ch, "ni_changes": ni_ch,
+    return {"rev_changes": rev_ch, "ni_changes": ni_ch,
             "rev_streak": rev_s, "ni_streak": ni_s,
-            "trend_signal": sig, "total_q": total}
+            "trend_signal": sig, "total_q": total,
+            "source": "FMP Income Statement anual (10-K)"}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ÚLTIMO CRUCE MM50/MM200
@@ -779,11 +808,16 @@ def render_entry_signal(signal: dict):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
-    st.markdown('<div class="section-header">I · TENDENCIA TRIMESTRAL (SEC EDGAR + Yahoo Finance)</div>', unsafe_allow_html=True)
+    """Renderiza la tendencia anual de ingresos y beneficio neto usando datos FMP."""
+    st.markdown('<div class="section-header">I · TENDENCIA ANUAL (FMP / SEC 10-K)</div>', unsafe_allow_html=True)
 
-    if not trend and not yahoo_quarters:
-        st.markdown('<div class="metric-card"><span style="color:#64748b;">Datos insuficientes para calcular tendencia.</span></div>', unsafe_allow_html=True)
+    if not trend:
+        st.markdown('<div class="metric-card"><span style="color:#64748b;">Datos FMP no disponibles para calcular tendencia.</span></div>', unsafe_allow_html=True)
         return
+
+    sig_label, sig_color = trend["trend_signal"]
+    rev_ch = trend.get("rev_changes", [])
+    ni_ch  = trend.get("ni_changes",  [])
 
     def bar_html(changes, label, c_pos="#6ee7b7", c_neg="#fca5a5"):
         if not changes: return ""
@@ -791,91 +825,43 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
         bars = ""
         for c in changes:
             pct  = c["pct"]
-            h    = min(abs(pct) / max_abs * 75, 75)
+            h    = min(abs(pct) / max_abs * 70, 70)
             col  = c_pos if pct >= 0 else c_neg
             sign = "+" if pct >= 0 else ""
             bars += (
-                '<div style="display:flex;flex-direction:column;align-items:center;gap:0.2rem;flex:1;">'
-                f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.68rem;color:{col};font-weight:600;">{sign}{pct:.0f}%</div>'
-                '<div style="height:75px;display:flex;align-items:flex-end;width:100%;">'
-                f'<div style="width:100%;height:{h}px;background:{col};border-radius:3px 3px 0 0;min-height:3px;"></div>'
-                '</div>'
-                f'<div style="font-size:0.62rem;color:#64748b;white-space:nowrap;">{c["date"]}</div>'
+                '<div style="display:flex;flex-direction:column;align-items:center;gap:0.15rem;flex:1;">' +
+                f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.68rem;color:{col};font-weight:600;">{sign}{pct:.0f}%</div>' +
+                '<div style="height:70px;display:flex;align-items:flex-end;width:100%;">' +
+                f'<div style="width:100%;height:{h}px;background:{col};border-radius:3px 3px 0 0;min-height:3px;"></div>' +
+                '</div>' +
+                f'<div style="font-size:0.65rem;color:#64748b;white-space:nowrap;">{c["date"]}</div>' +
                 '</div>'
             )
         return (
-            f'<div style="margin-bottom:0.4rem;font-size:0.7rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;">{label}</div>'
-            '<div style="display:flex;gap:0.3rem;align-items:flex-end;padding-bottom:1.5rem;margin-bottom:0.8rem;">'
+            f'<div style="font-size:0.7rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.3rem;">{label}</div>' +
+            '<div style="display:flex;gap:0.25rem;align-items:flex-end;padding-bottom:1.2rem;margin-bottom:0.8rem;">' +
             f'{bars}</div>'
         )
 
-    # Comparativa directa SEC vs Yahoo en tabla
-    if trend and yahoo_quarters:
-        sec_quarters  = sorted(trend["rev_quarters"], key=lambda x: x.get("date",""), reverse=True)
-        yahoo_sorted  = sorted(yahoo_quarters, key=lambda x: x.get("date",""), reverse=True)
+    rev_bars = bar_html(rev_ch, "🟢 Crecimiento YoY — Revenue (FMP 10-K)")
+    ni_bars  = bar_html(ni_ch,  "🟢 Crecimiento YoY — Beneficio Neto (FMP 10-K)")
 
-        # Construir tabla comparativa TTM
-        comp_rows = ""
-        for i in range(min(4, len(sec_quarters), len(yahoo_sorted))):
-            sq = sec_quarters[i]
-            yq = yahoo_sorted[i]
-            sv = sq.get("value",0) or 0
-            yv = yq.get("value",0) or 0
-            diff_pct = ((yv - sv) / abs(sv) * 100) if sv else None
-            diff_col = "#fbbf24" if diff_pct and abs(diff_pct) > 2 else "#64748b"
-            diff_str = f"{diff_pct:+.1f}%" if diff_pct is not None else "—"
-
-            def fmt_val(v):
-                if abs(v) >= 1e9: return f"${v/1e9:.2f}B"
-                if abs(v) >= 1e6: return f"${v/1e6:.0f}M"
-                return f"${v:,.0f}"
-
-            comp_rows += (
-                f'<tr style="border-bottom:1px solid #1a2540;">'
-                f'<td style="padding:0.3rem 0.5rem;font-size:0.78rem;color:#94a3b8;">{sq.get("date","")[:7]}</td>'
-                f'<td style="padding:0.3rem 0.5rem;font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:#6ee7b7;text-align:right;">🟢 {fmt_val(sv)}</td>'
-                f'<td style="padding:0.3rem 0.5rem;font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:#fbbf24;text-align:right;">🟡 {fmt_val(yv)}</td>'
-                f'<td style="padding:0.3rem 0.5rem;font-family:\'IBM Plex Mono\',monospace;font-size:0.75rem;color:{diff_col};text-align:right;">{diff_str}</td>'
-                '</tr>'
-            )
-
-        comp_table = (
-            '<div style="margin-bottom:1rem;">'
-            '<div style="font-size:0.7rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.4rem;">Comparativa TTM Ingresos — SEC vs Yahoo</div>'
-            '<table style="width:100%;border-collapse:collapse;">'
-            '<thead><tr style="border-bottom:1px solid #1e2d45;">'
-            '<th style="padding:0.25rem 0.5rem;font-size:0.67rem;color:#64748b;text-align:left;">Trimestre</th>'
-            '<th style="padding:0.25rem 0.5rem;font-size:0.67rem;color:#64748b;text-align:right;">SEC EDGAR</th>'
-            '<th style="padding:0.25rem 0.5rem;font-size:0.67rem;color:#64748b;text-align:right;">Yahoo Finance</th>'
-            '<th style="padding:0.25rem 0.5rem;font-size:0.67rem;color:#64748b;text-align:right;">Diferencia</th>'
-            '</tr></thead>'
-            f'<tbody>{comp_rows}</tbody>'
-            '</table></div>'
-        )
-    else:
-        comp_table = ""
-
-    if trend:
-        sig_label, sig_color = trend["trend_signal"]
-        rev_bars = bar_html(trend["rev_changes"], "🟢 Variación QoQ — Ingresos (SEC EDGAR)")
-        ni_bars  = bar_html(trend["ni_changes"],  "🟢 Variación QoQ — Beneficio Neto (SEC EDGAR)")
-
-        header = (
-            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">'
-            '<div>'
-            f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1rem;font-weight:700;color:{sig_color};">{sig_label}</div>'
-            f'<div style="font-size:0.76rem;color:#64748b;margin-top:0.2rem;">'
-            f'Racha alcista: ingresos {trend["rev_streak"]}Q · beneficio {trend["ni_streak"]}Q consecutivos</div>'
-            '</div>'
-            f'<div style="text-align:right;"><div style="font-size:0.7rem;color:#64748b;">Trimestres</div>'
-            f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.2rem;color:#f1f5f9;font-weight:600;">{trend["total_q"]}</div>'
-            '</div></div>'
-        )
-        content = f'{header}{comp_table}{rev_bars}{ni_bars}'
-    else:
-        content = comp_table
+    header = (
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">' +
+        '<div>' +
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1rem;font-weight:700;color:{sig_color};">{sig_label}</div>' +
+        f'<div style="font-size:0.76rem;color:#64748b;margin-top:0.2rem;">' +
+        f'Racha alcista: ingresos {trend["rev_streak"]}Y · beneficio {trend["ni_streak"]}Y consecutivos</div>' +
+        '</div>' +
+        f'<div style="text-align:right;"><div style="font-size:0.7rem;color:#64748b;">Años analizados</div>' +
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.2rem;color:#f1f5f9;font-weight:600;">{trend["total_q"]}</div>' +
+        '</div></div>'
+    )
+    source_note = '<div style="font-size:0.7rem;color:#475569;margin-top:0.3rem;">Fuente: FMP / SEC 10-K anual · Variaciones año sobre año</div>'
+    content = header + rev_bars + ni_bars + source_note
 
     st.markdown(f'<div class="metric-card">{content}</div>', unsafe_allow_html=True)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RENDER — COMPARATIVA CON COMPETIDORES

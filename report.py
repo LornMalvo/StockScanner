@@ -444,7 +444,7 @@ def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[str]]:
 
 # ─── Evaluación final ─────────────────────────────────────────────────────────
 
-def _evaluate(y: dict, sec: dict | None) -> dict:
+def _evaluate(y: dict, fmp: dict | None) -> dict:
     """Diagnóstico completo ajustado al sector."""
 
     price       = y.get("price") or 0
@@ -587,7 +587,7 @@ def _evaluate(y: dict, sec: dict | None) -> dict:
 
 # ─── Render principal ─────────────────────────────────────────────────────────
 
-def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict | None,
+def render_report(ticker, company_name, y: dict, fmp: dict | None, cross: dict | None,
                   fx_rate: float | None = None, tech: dict | None = None,
                   fx_meta: dict | None = None):
 
@@ -595,14 +595,13 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
 
     currency_y = y.get("currency", "USD")
     meta_y     = y.get("meta", {}) or {}
-    meta_sec   = (sec.get("meta", {}) or {}) if sec else {}
+    meta_fmp   = ((fmp.get("income",{}) or {}).get("meta",{}) or {}) if fmp else {}
     meta_tech  = {}
     if tech and not tech.get("error"):
         meta_tech = {k: tech.get(k) for k in ("last_date","days_old","freshness","trust","source")}
 
     from analysis import get_sector_benchmarks
     sbm = get_sector_benchmarks(y.get("sector",""))
-
     # ── helper: fila con benchmark de sector ─────────────────────────────
     def _kv_bench(label, value, bench_val, bench_label, color_class="row-val"):
         tip      = TOOLTIPS.get(label, "")
@@ -634,14 +633,14 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
 
     pf = meta_y.get("price_freshness",    {}) or {}
     ff = meta_y.get("fund_freshness",     {}) or {}
-    sf = meta_sec.get("freshness",        {}) or {}
+    sf = meta_fmp.get("freshness",        {}) or {}
     tf = meta_tech.get("freshness",       {}) or {}
     xf = (fx_meta.get("freshness",        {}) or {}) if fx_meta else {}
 
     # Alertas
     alert_rows = ""
     for name, f in [("Precio de mercado", pf), ("Fundamentales Yahoo", ff),
-                    ("SEC EDGAR", sf), ("Técnico RSI/MMs", tf)]:
+                    ("FMP / SEC 10-K", sf), ("Técnico RSI/MMs", tf)]:
         if f.get("ok") is False:
             col = f.get("color","#fbbf24")
             alert_rows += (
@@ -676,18 +675,22 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
         )
 
     TRUST_AGRE = {"icon":"🟡","label":"Yahoo Finance","color":"#fbbf24"}
-    TRUST_OFIC = {"icon":"🟢","label":"Oficial SEC",  "color":"#6ee7b7"}
+    TRUST_FMP  = {"icon":"🟢","label":"FMP / SEC 10-K","color":"#6ee7b7"}
     TRUST_CALC = {"icon":"🟠","label":"Calculado",    "color":"#fb923c"}
     TRUST_ESTI = {"icon":"🔴","label":"Estimado",     "color":"#fca5a5"}
 
+    fmp_filing = meta_fmp.get("filing_date","N/A")
+    fmp_fiscal = meta_fmp.get("fiscal_date","N/A")
+
     table_rows = (
-        _source_row("Precio actual",               TRUST_AGRE, meta_y.get("price_date","N/A"),    pf)
-      + _source_row("Fundamentales (márgenes, ratios)", TRUST_AGRE, meta_y.get("earnings_date","N/A"), ff)
-      + _source_row("Objetivos / consenso analistas",   TRUST_ESTI, "Yahoo no expone fecha exacta", {})
-      + _source_row("Crecimiento YoY / TTM",        TRUST_CALC, meta_y.get("earnings_date","N/A"), {})
-      + (_source_row("Ingresos/Beneficio neto SEC", TRUST_OFIC, meta_sec.get("latest_end","N/A"),  sf) if meta_sec else "")
-      + (_source_row("Técnico — RSI, MM50/200",     TRUST_AGRE, meta_tech.get("last_date","N/A"), tf) if meta_tech else "")
-      + (_source_row("Tipo de cambio USD/EUR",       TRUST_AGRE, fx_meta.get("market_time","N/A") if fx_meta else "N/A", xf) if fx_meta else "")
+        _source_row("Precio actual",                   TRUST_AGRE, meta_y.get("price_date","N/A"),    pf)
+      + _source_row("Fundamentales ratios (Yahoo)",    TRUST_AGRE, meta_y.get("earnings_date","N/A"), ff)
+      + _source_row("Objetivos / consenso analistas",  TRUST_ESTI, "Sin fecha exacta disponible",     {})
+      + _source_row("Crecimiento YoY / TTM",           TRUST_CALC, meta_y.get("earnings_date","N/A"), {})
+      + (_source_row(f"Income Statement (10-K FY {meta_fmp.get('fiscal_date','')[:4]})",
+                     TRUST_FMP, f"Filing: {fmp_filing}", sf) if meta_fmp else "")
+      + (_source_row("Técnico — RSI, MM50/200",        TRUST_AGRE, meta_tech.get("last_date","N/A"), tf) if meta_tech else "")
+      + (_source_row("Tipo de cambio USD/EUR",         TRUST_AGRE, fx_meta.get("market_time","N/A") if fx_meta else "N/A", xf) if fx_meta else "")
     )
 
     header_grid = (
@@ -715,33 +718,35 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
         unsafe_allow_html=True
     )
 
-    # Verificación cruzada SEC vs Yahoo
+    # Verificación cruzada FMP vs Yahoo
     if cross and cross.get("status") != "NO_DATA":
         status_map = {
-            "OK":    ("✔ VERIFICADOS — diferencia < 2%",             "audit-ok"),
-            "WARN":  ("⚠ DIFERENCIA MENOR (2-10%)",                   "audit-warn"),
-            "ERROR": ("✘ DIFERENCIA SIGNIFICATIVA >10% — usar SEC",   "audit-err"),
+            "OK":    ("✔ VERIFICADOS — diferencia < 5% (normal: FMP=anual, Yahoo=TTM)", "audit-ok"),
+            "WARN":  ("⚠ DIFERENCIA MODERADA (5-15%)",                                  "audit-warn"),
+            "ERROR": ("✘ DIFERENCIA SIGNIFICATIVA >15% — revisar",                      "audit-err"),
         }
         lbl, cls = status_map.get(cross["status"], ("—",""))
         fx_lbl   = f" &nbsp;·&nbsp; USD/EUR: {fx_rate:.4f}" if fx_rate else ""
+        note     = cross.get("note","")
         st.markdown(
             f'<div class="metric-card">'
-            f'<div class="metric-label">VERIFICACIÓN CRUZADA SEC vs YAHOO{fx_lbl}</div>'
-            + _kv("🟢 SEC EDGAR TTM Revenue",   _fmt_big(cross.get("sec_ttm"),""))
-            + _kv("🟡 Yahoo Finance TTM Revenue",_fmt_big(cross.get("yahoo_ttm"),""))
+            f'<div class="metric-label">VERIFICACIÓN CRUZADA FMP vs YAHOO{fx_lbl}</div>'
+            + _kv("🟢 FMP Revenue (último 10-K anual)", _fmt_big(cross.get("fmp_rev"),""))
+            + _kv("🟡 Yahoo Finance Revenue (TTM)",     _fmt_big(cross.get("yahoo_rev"),""))
             + _kv("Diferencia",
                   f'{_fmt_big(cross.get("diff"),"") if cross.get("diff") is not None else "N/A"}'
-                  f' ({_fmt_num(cross.get("pct"),2,suffix="%") if cross.get("pct") is not None else "N/A"})',
+                  f' ({cross.get("pct","N/A")}%)',
                   "audit-ok" if cross["status"]=="OK" else "audit-warn")
             + f'<div style="margin-top:0.4rem;"><span class="{cls}" style="font-family:\'IBM Plex Mono\','
               f'monospace;font-size:0.85rem;font-weight:600;">{lbl}</span></div>'
+            + f'<div style="font-size:0.7rem;color:#475569;margin-top:0.3rem;">{note}</div>'
             + '</div>',
             unsafe_allow_html=True
         )
     else:
         st.markdown(
             '<div class="metric-card"><div class="metric-label">FUENTE DE DATOS</div>'
-            '<span class="audit-warn">🟡 Solo Yahoo Finance — SEC no disponible (empresa no-USA)</span></div>',
+            '<span class="audit-warn">🟡 Solo Yahoo Finance — FMP no disponible o sin API key configurada</span></div>',
             unsafe_allow_html=True
         )
 
@@ -761,81 +766,84 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
     render_news(news_items)
 
     # ════════════════════════════════════════════════════════════════════
-    # D · DESGLOSE TTM  (SEC verde | Yahoo amarillo)
+    # D · DESGLOSE — FMP Income Statement anual + Yahoo TTM trimestral
     # ════════════════════════════════════════════════════════════════════
-    sec_quarters   = sec.get("quarters", []) if sec else []
+    fmp_income     = (fmp.get("income") or {}) if fmp else {}
+    fmp_history    = fmp_income.get("history", [])
     yahoo_quarters = y.get("ttm_quarters", []) or []
-    has_sec   = bool(sec_quarters)
-    has_yahoo = bool(yahoo_quarters)
+    has_fmp        = bool(fmp_history)
+    has_yahoo      = bool(yahoo_quarters)
 
-    if has_sec or has_yahoo:
-        trust_ttm = "🟢 SEC EDGAR + 🟡 Yahoo Finance" if (has_sec and has_yahoo) else ("🟢 SEC EDGAR" if has_sec else "🟡 Yahoo Finance")
-        _section(f"D · DESGLOSE TTM &nbsp;<span style='font-size:0.7rem;'>{trust_ttm}</span>")
+    if has_fmp or has_yahoo:
+        trust_ttm = "🟢 FMP/SEC (anual) + 🟡 Yahoo (TTM trimestral)" if (has_fmp and has_yahoo) \
+                    else ("🟢 FMP / SEC 10-K" if has_fmp else "🟡 Yahoo Finance TTM")
+        _section(f"D · DESGLOSE INGRESOS &nbsp;<span style='font-size:0.7rem;'>{trust_ttm}</span>")
 
         def ttm_fmt(v):
             if v is None: return "—"
             return _fmt_big(v, "")
 
-        hdr = ""
-        if has_sec and has_yahoo:
-            hdr = (
-                '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;'
-                'padding:0.25rem 0;border-bottom:1px solid #1e2d45;margin-bottom:0.2rem;">'
-                '<span style="font-size:0.67rem;color:#64748b;text-transform:uppercase;">Trimestre</span>'
-                '<span style="font-size:0.67rem;color:#6ee7b7;text-transform:uppercase;">🟢 SEC EDGAR</span>'
-                '<span style="font-size:0.67rem;color:#fbbf24;text-transform:uppercase;">🟡 Yahoo Finance</span>'
-                '</div>'
-            )
+        content = ""
 
-        rows_t = ""
-        sec_tot = yahoo_tot = 0
-        for i in range(min(4, max(len(sec_quarters), len(yahoo_quarters)))):
-            sq  = sec_quarters[i]   if i < len(sec_quarters)   else None
-            yq  = yahoo_quarters[i] if i < len(yahoo_quarters) else None
-            sv  = (sq.get("value") or 0) if sq else None
-            yv  = (yq.get("value") or 0) if yq else None
-            if sv: sec_tot   += sv
-            if yv: yahoo_tot += yv
-            d   = (sq or yq or {}).get("date","")[:10]
-            lbl = f"Q{i+1} ({d})"
-
-            if has_sec and has_yahoo:
-                rows_t += (
-                    '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;'
-                    'padding:0.33rem 0;border-bottom:1px solid #1a2540;font-size:0.82rem;">'
-                    f'<span style="color:#94a3b8;">{lbl}</span>'
-                    f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#6ee7b7;">{ttm_fmt(sv)}</span>'
-                    f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#fbbf24;">{ttm_fmt(yv)}</span>'
+        # Tabla FMP anual (últimos 5 años)
+        if has_fmp:
+            fmp_rows = ""
+            for h in reversed(fmp_history[-5:]):
+                fmp_rows += (
+                    '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0.3rem;'
+                    'padding:0.3rem 0;border-bottom:1px solid #1a2540;font-size:0.79rem;">'
+                    f'<span style="color:#94a3b8;">FY {h.get("fiscal_year",h.get("date","")[:4])}</span>'
+                    f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#6ee7b7;">{ttm_fmt(h.get("revenue"))}</span>'
+                    f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#86efac;">{ttm_fmt(h.get("net_income"))}</span>'
+                    f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#38bdf8;">{ttm_fmt(h.get("ebitda"))}</span>'
                     '</div>'
                 )
-            else:
-                val = sv if has_sec else yv
-                col = "#6ee7b7" if has_sec else "#fbbf24"
-                rows_t += (
-                    f'<div class="ttm-row"><span>{lbl}</span>'
-                    f'<span style="color:{col};font-family:\'IBM Plex Mono\',monospace;">{ttm_fmt(val)}</span></div>'
-                )
-
-        if has_sec and has_yahoo:
-            dp  = abs(sec_tot-yahoo_tot)/max(sec_tot,yahoo_tot)*100 if max(sec_tot,yahoo_tot) else 0
-            dc  = "#6ee7b7" if dp<2 else "#fbbf24" if dp<10 else "#fca5a5"
-            rows_t += (
-                '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;'
-                'padding:0.38rem 0;font-weight:700;font-size:0.85rem;">'
-                '<span style="color:#f1f5f9;">TOTAL TTM</span>'
-                f'<span style="color:#6ee7b7;font-family:\'IBM Plex Mono\',monospace;">{ttm_fmt(sec_tot)}</span>'
-                f'<span style="color:#fbbf24;font-family:\'IBM Plex Mono\',monospace;">{ttm_fmt(yahoo_tot)}</span>'
+            content += (
+                '<div style="font-size:0.7rem;color:#94a3b8;text-transform:uppercase;'
+                'letter-spacing:0.08em;margin-bottom:0.3rem;">Income Statement anual (10-K) — FMP</div>'
+                '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0.3rem;'
+                'padding:0.2rem 0;border-bottom:1px solid #1e2d45;margin-bottom:0.2rem;">'
+                '<span style="font-size:0.66rem;color:#475569;">Año fiscal</span>'
+                '<span style="font-size:0.66rem;color:#6ee7b7;">Revenue</span>'
+                '<span style="font-size:0.66rem;color:#86efac;">Net Income</span>'
+                '<span style="font-size:0.66rem;color:#38bdf8;">EBITDA</span>'
                 '</div>'
-                f'<div style="font-size:0.71rem;margin-top:0.2rem;color:#64748b;">'
-                f'Diferencia: <span style="color:{dc};font-family:\'IBM Plex Mono\',monospace;">'
-                f'{ttm_fmt(abs(sec_tot-yahoo_tot))} ({dp:.1f}%)</span></div>'
+                + fmp_rows
             )
-        else:
-            tot = sec_tot if has_sec else yahoo_tot
-            col = "#6ee7b7" if has_sec else "#fbbf24"
-            rows_t += f'<div class="ttm-row"><span>TOTAL TTM</span><span style="color:{col};">{ttm_fmt(tot)}</span></div>'
 
-        st.markdown(f'<div class="metric-card">{hdr}{rows_t}</div>', unsafe_allow_html=True)
+        # Yahoo TTM trimestral (últimos 4Q)
+        if has_yahoo:
+            y_rows = ""
+            ytot = 0
+            for i, q in enumerate(yahoo_quarters[:4]):
+                val   = q.get("value") or 0
+                ytot += val
+                y_rows += (
+                    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;'
+                    'padding:0.28rem 0;border-bottom:1px solid #1a2540;font-size:0.79rem;">'
+                    f'<span style="color:#94a3b8;">Q{i+1} ({q.get("date","")[:10]})</span>'
+                    f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#fbbf24;">{ttm_fmt(val)}</span>'
+                    '</div>'
+                )
+            y_rows += (
+                '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;'
+                'padding:0.32rem 0;font-weight:700;font-size:0.82rem;">'
+                '<span style="color:#f1f5f9;">TOTAL TTM</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#fbbf24;">{ttm_fmt(ytot)}</span>'
+                '</div>'
+            )
+            content += (
+                '<div style="margin-top:0.9rem;font-size:0.7rem;color:#94a3b8;text-transform:uppercase;'
+                'letter-spacing:0.08em;margin-bottom:0.3rem;">Revenue TTM trimestral — Yahoo Finance</div>'
+                '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;'
+                'padding:0.2rem 0;border-bottom:1px solid #1e2d45;margin-bottom:0.2rem;">'
+                '<span style="font-size:0.66rem;color:#475569;">Trimestre</span>'
+                '<span style="font-size:0.66rem;color:#fbbf24;">Revenue</span>'
+                '</div>'
+                + y_rows
+            )
+
+        st.markdown(f'<div class="metric-card">{content}</div>', unsafe_allow_html=True)
 
     # ════════════════════════════════════════════════════════════════════
     # E–J · MÉTRICAS EN DOS COLUMNAS
@@ -1000,7 +1008,7 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
     # ════════════════════════════════════════════════════════════════════
     # EVALUACIÓN FINAL + DIAGNÓSTICO GENERAL
     # ════════════════════════════════════════════════════════════════════
-    ev = _evaluate(y, sec)
+    ev = _evaluate(y, fmp)
 
     _section("EVALUACIÓN FINAL")
 
@@ -1127,8 +1135,8 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
     # ════════════════════════════════════════════════════════════════════
     # TENDENCIA TRIMESTRAL
     # ════════════════════════════════════════════════════════════════════
-    trend = calc_trend(sec)
-    render_trend(trend, yahoo_quarters)
+    trend = calc_trend(fmp)
+    render_trend(trend)
 
     # ════════════════════════════════════════════════════════════════════
     # COMPARATIVA CON COMPETIDORES
@@ -1138,7 +1146,7 @@ def render_report(ticker, company_name, y: dict, sec: dict | None, cross: dict |
         peers_data    = fetch_peer_data(peers_tickers)
     render_peers(ticker, y, peers_data, fx_rate, ev)
 
-    sec_label = "SEC EDGAR + Yahoo Finance" if sec else "Yahoo Finance"
+    sec_label = "FMP/SEC + Yahoo Finance" if fmp else "Yahoo Finance"
     st.caption(
         f"Datos: {sec_label} · {ticker} · USD/EUR: {fx_rate:.4f} · "
         f"Sector: {ev['sector_label']} · No constituye asesoramiento financiero."
