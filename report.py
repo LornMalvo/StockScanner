@@ -8,6 +8,7 @@ from analysis import (
     calc_entry_signal, calc_trend, fetch_peer_data, get_manual_competitors,
     render_entry_signal, render_trend, render_peers,
     fetch_company_description, fetch_recent_news, fetch_earnings_analysis,
+    fetch_earnings_history, render_earnings_history,
     fetch_last_cross_date, render_company_description, render_news,
     render_earnings_analysis, get_sector_benchmarks,
     calc_short_squeeze, render_short_squeeze,
@@ -851,6 +852,56 @@ def render_report(ticker, company_name, y: dict,
     html += _kv("EPS (TTM)",     _fmt_price(y.get("eps_ttm"),    currency_y, fx_rate))
     html += _kv("EPS (Forward)", _fmt_price(y.get("eps_forward"), currency_y, fx_rate))
     st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
+
+    # Desglose con valores absolutos de los dos años fiscales comparados
+    rev_cur, rev_prev   = y.get("rev_year_cur"), y.get("rev_year_prev")
+    rev_dcur, rev_dprev = y.get("rev_date_cur"), y.get("rev_date_prev")
+    ni_cur, ni_prev      = y.get("ni_year_cur"), y.get("ni_year_prev")
+    ni_dcur, ni_dprev    = y.get("ni_date_cur"), y.get("ni_date_prev")
+
+    if rev_cur is not None or ni_cur is not None:
+        def _fy_label(date_str):
+            if not date_str: return "Año N/A"
+            return f"FY {date_str[:4]}"
+
+        breakdown_html = (
+            '<div style="margin-top:0.6rem;font-size:0.7rem;color:#94a3b8;text-transform:uppercase;'
+            'letter-spacing:0.08em;margin-bottom:0.4rem;">Desglose: de dónde salen estos números</div>'
+            '<table style="width:100%;border-collapse:collapse;">'
+            '<thead><tr style="border-bottom:1px solid #1e2d45;">'
+            '<th style="text-align:left;padding:0.25rem 0.5rem;font-size:0.67rem;color:#475569;">Concepto</th>'
+        )
+        if rev_dprev:
+            breakdown_html += f'<th style="text-align:right;padding:0.25rem 0.5rem;font-size:0.67rem;color:#475569;">{_fy_label(rev_dprev)}</th>'
+        if rev_dcur:
+            breakdown_html += f'<th style="text-align:right;padding:0.25rem 0.5rem;font-size:0.67rem;color:#475569;">{_fy_label(rev_dcur)}</th>'
+        breakdown_html += (
+            '<th style="text-align:right;padding:0.25rem 0.5rem;font-size:0.67rem;color:#475569;">Variación</th>'
+            '</tr></thead><tbody>'
+        )
+
+        if rev_cur is not None and rev_prev is not None:
+            breakdown_html += (
+                '<tr style="border-bottom:1px solid #1a2540;">'
+                '<td style="padding:0.4rem 0.5rem;font-size:0.82rem;color:#e2e8f0;">Revenue (Ingresos totales)</td>'
+                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#94a3b8;">{_fmt_big(rev_prev,"$")}</td>'
+                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:600;">{_fmt_big(rev_cur,"$")}</td>'
+                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:{"#6ee7b7" if rev_yoy and rev_yoy>=0 else "#fca5a5"};font-weight:600;">{rev_yoy:+.1f}%</td>'
+                '</tr>'
+            )
+        if ni_cur is not None and ni_prev is not None:
+            breakdown_html += (
+                '<tr>'
+                '<td style="padding:0.4rem 0.5rem;font-size:0.82rem;color:#e2e8f0;">Net Income (Beneficio neto)</td>'
+                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#94a3b8;">{_fmt_big(ni_prev,"$")}</td>'
+                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:600;">{_fmt_big(ni_cur,"$")}</td>'
+                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:{"#6ee7b7" if earn_yoy and earn_yoy>=0 else "#fca5a5"};font-weight:600;">{earn_yoy:+.1f}%</td>'
+                '</tr>'
+            )
+        breakdown_html += '</tbody></table>'
+
+        st.markdown(f'<div class="metric-card">{breakdown_html}</div>', unsafe_allow_html=True)
+
     st.markdown(
         '<div style="font-size:0.71rem;color:#64748b;margin-top:-0.4rem;margin-bottom:0.8rem;padding:0 0.2rem;">'
         '📊 Comparación de los dos últimos años fiscales completos (no trimestral) · '
@@ -865,13 +916,19 @@ def render_report(ticker, company_name, y: dict,
     render_trend(trend)
 
     # ════════════════════════════════════════════════════════════════════
-    # ════════════════════════════════════════════════════════════════════
     # ANÁLISIS DE ÚLTIMOS RESULTADOS
     # ════════════════════════════════════════════════════════════════════
     render_earnings_analysis(ea)
 
     # ════════════════════════════════════════════════════════════════════
-    # K · ANÁLISIS TÉCNICO
+    # HISTÓRICO DE RESULTADOS
+    # ════════════════════════════════════════════════════════════════════
+    with st.spinner("Cargando histórico de resultados…"):
+        earnings_hist = fetch_earnings_history(ticker)
+    render_earnings_history(earnings_hist)
+
+    # ════════════════════════════════════════════════════════════════════
+    # ANÁLISIS TÉCNICO
     # ════════════════════════════════════════════════════════════════════
     tech_date = tech.get("last_date","N/A") if tech and not tech.get("error") else "N/A"
     _section(f"ANÁLISIS TÉCNICO &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance · último dato: {tech_date}</span>")
