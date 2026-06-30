@@ -5,7 +5,7 @@ Renderiza el informe completo en Streamlit con el diseño oscuro.
 
 import streamlit as st
 from analysis import (
-    calc_entry_signal, calc_trend, fetch_peer_data, get_peers,
+    calc_entry_signal, calc_trend, fetch_peer_data, get_manual_competitors,
     render_entry_signal, render_trend, render_peers,
     fetch_company_description, fetch_recent_news, fetch_earnings_analysis,
     fetch_last_cross_date, render_company_description, render_news,
@@ -632,7 +632,7 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     # A · FIABILIDAD Y FRESCURA DE DATOS
     # ════════════════════════════════════════════════════════════════════
-    _section("A · FIABILIDAD Y FRESCURA DE DATOS")
+    _section("FIABILIDAD Y FRESCURA DE DATOS")
 
     pf = meta_y.get("price_freshness", {}) or {}
     ff = meta_y.get("fund_freshness",  {}) or {}
@@ -729,7 +729,7 @@ def render_report(ticker, company_name, y: dict,
 
     with col_a:
         # E · Mercado y consenso
-        _section("E · MERCADO Y CONSENSO &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo · 🔴 Consenso analistas</span>")
+        _section("MERCADO Y CONSENSO &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo · 🔴 Consenso analistas</span>")
         rec = y.get("recommendation","N/A")
         html  = _kv("Precio Actual",      _fmt_price(y.get("price"), currency_y, fx_rate))
         html += _kv("Objetivo Analistas", _fmt_price(y.get("target_mean"), currency_y, fx_rate))
@@ -740,7 +740,7 @@ def render_report(ticker, company_name, y: dict,
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
         # G · Rentabilidad
-        _section("G · RENTABILIDAD &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo &nbsp;·&nbsp; <span style=\"color:#475569;\">sect: media sector</span></span>")
+        _section("RENTABILIDAD &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo &nbsp;·&nbsp; <span style=\"color:#475569;\">sect: media sector</span></span>")
         html  = _kv_bench("Profit Margin",
             _fmt_num((y.get("profit_margin") or 0)*100,2,suffix="%"),
             sbm.get("profit_m"), f"{sbm.get('profit_m')}%", _color_pct(y.get("profit_margin")))
@@ -758,7 +758,7 @@ def render_report(ticker, company_name, y: dict,
 
     with col_b:
         # F · Valoración
-        _section("F · VALORACIÓN &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo · 🔴 Forward estimado &nbsp;·&nbsp; <span style=\"color:#475569;\">sect: media sector</span></span>")
+        _section("VALORACIÓN &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo · 🔴 Forward estimado &nbsp;·&nbsp; <span style=\"color:#475569;\">sect: media sector</span></span>")
         html  = _kv("PER Trailing", _fmt_num(y.get("pe_trailing"),2))
         html += _kv_bench("PER Forward", _fmt_num(y.get("pe_forward"),2),
             sbm.get("pe_fwd"), f"{sbm.get('pe_fwd')}x")
@@ -773,7 +773,7 @@ def render_report(ticker, company_name, y: dict,
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
         # H · Balance y caja
-        _section("H · BALANCE Y CAJA &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
+        _section("BALANCE Y CAJA &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
         html  = _kv("Total Cash",          _fmt_big(y.get("total_cash"),       "$", fx_rate))
         html += _kv("Total Debt",          _fmt_big(y.get("total_debt"),       "$", fx_rate))
         html += _kv("Debt/Equity",         _fmt_num(y.get("debt_equity"),2))
@@ -783,7 +783,7 @@ def render_report(ticker, company_name, y: dict,
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
         # J · Dividendos y otros
-        _section("J · DIVIDENDOS Y OTROS &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
+        _section("DIVIDENDOS Y OTROS &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
         dy   = y.get("dividend_yield")
         html  = _kv("Dividend Yield",
             _fmt_num((dy or 0)*100,2,suffix="%") if dy else "N/A")
@@ -800,7 +800,7 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     yahoo_quarters = y.get("ttm_quarters", []) or []
     if yahoo_quarters:
-        _section("D · DESGLOSE TTM &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
+        _section("DESGLOSE TTM &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
         def ttm_fmt(v):
             return _fmt_big(v, "") if v is not None else "—"
         rows_t = ""
@@ -822,7 +822,7 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     # I · CRECIMIENTO YoY
     # ════════════════════════════════════════════════════════════════════
-    _section("I · CRECIMIENTO YoY &nbsp;<span style='font-size:0.7rem;'>🟠 Calculado por app</span>")
+    _section("CRECIMIENTO YoY &nbsp;<span style='font-size:0.7rem;'>🟠 Calculado por app</span>")
     rev_yoy  = y.get("revenue_yoy")
     earn_yoy = y.get("earnings_yoy")
     html  = _kv("Revenue Growth",
@@ -849,7 +849,7 @@ def render_report(ticker, company_name, y: dict,
     # K · ANÁLISIS TÉCNICO
     # ════════════════════════════════════════════════════════════════════
     tech_date = tech.get("last_date","N/A") if tech and not tech.get("error") else "N/A"
-    _section(f"K · ANÁLISIS TÉCNICO &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance · último dato: {tech_date}</span>")
+    _section(f"ANÁLISIS TÉCNICO &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance · último dato: {tech_date}</span>")
 
     if tech and not tech.get("error"):
         col_t1, col_t2 = st.columns(2)
@@ -1088,9 +1088,12 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     # COMPARATIVA FRENTE A COMPETENCIA
     # ════════════════════════════════════════════════════════════════════
-    with st.spinner("Cargando datos de competidores…"):
-        peers_tickers = get_peers(ticker, y.get("sector",""), y.get("company_name",""))
-        peers_data    = fetch_peer_data(peers_tickers)
+    peers_tickers = get_manual_competitors(ticker)
+    if peers_tickers:
+        with st.spinner("Cargando datos de competidores…"):
+            peers_data = fetch_peer_data(peers_tickers)
+    else:
+        peers_data = []
 
     render_peers(ticker, y, peers_data, fx_rate, ev)
 

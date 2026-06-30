@@ -1448,7 +1448,7 @@ def calc_short_squeeze(y: dict) -> dict:
 def render_short_squeeze(sq: dict):
     """Renderiza el análisis de short interest y probabilidad de short squeeze."""
     st.markdown(
-        '<div class="section-header">ANÁLISIS SHORT INTEREST &amp; SHORT SQUEEZE</div>',
+        '<div class="section-header">SHORT INTEREST &amp; SHORT SQUEEZE</div>',
         unsafe_allow_html=True
     )
 
