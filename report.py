@@ -16,6 +16,7 @@ from dcf import (
     fetch_historical_multiples,
     render_historical_multiples,
 )
+from pdf_export import render_pdf_download_button
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -822,7 +823,25 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     # I · CRECIMIENTO YoY
     # ════════════════════════════════════════════════════════════════════
-    _section("CRECIMIENTO YoY &nbsp;<span style='font-size:0.7rem;'>🟠 Calculado por app</span>")
+    tip_yoy = (
+        "Crecimiento Year-over-Year (YoY) calculado por la app comparando los "
+        "DOS ÚLTIMOS AÑOS FISCALES COMPLETOS reportados por la empresa (no trimestres). "
+        "Fórmula: (Año actual − Año anterior) / |Año anterior| × 100. "
+        "Revenue Growth usa el total de ingresos anuales (Total Revenue) de los estados "
+        "financieros anuales de Yahoo Finance. Earnings Growth usa el beneficio neto anual "
+        "(Net Income). Ejemplo: si el FY2025 fue $100M y el FY2024 fue $80M, el crecimiento "
+        "es +25%. Nota: estos datos pueden no coincidir exactamente con el \"Revenue Growth\" "
+        "que muestra Yahoo en su web, ya que Yahoo a veces usa TTM trimestral en su interfaz "
+        "mientras que aquí se usan años fiscales completos para mayor estabilidad."
+    )
+    tip_yoy_safe = tip_yoy.replace('"','&quot;')
+    tip_yoy_html = (
+        f'<span title="{tip_yoy_safe}" style="margin-left:0.4rem;cursor:help;'
+        f'font-size:0.62rem;color:#fb923c;border:1px solid #fb923c;'
+        f'border-radius:50%;padding:0 4px;font-family:monospace;'
+        f'vertical-align:middle;">?</span>'
+    )
+    _section(f"CRECIMIENTO YoY &nbsp;<span style='font-size:0.7rem;'>🟠 Calculado por app{tip_yoy_html}</span>")
     rev_yoy  = y.get("revenue_yoy")
     earn_yoy = y.get("earnings_yoy")
     html  = _kv("Revenue Growth",
@@ -832,6 +851,12 @@ def render_report(ticker, company_name, y: dict,
     html += _kv("EPS (TTM)",     _fmt_price(y.get("eps_ttm"),    currency_y, fx_rate))
     html += _kv("EPS (Forward)", _fmt_price(y.get("eps_forward"), currency_y, fx_rate))
     st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div style="font-size:0.71rem;color:#64748b;margin-top:-0.4rem;margin-bottom:0.8rem;padding:0 0.2rem;">'
+        '📊 Comparación de los dos últimos años fiscales completos (no trimestral) · '
+        'Fuente: estados financieros anuales de Yahoo Finance</div>',
+        unsafe_allow_html=True
+    )
 
     # ════════════════════════════════════════════════════════════════════
     # TENDENCIA Y EVOLUCIÓN TRIMESTRAL
@@ -1096,6 +1121,22 @@ def render_report(ticker, company_name, y: dict,
         peers_data = []
 
     render_peers(ticker, y, peers_data, fx_rate, ev)
+
+    # ════════════════════════════════════════════════════════════════════
+    # EXPORTAR ANÁLISIS A PDF
+    # ════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown(
+        '<div style="font-size:0.78rem;color:#64748b;margin-bottom:0.5rem;">'
+        'Guarda una copia de este análisis con fecha y hora exactas para consultarlo más adelante '
+        'o comparar la misma empresa en distintos momentos.</div>',
+        unsafe_allow_html=True
+    )
+    render_pdf_download_button(
+        ticker, company_name, y, ev, tech,
+        sq_data, signal, trend, mult_data, ea,
+        fx_rate
+    )
 
     st.caption(
         f"Datos: Yahoo Finance · {ticker} · USD/EUR: {fx_rate:.4f} · "
