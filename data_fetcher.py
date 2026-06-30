@@ -298,23 +298,41 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
         ttm_net_income = sum(q["value"] for q in net_income_q if q["value"] == q["value"])
 
         # ── Crecimiento YoY ───────────────────────────────────────────────
-        revenue_yoy  = None
-        earnings_yoy = None
+        revenue_yoy   = None
+        earnings_yoy  = None
+        rev_year_cur  = None   # valor absoluto revenue año actual
+        rev_year_prev = None   # valor absoluto revenue año anterior
+        rev_date_cur  = None   # fecha fin de año fiscal actual
+        rev_date_prev = None   # fecha fin de año fiscal anterior
+        ni_year_cur   = None
+        ni_year_prev  = None
+        ni_date_cur   = None
+        ni_date_prev  = None
+
         rev_annual = t.financials
         if rev_annual is not None and not rev_annual.empty:
             for label in ["Total Revenue", "Revenue"]:
                 if label in rev_annual.index:
-                    vals = rev_annual.loc[label].dropna().values
-                    if len(vals) >= 2:
-                        revenue_yoy = (vals[0] - vals[1]) / abs(vals[1]) * 100
+                    row = rev_annual.loc[label].dropna()
+                    if len(row) >= 2:
+                        rev_year_cur  = float(row.iloc[0])
+                        rev_year_prev = float(row.iloc[1])
+                        rev_date_cur  = str(row.index[0])[:10]
+                        rev_date_prev = str(row.index[1])[:10]
+                        revenue_yoy   = (rev_year_cur - rev_year_prev) / abs(rev_year_prev) * 100
                     break
+
         ni_annual = t.income_stmt
         if ni_annual is not None and not ni_annual.empty:
             for label in ["Net Income", "Net Income Common Stockholders"]:
                 if label in ni_annual.index:
-                    vals = ni_annual.loc[label].dropna().values
-                    if len(vals) >= 2:
-                        earnings_yoy = (vals[0] - vals[1]) / abs(vals[1]) * 100
+                    row = ni_annual.loc[label].dropna()
+                    if len(row) >= 2:
+                        ni_year_cur   = float(row.iloc[0])
+                        ni_year_prev  = float(row.iloc[1])
+                        ni_date_cur   = str(row.index[0])[:10]
+                        ni_date_prev  = str(row.index[1])[:10]
+                        earnings_yoy  = (ni_year_cur - ni_year_prev) / abs(ni_year_prev) * 100
                     break
 
         return {
@@ -359,6 +377,14 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
             # Crecimiento
             "revenue_yoy":  revenue_yoy  if revenue_yoy  is not None else (info.get("revenueGrowth",  0) * 100 if info.get("revenueGrowth")  else None),
             "earnings_yoy": earnings_yoy if earnings_yoy is not None else (info.get("earningsGrowth", 0) * 100 if info.get("earningsGrowth") else None),
+            "rev_year_cur":   rev_year_cur,
+            "rev_year_prev":  rev_year_prev,
+            "rev_date_cur":   rev_date_cur,
+            "rev_date_prev":  rev_date_prev,
+            "ni_year_cur":    ni_year_cur,
+            "ni_year_prev":   ni_year_prev,
+            "ni_date_cur":    ni_date_cur,
+            "ni_date_prev":   ni_date_prev,
 
             # Dividendos
             "dividend_yield": info.get("dividendYield"),
