@@ -309,9 +309,8 @@ with tab_portfolio:
 with tab_diag:
     st.markdown("""
     <div style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">
-    Herramienta de diagnóstico para verificar exactamente qué datos devuelve
-    cada fuente de earnings (API directa de Yahoo vs yfinance) para un ticker.
-    Útil para detectar errores de datos sin acceso a los logs del servidor.
+    Herramienta de diagnóstico para verificar qué datos devuelve cada fuente
+    de earnings para un ticker. Fuente primaria: Finnhub. Fallback: yfinance.
     </div>
     """, unsafe_allow_html=True)
 
@@ -319,42 +318,54 @@ with tab_diag:
 
     if st.button("🔍 Ejecutar diagnóstico de earnings", key="btn_diag"):
         from analysis import (
-            _fetch_earnings_history_raw_api,
-            _fetch_earnings_history_yf_fallback,
+            _fetch_earnings_finnhub,
+            _fetch_earnings_yf_fallback,
             fetch_earnings_analysis,
         )
         from data_fetcher import fetch_yahoo_data
+        import os
 
-        st.markdown("### 1. API directa de Yahoo (quoteSummary/earningsHistory)")
-        with st.spinner("Consultando API directa..."):
-            raw_result = _fetch_earnings_history_raw_api(diag_ticker)
-        if raw_result:
-            st.success(f"✅ {len(raw_result)} trimestres obtenidos")
-            st.json(raw_result)
+        # Mostrar estado de la key
+        try:
+            key_preview = str(st.secrets.get("FINNHUB_API_KEY",""))[:8] + "..."
+            st.info(f"FINNHUB_API_KEY encontrada: {key_preview}")
+        except Exception:
+            st.error("❌ FINNHUB_API_KEY no encontrada en Secrets")
+
+        st.markdown("### 1. Finnhub (fuente primaria)")
+        with st.spinner("Consultando Finnhub..."):
+            finnhub_result = _fetch_earnings_finnhub(diag_ticker, limit=8)
+        if finnhub_result:
+            st.success(f"✅ {len(finnhub_result)} trimestres obtenidos de Finnhub")
+            st.json(finnhub_result)
         else:
-            st.error("❌ La API directa no devolvió datos (vacío o error de red)")
+            st.error("❌ Finnhub no devolvió datos — revisar API key o cobertura del ticker")
 
-        st.markdown("### 2. Fallback yfinance (Ticker.earnings_dates)")
+        st.markdown("### 2. yfinance (fallback)")
         with st.spinner("Consultando yfinance..."):
-            yf_result = _fetch_earnings_history_yf_fallback(diag_ticker)
+            yf_result = _fetch_earnings_yf_fallback(diag_ticker)
         if yf_result:
-            st.success(f"✅ {len(yf_result)} trimestres obtenidos")
+            st.success(f"✅ {len(yf_result)} trimestres obtenidos de yfinance")
             st.json(yf_result)
         else:
-            st.error("❌ yfinance tampoco devolvió datos")
+            st.warning("⚠ yfinance no devolvió datos (esperado si Finnhub funciona correctamente)")
 
-        st.markdown("### 3. Resultado final de fetch_earnings_analysis()")
-        with st.spinner("Cargando datos base..."):
+        st.markdown("### 3. fetch_earnings_analysis() — resultado final")
+        with st.spinner("Cargando datos base de Yahoo..."):
             yahoo_data = fetch_yahoo_data(diag_ticker)
         if yahoo_data:
+            # Limpiar caché para forzar recarga limpia
+            cache_key = f"_earnings_hist_cache_{diag_ticker}"
+            if cache_key in st.session_state:
+                del st.session_state[cache_key]
             ea = fetch_earnings_analysis(diag_ticker, yahoo_data)
             st.json(ea)
         else:
             st.error(f"❌ No se pudo cargar yahoo_data para {diag_ticker}")
 
         st.caption(
-            "Si la sección 1 (API directa) devuelve datos correctos pero las fechas/EPS "
-            "siguen mal en el análisis principal, el problema está en cómo se procesan "
-            "esos datos en fetch_earnings_analysis. Si AMBAS fuentes (1 y 2) fallan, "
-            "es un problema de red/disponibilidad del lado de Yahoo, no del código."
+            "Si Finnhub devuelve datos correctos (sección 1), el análisis y el "
+            "histórico de resultados deben funcionar correctamente. "
+            "Si Finnhub falla, verificar que FINNHUB_API_KEY está bien configurada "
+            "en Streamlit → Settings → Secrets."
         )

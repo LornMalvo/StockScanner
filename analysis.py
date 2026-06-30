@@ -371,19 +371,370 @@ def _safe_float(v) -> float | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FUENTE CENTRAL DE EARNINGS HISTORY
+# EARNINGS — FUENTE: FINNHUB (primaria) + yfinance fallback
 # ─────────────────────────────────────────────────────────────────────────────
-# yfinance.Ticker.earnings_dates es inestable entre versiones: en muchos
-# entornos devuelve DataFrame vacío o None sin lanzar error, incluso cuando
-# el ticker sí tiene historial. Por eso usamos como fuente PRIMARIA el
-# endpoint JSON crudo de Yahoo Finance (quoteSummary, módulo earningsHistory),
-# que es el mismo que alimenta la web pública de Yahoo y es mucho más estable.
-# yfinance se mantiene como fallback secundario.
+# Finnhub proporciona EPS estimado/real y Revenue estimado/real por trimestre
+# con la fecha real de la conference call, separados correctamente del cierre
+# del periodo fiscal. Endpoint: GET /stock/earnings?symbol=TICKER&limit=8
+# Documentación: https://finnhub.io/docs/api/company-earnings
 
-_YAHOO_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-}
+FINNHUB_BASE = "https://finnhub.io/api/v1"
+
+
+def _get_finnhub_key() -> str:
+    try:
+        return str(st.secrets["FINNHUB_API_KEY"]).strip()
+    except Exception:
+        pass
+    return os.environ.get("FINNHUB_API_KEY", "").strip()
+
+
+def _fetch_earnings_finnhub(ticker: str, limit: int = 8) -> list:
+    """
+    Obtiene el histórico de earnings desde Finnhub.
+    Devuelve lista de dicts con:
+      fiscal_label, date, eps_estimate, eps_reported, surprise_pct,
+      rev_estimate, rev_actual, rev_surprise_pct, result, hour
+    ordenada de más reciente a más antigua.
+    """
+    key = _get_finnhub_key()
+    if not key:
+        print("[Finnhub] Sin FINNHUB_API_KEY configurada en Secrets")
+        return []
+    try:
+        r = requests.get(
+            f"{FINNHUB_BASE}/stock/earnings",
+            params={"symbol": ticker.upper(), "limit": limit, "token": key},
+            timeout=12,
+        )
+        if r.status_code != 200:
+            print(f"[Finnhub] HTTP {r.status_code} para {ticker}: {r.text[:200]}")
+            return []
+
+        data = r.json()
+        if not isinstance(data, list) or not data:
+            print(f"[Finnhub] Respuesta vacía para {ticker}: {data}")
+            return []
+
+        out = []
+        for item in data:
+            try:
+                date_str    = item.get("date") or item.get("period") or ""
+                year        = item.get("year")
+                quarter     = item.get("quarter")
+                eps_est     = item.get("epsEstimate")
+                eps_act     = item.get("epsActual")
+                rev_est     = item.get("revenueEstimate")
+                rev_act     = item.get("revenueActual")
+                hour        = item.get("hour", "")   # bmo/amc/dmh
+
+                # Etiqueta fiscal
+                if year and quarter:
+                    fiscal_label = f"Q{quarter} '{str(year)[2:]}"
+                elif date_str:
+                    try:
+                        dt = datetime.strptime(date_str[:10], "%Y-%m-%d")
+                        q  = (dt.month - 1) // 3 + 1
+                        fiscal_label = f"Q{q} '{str(dt.year)[2:]}"
+                    except Exception:
+                        fiscal_label = date_str[:7]
+                else:
+                    continue
+
+                # Sorpresa EPS
+                eps_surprise = None
+                if eps_act is not None and eps_est is not None and eps_est != 0:
+                    eps_surprise = (float(eps_act) - float(eps_est)) / abs(float(eps_est)) * 100
+
+                # Sorpresa Revenue
+                rev_surprise = None
+                if rev_act is not None and rev_est is not None and rev_est != 0:
+                    rev_surprise = (float(rev_act) - float(rev_est)) / abs(float(rev_est)) * 100
+
+                # Resultado
+                if eps_act is None:
+                    result = "N/A"
+                elif eps_surprise is not None:
+                    result = "BEAT" if eps_surprise > 0.5 else ("MISSED" if eps_surprise < -0.5 else "MET")
+                else:
+                    result = "N/A"
+
+                out.append({
+                    "fiscal_label": fiscal_label,
+                    "date":         date_str[:10],
+                    "eps_estimate": float(eps_est) if eps_est is not None else None,
+                    "eps_reported": float(eps_act) if eps_act is not None else None,
+                    "surprise_pct": round(eps_surprise, 2) if eps_surprise is not None else None,
+                    "rev_estimate": float(rev_est) if rev_est is not None else None,
+                    "rev_actual":   float(rev_act) if rev_act is not None else None,
+                    "rev_surprise": round(rev_surprise, 2) if rev_surprise is not None else None,
+                    "result":       result,
+                    "hour":         hour,
+                })
+            except Exception as e:
+                print(f"[Finnhub] Error parseando fila: {e} — item: {item}")
+                continue
+
+        # Ordenar de más reciente a más antiguo
+        out.sort(key=lambda x: x["date"], reverse=True)
+        print(f"[Finnhub] {ticker}: {len(out)} trimestres obtenidos correctamente")
+        return out
+
+    except Exception as e:
+        print(f"[Finnhub] Excepción de red para {ticker}: {e}")
+        return []
+
+
+def _fetch_earnings_yf_fallback(ticker: str, max_items: int = 8) -> list:
+    """Fallback a yfinance si Finnhub no está configurado o falla."""
+    try:
+        t = yf.Ticker(ticker)
+        edates = t.earnings_dates
+        if edates is None or edates.empty:
+            return []
+
+        col_est  = "EPS Estimate" if "EPS Estimate" in edates.columns else None
+        col_rep  = "Reported EPS" if "Reported EPS" in edates.columns else None
+        col_surp = "Surprise(%)"  if "Surprise(%)"  in edates.columns else None
+        if not col_rep:
+            return []
+
+        edates_sorted = edates.sort_index(ascending=False)
+        history = []
+        for date_idx, row in edates_sorted.iterrows():
+            dt = date_idx.to_pydatetime() if hasattr(date_idx, "to_pydatetime") else date_idx
+            q  = (dt.month - 1) // 3 + 1
+            fiscal_label = f"Q{q} '{str(dt.year)[2:]}"
+
+            eps_est = _safe_float(row.get(col_est)) if col_est else None
+            eps_rep = _safe_float(row.get(col_rep)) if col_rep else None
+            surp    = _safe_float(row.get(col_surp)) if col_surp else None
+
+            if eps_rep is None:
+                history.append({
+                    "fiscal_label": fiscal_label, "date": dt.strftime("%Y-%m-%d"),
+                    "eps_estimate": eps_est, "eps_reported": None,
+                    "surprise_pct": None, "rev_estimate": None,
+                    "rev_actual": None, "rev_surprise": None,
+                    "result": "N/A", "hour": "",
+                })
+                continue
+
+            surprise_pct = (surp * 100) if surp is not None else (
+                (eps_rep - eps_est) / abs(eps_est) * 100
+                if eps_est and eps_est != 0 else None
+            )
+            result = ("BEAT" if (surprise_pct or 0) > 0.5
+                      else "MISSED" if (surprise_pct or 0) < -0.5 else "MET")
+
+            history.append({
+                "fiscal_label": fiscal_label, "date": dt.strftime("%Y-%m-%d"),
+                "eps_estimate": eps_est, "eps_reported": eps_rep,
+                "surprise_pct": round(surprise_pct, 2) if surprise_pct is not None else None,
+                "rev_estimate": None, "rev_actual": None, "rev_surprise": None,
+                "result": result, "hour": "",
+            })
+            if len(history) >= max_items:
+                break
+        return history
+    except Exception as e:
+        print(f"[EarningsYF] {ticker}: {e}")
+        return []
+
+
+def _get_earnings_history_cached(ticker: str, max_items: int = 8) -> list:
+    """Punto de entrada único con caché en session_state."""
+    cache_key = f"_earnings_hist_cache_{ticker.upper()}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    # Finnhub primero (más fiable para earnings trimestrales)
+    history = _fetch_earnings_finnhub(ticker, limit=max_items)
+    if not history:
+        print(f"[Earnings] Finnhub vacío para {ticker}, probando yfinance...")
+        history = _fetch_earnings_yf_fallback(ticker, max_items)
+
+    result = history[:max_items]
+    st.session_state[cache_key] = result
+    return result
+
+
+def fetch_earnings_history(ticker: str, max_items: int = 8) -> list:
+    """
+    Histórico de resultados con EPS estimado/real, Revenue estimado/real
+    y porcentaje de sorpresa. Fuente primaria: Finnhub.
+    """
+    return _get_earnings_history_cached(ticker, max_items)
+
+
+def fetch_earnings_analysis(ticker: str, y: dict) -> dict:
+    """
+    Análisis del último trimestre reportado. Usa Finnhub como fuente
+    primaria para EPS y fecha real de presentación.
+    """
+    try:
+        t    = yf.Ticker(ticker)
+        info = t.info
+        now_utc = datetime.now(timezone.utc)
+
+        history = _get_earnings_history_cached(ticker, max_items=8)
+
+        last_q_dt    = None
+        next_q_dt    = None
+        eps_estimate = None
+        eps_actual   = None
+        eps_surprise = None
+        beat_eps     = None
+        rev_actual   = None
+        rev_estimate = None
+        rev_surprise = None
+
+        if history:
+            # Primer registro con eps_reported es el último trimestre presentado
+            for h in history:
+                if h.get("eps_reported") is not None:
+                    try:
+                        last_q_dt    = datetime.strptime(h["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    except Exception:
+                        pass
+                    eps_actual   = h.get("eps_reported")
+                    eps_estimate = h.get("eps_estimate")
+                    eps_surprise = h.get("surprise_pct")
+                    rev_actual   = h.get("rev_actual")
+                    rev_estimate = h.get("rev_estimate")
+                    rev_surprise = h.get("rev_surprise")
+                    break
+
+        # Próxima presentación desde info de Yahoo (fiable para fechas futuras)
+        next_q_ts = info.get("earningsTimestamp") or info.get("earningsTimestampStart")
+        if next_q_ts:
+            candidate = datetime.fromtimestamp(next_q_ts, tz=timezone.utc)
+            if candidate > now_utc:
+                next_q_dt = candidate
+        # Fallback: buscar en historial una fila futura sin reportar
+        if next_q_dt is None and history:
+            for h in history:
+                if h.get("eps_reported") is None:
+                    try:
+                        c = datetime.strptime(h["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                        if c > now_utc:
+                            next_q_dt = c
+                            break
+                    except Exception:
+                        continue
+
+        # Fallback final de EPS si Finnhub y yfinance fallaron
+        if eps_actual is None:
+            print(f"[Earnings] {ticker} — sin histórico, usando trailingEps de Yahoo como último recurso")
+            eps_actual   = _safe_float(info.get("trailingEps"))
+            eps_estimate = _safe_float(info.get("epsCurrentYear")) or _safe_float(info.get("epsForward"))
+            if eps_actual and eps_estimate and eps_estimate != 0:
+                eps_surprise = (eps_actual - eps_estimate) / abs(eps_estimate) * 100
+
+        if eps_surprise is not None:
+            beat_eps = eps_surprise > 0
+
+        last_q_date_fmt = _fmt_fecha_es(last_q_dt) if last_q_dt else "N/A"
+        next_q_date_fmt = _fmt_fecha_es(next_q_dt) if next_q_dt else "N/A"
+        last_q_date     = last_q_dt.strftime("%Y-%m-%d") if last_q_dt else "N/A"
+        next_q_date     = next_q_dt.strftime("%Y-%m-%d") if next_q_dt else "N/A"
+        tiempo_desde    = _tiempo_transcurrido(last_q_dt, now_utc) if last_q_dt else ""
+        tiempo_hasta    = _tiempo_restante(next_q_dt, now_utc)     if next_q_dt else ""
+
+        q_data   = y.get("ttm_quarters", [])
+        q_growth = None
+        if len(q_data) >= 2:
+            v0 = q_data[0].get("value") or 0
+            v1 = q_data[1].get("value") or 0
+            if v1 and v1 != 0:
+                q_growth = (v0 - v1) / abs(v1) * 100
+
+        rev_actual_last = q_data[0].get("value") if q_data else None
+
+        positives = []
+        negatives = []
+        warnings  = []
+
+        profit_m   = (y.get("profit_margin") or 0) * 100
+        roe        = (y.get("roe") or 0) * 100
+        rev_yoy    = y.get("revenue_yoy") or 0
+        earn_yoy   = y.get("earnings_yoy") or 0
+        fcf        = y.get("free_cash_flow") or 0
+        debt_eq    = y.get("debt_equity") or 0
+        curr_ratio = y.get("current_ratio") or 0
+        op_m       = (y.get("operating_margin") or 0) * 100
+        rev_growth = (info.get("revenueGrowth") or 0) * 100
+
+        is_growth_stage = (profit_m < 0 and rev_yoy > 15)
+        if is_growth_stage:
+            warnings.append(
+                "EMPRESA EN FASE DE CRECIMIENTO/EXPANSIÓN: Las pérdidas actuales son "
+                "consecuencia de la inversión agresiva en crecimiento (R&D, infraestructura, "
+                "captación de clientes). En este estadio, evaluar por crecimiento de ingresos, "
+                "posición de mercado y trayectoria hacia la rentabilidad, no por PER o márgenes."
+            )
+
+        if rev_yoy > 20:    positives.append(f"Crecimiento de ingresos excepcional: +{rev_yoy:.1f}% YoY")
+        elif rev_yoy > 10:  positives.append(f"Crecimiento de ingresos sólido: +{rev_yoy:.1f}% YoY")
+        if earn_yoy > 30:   positives.append(f"Beneficios creciendo a ritmo fuerte: +{earn_yoy:.1f}% YoY")
+        elif earn_yoy > 0:  positives.append(f"Beneficios en crecimiento: +{earn_yoy:.1f}% YoY")
+        if profit_m > 20:   positives.append(f"Margen neto excelente: {profit_m:.1f}%")
+        elif profit_m > 10: positives.append(f"Margen neto saludable: {profit_m:.1f}%")
+        if roe > 20:        positives.append(f"ROE muy elevado ({roe:.1f}%): alta eficiencia del capital")
+        if fcf > 0:         positives.append("Free Cash Flow positivo: genera caja real")
+        if op_m > 20:       positives.append(f"Margen operativo destacado: {op_m:.1f}%")
+        if curr_ratio > 2:  positives.append(f"Balance muy líquido (Current Ratio: {curr_ratio:.1f}×)")
+        if q_growth and q_growth > 10:
+            positives.append(f"Aceleración QoQ: +{q_growth:.1f}% respecto al trimestre anterior")
+
+        if profit_m < 0 and not is_growth_stage:
+            negatives.append(f"Empresa con pérdidas netas ({profit_m:.1f}% margen)")
+        if earn_yoy < -10:  negatives.append(f"Caída significativa de beneficios: {earn_yoy:.1f}% YoY")
+        if rev_yoy < 0:     negatives.append(f"Contracción de ingresos: {rev_yoy:.1f}% YoY")
+        if debt_eq > 200:   negatives.append(f"Deuda elevada: D/E {debt_eq:.0f}%")
+        if curr_ratio < 1:  negatives.append(f"Liquidez ajustada (Current Ratio: {curr_ratio:.1f}×)")
+        if fcf < 0:         negatives.append("Free Cash Flow negativo: consumiendo caja")
+        if q_growth and q_growth < -10:
+            negatives.append(f"Desaceleración QoQ: {q_growth:.1f}% vs trimestre anterior")
+
+        if eps_surprise is not None:
+            if eps_surprise > 5:
+                positives.append(f"Batió expectativas de EPS en +{eps_surprise:.1f}%")
+            elif eps_surprise < -5:
+                negatives.append(f"Decepcionó expectativas de EPS en {eps_surprise:.1f}%")
+
+        if rev_surprise is not None:
+            if rev_surprise > 2:
+                positives.append(f"Superó estimaciones de Revenue en +{rev_surprise:.1f}%")
+            elif rev_surprise < -2:
+                negatives.append(f"Revenue por debajo de estimaciones en {rev_surprise:.1f}%")
+
+        beat_revenue = (rev_surprise > 0) if rev_surprise is not None else (rev_growth > 0 if rev_growth else None)
+
+        return {
+            "last_q_date":      last_q_date,
+            "next_q_date":      next_q_date,
+            "last_q_date_fmt":  last_q_date_fmt,
+            "next_q_date_fmt":  next_q_date_fmt,
+            "tiempo_desde":     tiempo_desde,
+            "tiempo_hasta":     tiempo_hasta,
+            "eps_estimate":     eps_estimate,
+            "eps_actual":       eps_actual,
+            "eps_surprise":     eps_surprise,
+            "beat_eps":         beat_eps,
+            "rev_estimate":     rev_estimate,
+            "rev_actual":       rev_actual,
+            "rev_surprise":     rev_surprise,
+            "beat_revenue":     beat_revenue,
+            "revenue_growth":   rev_growth,
+            "q_growth":         q_growth,
+            "positives":        positives[:6],
+            "negatives":        negatives[:5],
+            "warnings":         warnings,
+            "is_growth_stage":  is_growth_stage,
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def _fetch_earnings_history_raw_api(ticker: str) -> list:
@@ -1260,7 +1611,7 @@ def render_earnings_analysis(ea: dict):
         '</div>'
     )
 
-    # Tabla de expectativas EPS vs reportado
+    # Tabla de expectativas EPS y Revenue vs reportado
     def _beat_badge(beat):
         if beat is True:
             return '<span style="background:#064e3b;color:#6ee7b7;padding:2px 9px;border-radius:4px;font-size:0.72rem;font-weight:700;">✔ SUPERÓ</span>'
@@ -1268,13 +1619,39 @@ def render_earnings_analysis(ea: dict):
             return '<span style="background:#4c0519;color:#fca5a5;padding:2px 9px;border-radius:4px;font-size:0.72rem;font-weight:700;">✘ NO ALCANZÓ</span>'
         return '<span style="background:#1e2d45;color:#94a3b8;padding:2px 9px;border-radius:4px;font-size:0.72rem;">N/A</span>'
 
-    eps_est_str  = f"${eps_est:.2f}" if eps_est is not None else "N/A"
-    eps_act_str  = f"${eps_act:.2f}" if eps_act is not None else "N/A"
+    def _fmt_rev(v):
+        if v is None: return "N/A"
+        v = float(v)
+        if abs(v) >= 1e12: return f"${v/1e12:.2f}T"
+        if abs(v) >= 1e9:  return f"${v/1e9:.2f}B"
+        if abs(v) >= 1e6:  return f"${v/1e6:.1f}M"
+        return f"${v:,.0f}"
+
+    eps_est_str  = f"${eps_est:.2f}"     if eps_est is not None     else "N/A"
+    eps_act_str  = f"${eps_act:.2f}"     if eps_act is not None     else "N/A"
     eps_surp_str = f"{eps_surprise:+.2f}%" if eps_surprise is not None else "N/A"
     surp_color   = "#6ee7b7" if (eps_surprise or 0) >= 0 else "#fca5a5"
 
-    rev_str      = f"{rev_growth:+.1f}% YoY" if rev_growth is not None else "N/A"
-    rev_color    = "#6ee7b7" if (rev_growth or 0) >= 0 else "#fca5a5"
+    # Revenue: si Finnhub dio estimado y real, los mostramos en valor absoluto
+    rev_est      = ea.get("rev_estimate")
+    rev_act      = ea.get("rev_actual")
+    rev_surp     = ea.get("rev_surprise")
+
+    if rev_act is not None:
+        # Datos de Finnhub — estimado y real absolutos
+        rev_est_str  = _fmt_rev(rev_est)
+        rev_act_str  = _fmt_rev(rev_act)
+        rev_surp_str = f"{rev_surp:+.2f}%" if rev_surp is not None else "N/A"
+        rev_color    = "#6ee7b7" if (rev_surp or 0) >= 0 else "#fca5a5"
+        rev_source   = "Fuente: Finnhub · Estimado = consenso de analistas previo a la presentación"
+    else:
+        # Fallback — solo crecimiento YoY
+        rev_growth   = ea.get("revenue_growth")
+        rev_est_str  = "—"
+        rev_act_str  = f"{rev_growth:+.1f}% YoY" if rev_growth is not None else "N/A"
+        rev_surp_str = "—"
+        rev_color    = "#6ee7b7" if (rev_growth or 0) >= 0 else "#fca5a5"
+        rev_source   = "Revenue: estimado de consenso no disponible · Se muestra variación YoY"
 
     expect_html = (
         '<div style="margin-bottom:0.8rem;">'
@@ -1296,17 +1673,16 @@ def render_earnings_analysis(ea: dict):
         f'<td style="padding:0.4rem 0.5rem;text-align:center;">{_beat_badge(beat_eps)}</td>'
         '</tr>'
         '<tr>'
-        '<td style="padding:0.4rem 0.5rem;font-size:0.82rem;color:#e2e8f0;">Revenue (crecimiento YoY)</td>'
-        '<td style="padding:0.4rem 0.5rem;text-align:right;color:#475569;">—</td>'
-        f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:{rev_color};font-weight:600;">{rev_str}</td>'
-        '<td style="padding:0.4rem 0.5rem;text-align:right;color:#475569;">—</td>'
+        '<td style="padding:0.4rem 0.5rem;font-size:0.82rem;color:#e2e8f0;">Revenue</td>'
+        f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#94a3b8;">{rev_est_str}</td>'
+        f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:{rev_color};font-weight:600;">{rev_act_str}</td>'
+        f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:{rev_color};font-weight:600;">{rev_surp_str}</td>'
         f'<td style="padding:0.4rem 0.5rem;text-align:center;">{_beat_badge(beat_revenue)}</td>'
         '</tr>'
         '</tbody></table>'
-        '<div style="font-size:0.68rem;color:#475569;margin-top:0.4rem;">'
-        'EPS Estimate = consenso de analistas antes de la presentación · Revenue: comparativa YoY '
-        'al no disponer de estimado de consenso específico para ingresos.</div>'
+        f'<div style="font-size:0.68rem;color:#475569;margin-top:0.4rem;">{rev_source}</div>'
         '</div>'
+
     )
 
     # Puntos positivos
@@ -1365,49 +1741,101 @@ def render_earnings_history(history: list):
         )
         return
 
+    # Detectar si tenemos datos de Revenue (Finnhub los proporciona)
+    has_revenue = any(h.get("rev_actual") is not None for h in history)
+
     def badge(result):
         if result == "BEAT":
-            return '<span style="background:#064e3b;color:#6ee7b7;padding:3px 11px;border-radius:4px;font-size:0.7rem;font-weight:700;">BEAT</span>'
+            return '<span style="background:#064e3b;color:#6ee7b7;padding:3px 10px;border-radius:4px;font-size:0.7rem;font-weight:700;">BEAT</span>'
         elif result == "MISSED":
-            return '<span style="background:#4c0519;color:#fca5a5;padding:3px 11px;border-radius:4px;font-size:0.7rem;font-weight:700;">MISSED</span>'
+            return '<span style="background:#4c0519;color:#fca5a5;padding:3px 10px;border-radius:4px;font-size:0.7rem;font-weight:700;">MISSED</span>'
         elif result == "MET":
-            return '<span style="background:#1e2d45;color:#fbbf24;padding:3px 11px;border-radius:4px;font-size:0.7rem;font-weight:700;">MET</span>'
-        return '<span style="background:#1e2d45;color:#64748b;padding:3px 11px;border-radius:4px;font-size:0.7rem;">N/A</span>'
+            return '<span style="background:#1e2d45;color:#fbbf24;padding:3px 10px;border-radius:4px;font-size:0.7rem;font-weight:700;">MET</span>'
+        return '<span style="background:#1e2d45;color:#64748b;padding:3px 10px;border-radius:4px;font-size:0.7rem;">N/A</span>'
 
-    header = (
-        '<div style="display:grid;grid-template-columns:1fr 1.2fr 1.2fr 1fr 0.9fr;gap:0.4rem;'
-        'padding:0.3rem 0;border-bottom:1px solid #1e2d45;margin-bottom:0.2rem;">'
-        '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;">Periodo</span>'
-        '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;text-align:right;">Estimado</span>'
-        '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;text-align:right;">Reportado</span>'
-        '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;text-align:right;">Sorpresa</span>'
-        '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;text-align:center;">Resultado</span>'
-        '</div>'
-    )
+    def fmt_rev(v):
+        if v is None: return "--"
+        v = float(v)
+        if abs(v) >= 1e12: return f"${v/1e12:.2f}T"
+        if abs(v) >= 1e9:  return f"${v/1e9:.2f}B"
+        if abs(v) >= 1e6:  return f"${v/1e6:.1f}M"
+        return f"${v:,.0f}"
 
-    rows = ""
-    for h in history:
-        est    = f"${h['eps_estimate']:.2f}" if h.get("eps_estimate") is not None else "--"
-        rep    = f"${h['eps_reported']:.2f}" if h.get("eps_reported") is not None else "--"
-        surp   = f"{h['surprise_pct']:+.2f}%" if h.get("surprise_pct") is not None else "--"
-        surp_c = "#6ee7b7" if (h.get("surprise_pct") or 0) >= 0 else "#fca5a5"
-        rows += (
-            '<div style="display:grid;grid-template-columns:1fr 1.2fr 1.2fr 1fr 0.9fr;gap:0.4rem;'
-            'padding:0.5rem 0;border-bottom:1px solid #1a2540;align-items:center;">'
-            f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.85rem;color:#f1f5f9;font-weight:600;">{h["fiscal_label"]}</span>'
-            f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.82rem;color:#94a3b8;text-align:right;">{est}</span>'
-            f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.82rem;color:#e2e8f0;text-align:right;">{rep}</span>'
-            f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.82rem;color:{surp_c};text-align:right;font-weight:600;">{surp}</span>'
-            f'<span style="text-align:center;">{badge(h.get("result","N/A"))}</span>'
-            '</div>'
+    if has_revenue:
+        # Tabla expandida con EPS + Revenue
+        grid  = "0.7fr 0.9fr 0.9fr 0.7fr 1fr 1fr 0.7fr 0.8fr"
+        hdr = (
+            '<div style="display:grid;grid-template-columns:{g};gap:0.3rem;'
+            'padding:0.3rem 0;border-bottom:1px solid #1e2d45;margin-bottom:0.2rem;">'.format(g=grid)
+            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;">Periodo</span>'
+            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;text-align:right;">EPS Est.</span>'
+            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;text-align:right;">EPS Real</span>'
+            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;text-align:right;">EPS %</span>'
+            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;text-align:right;">Rev. Est.</span>'
+            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;text-align:right;">Rev. Real</span>'
+            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;text-align:right;">Rev. %</span>'
+            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;text-align:center;">Resultado</span>'
+            + '</div>'
         )
+        rows = ""
+        for h in history:
+            eps_est = f"${h['eps_estimate']:.2f}" if h.get("eps_estimate") is not None else "--"
+            eps_rep = f"${h['eps_reported']:.2f}" if h.get("eps_reported") is not None else "--"
+            eps_s   = f"{h['surprise_pct']:+.1f}%" if h.get("surprise_pct") is not None else "--"
+            eps_c   = "#6ee7b7" if (h.get("surprise_pct") or 0) >= 0 else "#fca5a5"
+            r_est   = fmt_rev(h.get("rev_estimate"))
+            r_act   = fmt_rev(h.get("rev_actual"))
+            r_s     = f"{h['rev_surprise']:+.1f}%" if h.get("rev_surprise") is not None else "--"
+            r_c     = "#6ee7b7" if (h.get("rev_surprise") or 0) >= 0 else "#fca5a5"
+            rows += (
+                f'<div style="display:grid;grid-template-columns:{grid};gap:0.3rem;'
+                f'padding:0.45rem 0;border-bottom:1px solid #1a2540;align-items:center;">'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.82rem;color:#f1f5f9;font-weight:600;">{h["fiscal_label"]}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:#94a3b8;text-align:right;">{eps_est}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:#e2e8f0;text-align:right;">{eps_rep}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:{eps_c};text-align:right;font-weight:600;">{eps_s}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:#94a3b8;text-align:right;">{r_est}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:#e2e8f0;text-align:right;">{r_act}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:{r_c};text-align:right;font-weight:600;">{r_s}</span>'
+                f'<span style="text-align:center;">{badge(h.get("result","N/A"))}</span>'
+                f'</div>'
+            )
+        source = "Fuente: Finnhub · Estimado = consenso de analistas previo a la presentación · Sorpresa: % diferencia estimado/real"
+    else:
+        # Tabla simple solo EPS
+        grid = "1fr 1.2fr 1.2fr 1fr 0.9fr"
+        hdr = (
+            '<div style="display:grid;grid-template-columns:{g};gap:0.4rem;'
+            'padding:0.3rem 0;border-bottom:1px solid #1e2d45;margin-bottom:0.2rem;">'.format(g=grid)
+            + '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;">Periodo</span>'
+            + '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;text-align:right;">EPS Est.</span>'
+            + '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;text-align:right;">EPS Real</span>'
+            + '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;text-align:right;">Sorpresa</span>'
+            + '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;text-align:center;">Resultado</span>'
+            + '</div>'
+        )
+        rows = ""
+        for h in history:
+            est   = f"${h['eps_estimate']:.2f}" if h.get("eps_estimate") is not None else "--"
+            rep   = f"${h['eps_reported']:.2f}" if h.get("eps_reported") is not None else "--"
+            surp  = f"{h['surprise_pct']:+.2f}%" if h.get("surprise_pct") is not None else "--"
+            surp_c = "#6ee7b7" if (h.get("surprise_pct") or 0) >= 0 else "#fca5a5"
+            rows += (
+                f'<div style="display:grid;grid-template-columns:{grid};gap:0.4rem;'
+                f'padding:0.5rem 0;border-bottom:1px solid #1a2540;align-items:center;">'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.85rem;color:#f1f5f9;font-weight:600;">{h["fiscal_label"]}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.82rem;color:#94a3b8;text-align:right;">{est}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.82rem;color:#e2e8f0;text-align:right;">{rep}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.82rem;color:{surp_c};text-align:right;font-weight:600;">{surp}</span>'
+                f'<span style="text-align:center;">{badge(h.get("result","N/A"))}</span>'
+                f'</div>'
+            )
+        source = "Fuente: yfinance · Estimado = consenso de analistas · Revenue no disponible en esta fuente"
 
     st.markdown(
-        f'<div class="metric-card">{header}{rows}'
-        f'<div style="font-size:0.68rem;color:#475569;margin-top:0.5rem;">'
-        f'EPS (Earnings Per Share) — Estimado: consenso de analistas previo a la presentación · '
-        f'Reportado: EPS real declarado · Sorpresa: diferencia porcentual entre ambos · '
-        f'Fuente: Yahoo Finance</div></div>',
+        f'<div class="metric-card">{hdr}{rows}'
+        f'<div style="font-size:0.68rem;color:#475569;margin-top:0.5rem;">{source}</div>'
+        f'</div>',
         unsafe_allow_html=True
     )
 
