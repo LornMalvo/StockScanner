@@ -7,6 +7,8 @@ descripción empresa, noticias, análisis resultados, benchmarks sector.
 import yfinance as yf
 import streamlit as st
 import time
+import json
+import os
 from datetime import datetime, timezone
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -578,7 +580,162 @@ def fetch_last_cross_date(ticker: str) -> dict:
         return {}
 
 # ─────────────────────────────────────────────────────────────────────────────
-# COMPETIDORES
+# COMPETIDORES MANUALES — gestión y persistencia por ticker
+# ─────────────────────────────────────────────────────────────────────────────
+# La tabla de comparativa NO se rellena automáticamente: el usuario añade
+# manualmente los tickers que considera competencia directa de la empresa
+# analizada. Se guardan en un archivo JSON local que persiste mientras el
+# contenedor de Streamlit Cloud no se redespliegue (sobrevive a recargas
+# de página y a cierres de sesión del navegador, pero no a un nuevo deploy
+# del código ni a un redeploy manual de la app).
+
+_COMPETITORS_FILE = "/tmp/competitors_store.json"
+
+
+def _load_competitors_store() -> dict:
+    """Carga el almacén completo de competidores manuales desde disco."""
+    if os.path.exists(_COMPETITORS_FILE):
+        try:
+            with open(_COMPETITORS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_competitors_store(store: dict):
+    """Guarda el almacén completo de competidores manuales a disco."""
+    try:
+        with open(_COMPETITORS_FILE, "w", encoding="utf-8") as f:
+            json.dump(store, f, indent=2)
+    except Exception as e:
+        print(f"[Competitors] Error al guardar: {e}")
+
+
+def get_manual_competitors(ticker: str) -> list:
+    """Devuelve la lista de tickers competidores guardados para esta empresa."""
+    ticker = ticker.upper().strip()
+    store = _load_competitors_store()
+    return store.get(ticker, [])
+
+
+def add_manual_competitor(ticker: str, competitor_ticker: str) -> bool:
+    """
+    Añade un competidor a la lista guardada para 'ticker'.
+    Devuelve True si se añadió, False si ya existía o si es el mismo ticker.
+    """
+    ticker            = ticker.upper().strip()
+    competitor_ticker = competitor_ticker.upper().strip()
+
+    if not competitor_ticker or competitor_ticker == ticker:
+        return False
+
+    store = _load_competitors_store()
+    current = store.get(ticker, [])
+    if competitor_ticker in current:
+        return False
+
+    current.append(competitor_ticker)
+    store[ticker] = current
+    _save_competitors_store(store)
+    return True
+
+
+def remove_manual_competitor(ticker: str, competitor_ticker: str):
+    """Elimina un competidor de la lista guardada para 'ticker'."""
+    ticker            = ticker.upper().strip()
+    competitor_ticker = competitor_ticker.upper().strip()
+
+    store   = _load_competitors_store()
+    current = store.get(ticker, [])
+    if competitor_ticker in current:
+        current.remove(competitor_ticker)
+        store[ticker] = current
+        _save_competitors_store(store)
+
+
+def validate_ticker_exists(ticker: str) -> dict | None:
+    """
+    Verifica que un ticker existe en Yahoo Finance antes de añadirlo.
+    Devuelve un dict básico con nombre si es válido, None si no existe.
+    """
+    try:
+        t    = yf.Ticker(ticker.upper().strip())
+        info = t.info
+        price = info.get("currentPrice") or info.get("regularMarketPrice")
+        if not price:
+            return None
+        return {
+            "ticker": ticker.upper().strip(),
+            "name":   info.get("shortName") or info.get("longName") or ticker,
+        }
+    except Exception:
+        return None
+
+
+def render_competitor_manager(ticker: str):
+    """
+    Widget para añadir/eliminar competidores manuales de la empresa analizada.
+    Se muestra dentro del apartado COMPARATIVA FRENTE A COMPETENCIA.
+    """
+    current = get_manual_competitors(ticker)
+
+    with st.expander(
+        f"➕ Gestionar competidores ({len(current)} añadidos)",
+        expanded=(len(current) == 0)
+    ):
+        st.markdown(
+            '<div style="font-size:0.78rem;color:#64748b;margin-bottom:0.6rem;">'
+            'Añade los tickers que consideres competencia directa de esta empresa. '
+            'Se guardan para futuras consultas de este mismo ticker.</div>',
+            unsafe_allow_html=True
+        )
+
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            new_comp = st.text_input(
+                "Ticker del competidor",
+                placeholder="ej. AMD, ASML, SNOW...",
+                label_visibility="collapsed",
+                key=f"new_comp_{ticker}"
+            )
+        with col2:
+            add_clicked = st.button("Añadir", key=f"add_comp_{ticker}", use_container_width=True)
+
+        if add_clicked and new_comp.strip():
+            comp_clean = new_comp.strip().upper()
+            if comp_clean == ticker.upper():
+                st.warning("No puedes añadir la misma empresa como su propia competencia.")
+            elif comp_clean in current:
+                st.info(f"{comp_clean} ya está en la lista.")
+            else:
+                with st.spinner(f"Verificando {comp_clean}…"):
+                    valid = validate_ticker_exists(comp_clean)
+                if valid:
+                    add_manual_competitor(ticker, comp_clean)
+                    st.success(f"{comp_clean} ({valid['name']}) añadido como competidor.")
+                    st.rerun()
+                else:
+                    st.error(f"No se encontró el ticker {comp_clean} en Yahoo Finance.")
+        elif add_clicked:
+            st.warning("Introduce un ticker.")
+
+        if current:
+            st.markdown(
+                '<div style="font-size:0.7rem;color:#64748b;margin-top:0.6rem;margin-bottom:0.3rem;">'
+                'Competidores guardados — pulsa para eliminar:</div>',
+                unsafe_allow_html=True
+            )
+            del_cols = st.columns(min(len(current), 5))
+            for i, comp in enumerate(current):
+                with del_cols[i % len(del_cols)]:
+                    if st.button(f"✕ {comp}", key=f"del_comp_{ticker}_{comp}", use_container_width=True):
+                        remove_manual_competitor(ticker, comp)
+                        st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COMPETIDORES — descarga de datos
 # ─────────────────────────────────────────────────────────────────────────────
 
 def fetch_peer_data(peers: list) -> list:
@@ -612,7 +769,7 @@ def fetch_peer_data(peers: list) -> list:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_company_description(company_info: dict, company_name: str):
-    st.markdown('<div class="section-header">B · DESCRIPCIÓN DE LA EMPRESA</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">DESCRIPCIÓN DE LA EMPRESA</div>', unsafe_allow_html=True)
     if not company_info or not company_info.get("description"):
         st.markdown('<div class="metric-card"><span style="color:#64748b;">Descripción no disponible.</span></div>', unsafe_allow_html=True)
         return
@@ -727,7 +884,7 @@ def render_company_description(company_info: dict, company_name: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_news(news_items: list):
-    st.markdown('<div class="section-header">C · NOTICIAS Y ANUNCIOS RECIENTES (últimos 3 meses)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">NOTICIAS Y ANUNCIOS RECIENTES (últimos 3 meses)</div>', unsafe_allow_html=True)
     if not news_items:
         st.markdown('<div class="metric-card"><span style="color:#64748b;">No se encontraron noticias recientes.</span></div>', unsafe_allow_html=True)
         return
@@ -847,7 +1004,7 @@ def render_earnings_analysis(ea: dict):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_entry_signal(signal: dict):
-    st.markdown('<div class="section-header">H · SEÑAL DE ENTRADA</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">SEÑAL DE ENTRADA</div>', unsafe_allow_html=True)
 
     score   = signal["score"]
     level   = signal["level"]
@@ -907,7 +1064,7 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
     coloreando cada barra según si sube o baja respecto al trimestre anterior.
     """
     st.markdown(
-        '<div class="section-header">I · TENDENCIA Y EVOLUCIÓN TRIMESTRAL</div>',
+        '<div class="section-header">TENDENCIA Y EVOLUCIÓN TRIMESTRAL</div>',
         unsafe_allow_html=True
     )
 
@@ -1045,9 +1202,19 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
 
 def render_peers(main_ticker: str, main_data: dict, peers_data: list,
                  fx_rate: float | None, ev: dict):
-    st.markdown('<div class="section-header">J · COMPARATIVA FRENTE A COMPETENCIA</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">COMPARATIVA FRENTE A COMPETENCIA</div>', unsafe_allow_html=True)
+
+    # Widget de gestión de competidores manuales (siempre visible)
+    render_competitor_manager(main_ticker)
+
     if not peers_data:
-        st.markdown('<div class="metric-card"><span style="color:#64748b;">No se pudieron obtener datos de competidores.</span></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="metric-card">'
+            '<span style="color:#64748b;">Todavía no has añadido competidores para esta empresa. '
+            'Usa el panel de arriba para añadirlos.</span>'
+            '</div>',
+            unsafe_allow_html=True
+        )
         return
 
     pe_ref  = ev.get("pe_ref", 20)
