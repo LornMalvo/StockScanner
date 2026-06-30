@@ -392,19 +392,28 @@ def _get_finnhub_key() -> str:
 def _fetch_earnings_finnhub(ticker: str, limit: int = 8) -> list:
     """
     Obtiene el histórico de earnings desde Finnhub.
-    Devuelve lista de dicts con:
-      fiscal_label, date, eps_estimate, eps_reported, surprise_pct,
-      rev_estimate, rev_actual, rev_surprise_pct, result, hour
-    ordenada de más reciente a más antigua.
+    Endpoint correcto: /calendar/earnings con rango de fechas.
+    Devuelve epsActual, epsEstimate, revenueActual, revenueEstimate, fecha real de presentación.
     """
     key = _get_finnhub_key()
     if not key:
         print("[Finnhub] Sin FINNHUB_API_KEY configurada en Secrets")
         return []
     try:
+        from datetime import date, timedelta
+        # Consultar los últimos 3 años para tener historial suficiente
+        today     = date.today()
+        date_to   = today.strftime("%Y-%m-%d")
+        date_from = (today - timedelta(days=3*365)).strftime("%Y-%m-%d")
+
         r = requests.get(
-            f"{FINNHUB_BASE}/stock/earnings",
-            params={"symbol": ticker.upper(), "limit": limit, "token": key},
+            f"{FINNHUB_BASE}/calendar/earnings",
+            params={
+                "symbol": ticker.upper(),
+                "from":   date_from,
+                "to":     date_to,
+                "token":  key,
+            },
             timeout=12,
         )
         if r.status_code != 200:
@@ -412,34 +421,36 @@ def _fetch_earnings_finnhub(ticker: str, limit: int = 8) -> list:
             return []
 
         data = r.json()
-        if not isinstance(data, list) or not data:
-            print(f"[Finnhub] Respuesta vacía para {ticker}: {data}")
+        items = data.get("earningsCalendar", [])
+        if not items:
+            print(f"[Finnhub] earningsCalendar vacío para {ticker}")
             return []
 
         out = []
-        for item in data:
+        for item in items:
             try:
-                date_str    = item.get("date") or item.get("period") or ""
-                year        = item.get("year")
-                quarter     = item.get("quarter")
-                eps_est     = item.get("epsEstimate")
-                eps_act     = item.get("epsActual")
-                rev_est     = item.get("revenueEstimate")
-                rev_act     = item.get("revenueActual")
-                hour        = item.get("hour", "")   # bmo/amc/dmh
+                date_str = item.get("date", "")
+                year     = item.get("year")
+                quarter  = item.get("quarter")
+                eps_est  = item.get("epsEstimate")
+                eps_act  = item.get("epsActual")
+                rev_est  = item.get("revenueEstimate")
+                rev_act  = item.get("revenueActual")
+                hour     = item.get("hour", "")
+
+                if not date_str:
+                    continue
 
                 # Etiqueta fiscal
                 if year and quarter:
                     fiscal_label = f"Q{quarter} '{str(year)[2:]}"
-                elif date_str:
+                else:
                     try:
                         dt = datetime.strptime(date_str[:10], "%Y-%m-%d")
                         q  = (dt.month - 1) // 3 + 1
                         fiscal_label = f"Q{q} '{str(dt.year)[2:]}"
                     except Exception:
                         fiscal_label = date_str[:7]
-                else:
-                    continue
 
                 # Sorpresa EPS
                 eps_surprise = None
@@ -451,8 +462,8 @@ def _fetch_earnings_finnhub(ticker: str, limit: int = 8) -> list:
                 if rev_act is not None and rev_est is not None and rev_est != 0:
                     rev_surprise = (float(rev_act) - float(rev_est)) / abs(float(rev_est)) * 100
 
-                # Resultado
-                if eps_act is None:
+                # Resultado — solo si hay datos reales reportados
+                if eps_act is None and rev_act is None:
                     result = "N/A"
                 elif eps_surprise is not None:
                     result = "BEAT" if eps_surprise > 0.5 else ("MISSED" if eps_surprise < -0.5 else "MET")
@@ -477,8 +488,17 @@ def _fetch_earnings_finnhub(ticker: str, limit: int = 8) -> list:
 
         # Ordenar de más reciente a más antiguo
         out.sort(key=lambda x: x["date"], reverse=True)
-        print(f"[Finnhub] {ticker}: {len(out)} trimestres obtenidos correctamente")
-        return out
+
+        # Filtrar solo trimestres ya presentados (eps_reported o rev_actual no nulos)
+        # y limitar al número pedido
+        reported = [h for h in out if h["eps_reported"] is not None or h["rev_actual"] is not None]
+        pending  = [h for h in out if h["eps_reported"] is None and h["rev_actual"] is None]
+
+        # Incluir el próximo pendiente al principio si existe
+        result_list = (pending[:1] + reported)[:limit]
+
+        print(f"[Finnhub] {ticker}: {len(reported)} trimestres con datos + {len(pending)} pendientes")
+        return result_list
 
     except Exception as e:
         print(f"[Finnhub] Excepción de red para {ticker}: {e}")
