@@ -16,13 +16,6 @@ from dcf import (
     fetch_historical_multiples,
     render_historical_multiples,
 )
-from gemini_client import (
-    is_available as gemini_available,
-    identify_competitors, analyze_strengths_weaknesses,
-    analyze_earnings_with_ai, generate_executive_summary,
-    render_ai_strengths_in_description, render_ai_earnings_analysis,
-    render_executive_summary,
-)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -722,39 +715,7 @@ def render_report(ticker, company_name, y: dict,
         news_items   = fetch_recent_news(ticker)
         ea           = fetch_earnings_analysis(ticker, y)
 
-    # Identificar competidores reales con IA
-    ai_competitors = {}
-    ai_strengths   = {}
-    if gemini_available():
-        with st.spinner("Gemini identificando competidores..."):
-            ai_competitors = identify_competitors(
-                ticker, company_name,
-                y.get("sector",""), y.get("industry",""),
-                company_info.get("description","")
-            )
-        # Pre-cargar métricas de competidores para el análisis
-        ai_tickers_early = [c["ticker"] for c in ai_competitors.get("competitors",[]) if c.get("ticker")]
-        if ai_tickers_early:
-            peers_data_ai = fetch_peer_data(ai_tickers_early)
-            if peers_data_ai:
-                with st.spinner("Gemini analizando fortalezas y debilidades..."):
-                    ai_strengths = analyze_strengths_weaknesses(
-                        ticker, company_name, y,
-                        peers_data_ai,
-                        ai_competitors.get("subsector", y.get("industry","")),
-                        ai_competitors.get("moat_factors", [])
-                    )
-                # Guardar para reutilizar en sección J
-                st.session_state[f"peers_data_ai_{ticker}"] = peers_data_ai
-
     render_company_description(company_info, company_name)
-
-    # Fortalezas/debilidades/moat van DENTRO del apartado de descripción
-    if ai_strengths:
-        render_ai_strengths_in_description(
-            ai_strengths,
-            ai_competitors.get("subsector", y.get("industry",""))
-        )
 
     # ════════════════════════════════════════════════════════════════════
     # C · ÚLTIMAS NOTICIAS Y ANUNCIOS
@@ -762,31 +723,7 @@ def render_report(ticker, company_name, y: dict,
     render_news(news_items)
 
     # ════════════════════════════════════════════════════════════════════
-    # D · DESGLOSE TTM — Yahoo Finance
-    # ════════════════════════════════════════════════════════════════════
-    yahoo_quarters = y.get("ttm_quarters", []) or []
-    if yahoo_quarters:
-        _section("D · DESGLOSE TTM &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
-        def ttm_fmt(v):
-            return _fmt_big(v, "") if v is not None else "—"
-        rows_t = ""
-        ytot   = 0
-        for i, q in enumerate(yahoo_quarters[:4]):
-            val   = q.get("value") or 0
-            ytot += val
-            rows_t += (
-                f'<div class="ttm-row">'
-                f'<span>Q{i+1} ({q.get("date","")[:10]})</span>'
-                f'<span class="ttm-val">{ttm_fmt(val)}</span></div>'
-            )
-        rows_t += (
-            f'<div class="ttm-row"><span>TOTAL TTM</span>'
-            f'<span style="color:#fbbf24;">{ttm_fmt(ytot)}</span></div>'
-        )
-        st.markdown(f'<div class="metric-card">{rows_t}</div>', unsafe_allow_html=True)
-
-    # ════════════════════════════════════════════════════════════════════
-    # E–J · MÉTRICAS EN DOS COLUMNAS
+    # E–H, J · MÉTRICAS EN DOS COLUMNAS
     # ════════════════════════════════════════════════════════════════════
     col_a, col_b = st.columns(2)
 
@@ -817,18 +754,6 @@ def render_report(ticker, company_name, y: dict,
             sbm.get("roe"), f"{sbm.get('roe')}%", _color_pct(y.get("roe")))
         html += _kv("ROA",
             _fmt_num((y.get("roa") or 0)*100,2,suffix="%"), _color_pct(y.get("roa")))
-        st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
-
-        # I · Crecimiento YoY
-        _section("I · CRECIMIENTO YoY &nbsp;<span style='font-size:0.7rem;'>🟠 Calculado por app</span>")
-        rev_yoy  = y.get("revenue_yoy")
-        earn_yoy = y.get("earnings_yoy")
-        html  = _kv("Revenue Growth",
-            _fmt_num(rev_yoy,2,suffix="%") if rev_yoy is not None else "N/A", _color_pct(rev_yoy))
-        html += _kv("Earnings Growth",
-            _fmt_num(earn_yoy,2,suffix="%") if earn_yoy is not None else "N/A", _color_pct(earn_yoy))
-        html += _kv("EPS (TTM)",     _fmt_price(y.get("eps_ttm"),    currency_y, fx_rate))
-        html += _kv("EPS (Forward)", _fmt_price(y.get("eps_forward"), currency_y, fx_rate))
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
     with col_b:
@@ -869,6 +794,56 @@ def render_report(ticker, company_name, y: dict,
         html += _kv("52W High",     _fmt_price(y.get("52w_high"), currency_y, fx_rate))
         html += _kv("52W Low",      _fmt_price(y.get("52w_low"),  currency_y, fx_rate))
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
+
+    # ════════════════════════════════════════════════════════════════════
+    # D · DESGLOSE TTM — Yahoo Finance
+    # ════════════════════════════════════════════════════════════════════
+    yahoo_quarters = y.get("ttm_quarters", []) or []
+    if yahoo_quarters:
+        _section("D · DESGLOSE TTM &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
+        def ttm_fmt(v):
+            return _fmt_big(v, "") if v is not None else "—"
+        rows_t = ""
+        ytot   = 0
+        for i, q in enumerate(yahoo_quarters[:4]):
+            val   = q.get("value") or 0
+            ytot += val
+            rows_t += (
+                f'<div class="ttm-row">'
+                f'<span>Q{i+1} ({q.get("date","")[:10]})</span>'
+                f'<span class="ttm-val">{ttm_fmt(val)}</span></div>'
+            )
+        rows_t += (
+            f'<div class="ttm-row"><span>TOTAL TTM</span>'
+            f'<span style="color:#fbbf24;">{ttm_fmt(ytot)}</span></div>'
+        )
+        st.markdown(f'<div class="metric-card">{rows_t}</div>', unsafe_allow_html=True)
+
+    # ════════════════════════════════════════════════════════════════════
+    # I · CRECIMIENTO YoY
+    # ════════════════════════════════════════════════════════════════════
+    _section("I · CRECIMIENTO YoY &nbsp;<span style='font-size:0.7rem;'>🟠 Calculado por app</span>")
+    rev_yoy  = y.get("revenue_yoy")
+    earn_yoy = y.get("earnings_yoy")
+    html  = _kv("Revenue Growth",
+        _fmt_num(rev_yoy,2,suffix="%") if rev_yoy is not None else "N/A", _color_pct(rev_yoy))
+    html += _kv("Earnings Growth",
+        _fmt_num(earn_yoy,2,suffix="%") if earn_yoy is not None else "N/A", _color_pct(earn_yoy))
+    html += _kv("EPS (TTM)",     _fmt_price(y.get("eps_ttm"),    currency_y, fx_rate))
+    html += _kv("EPS (Forward)", _fmt_price(y.get("eps_forward"), currency_y, fx_rate))
+    st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
+
+    # ════════════════════════════════════════════════════════════════════
+    # TENDENCIA Y EVOLUCIÓN TRIMESTRAL
+    # ════════════════════════════════════════════════════════════════════
+    trend = calc_trend(y)
+    render_trend(trend)
+
+    # ════════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════════════
+    # ANÁLISIS DE ÚLTIMOS RESULTADOS
+    # ════════════════════════════════════════════════════════════════════
+    render_earnings_analysis(ea)
 
     # ════════════════════════════════════════════════════════════════════
     # K · ANÁLISIS TÉCNICO
@@ -1105,90 +1080,19 @@ def render_report(ticker, company_name, y: dict,
     render_historical_multiples(mult_data)
 
     # ════════════════════════════════════════════════════════════════════
-    # ANALISIS DE ULTIMOS RESULTADOS
-    # ════════════════════════════════════════════════════════════════════
-    render_earnings_analysis(ea)
-
-    # Analisis cualitativo de resultados con IA
-    if gemini_available():
-        with st.spinner("Gemini analizando ultimos resultados..."):
-            ai_earnings = analyze_earnings_with_ai(ticker, company_name, y, ea)
-        render_ai_earnings_analysis(ai_earnings)
-
-    # ════════════════════════════════════════════════════════════════════
     # SEÑAL DE ENTRADA
     # ════════════════════════════════════════════════════════════════════
     signal = calc_entry_signal(y, tech, ev)
     render_entry_signal(signal)
 
     # ════════════════════════════════════════════════════════════════════
-    # TENDENCIA TRIMESTRAL
-    # ════════════════════════════════════════════════════════════════════
-    trend = calc_trend(y)
-    render_trend(trend)
-
-    # ════════════════════════════════════════════════════════════════════
     # COMPARATIVA FRENTE A COMPETENCIA
-    # Usa competidores identificados por IA si están disponibles
     # ════════════════════════════════════════════════════════════════════
-    ai_tickers = [c["ticker"] for c in ai_competitors.get("competitors", []) if c.get("ticker")]
-
     with st.spinner("Cargando datos de competidores…"):
-        if ai_tickers:
-            # Reutilizar datos ya descargados en la sección B si están en caché
-            peers_data = st.session_state.get(
-                f"peers_data_ai_{ticker}",
-                fetch_peer_data(ai_tickers)
-            )
-            subsector = ai_competitors.get("subsector", "")
-            if subsector:
-                _section(
-                    f"J · COMPARATIVA FRENTE A COMPETENCIA &nbsp;"
-                    f"<span style='font-size:0.7rem;color:#38bdf8;'>"
-                    f"✨ Competidores identificados por IA · {subsector}</span>"
-                )
-            # Mostrar razón de cada competidor
-            reasons = {
-                c["ticker"]: c.get("reason","")
-                for c in ai_competitors.get("competitors",[])
-                if c.get("reason")
-            }
-            if reasons:
-                rows_r = "".join(
-                    f'<div style="display:flex;gap:0.5rem;font-size:0.75rem;'
-                    f'padding:0.22rem 0;border-bottom:1px solid #1a2540;">'
-                    f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#38bdf8;'
-                    f'min-width:4rem;font-weight:600;">{t}</span>'
-                    f'<span style="color:#64748b;">{r}</span></div>'
-                    for t, r in reasons.items()
-                )
-                st.markdown(
-                    f'<div class="metric-card" style="border-left:3px solid #1e3a5f;'
-                    f'padding:0.6rem 0.9rem;margin-bottom:0.5rem;">'
-                    f'<div style="font-size:0.68rem;color:#475569;text-transform:uppercase;'
-                    f'letter-spacing:0.08em;margin-bottom:0.3rem;">Por qué son competidores directos</div>'
-                    f'{rows_r}</div>',
-                    unsafe_allow_html=True
-                )
-        else:
-            # Fallback: lista curada estática por sector
-            peers_tickers = get_peers(ticker, y.get("sector",""), y.get("company_name",""))
-            peers_data    = fetch_peer_data(peers_tickers)
+        peers_tickers = get_peers(ticker, y.get("sector",""), y.get("company_name",""))
+        peers_data    = fetch_peer_data(peers_tickers)
 
     render_peers(ticker, y, peers_data, fx_rate, ev)
-
-    # ════════════════════════════════════════════════════════════════════
-    # RESUMEN EJECUTIVO IA
-    # ════════════════════════════════════════════════════════════════════
-    if gemini_available():
-        sq_data = calc_short_squeeze(y)
-        with st.spinner("Gemini generando resumen ejecutivo..."):
-            summary = generate_executive_summary(
-                ticker, company_name, y, ev, sq_data, tech,
-                ai_strengths,
-                ai_competitors.get("subsector", y.get("industry",""))
-            )
-        render_executive_summary(summary)
 
     st.caption(
         f"Datos: Yahoo Finance · {ticker} · USD/EUR: {fx_rate:.4f} · "
