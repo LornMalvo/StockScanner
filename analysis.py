@@ -6,6 +6,7 @@ descripción empresa, noticias, análisis resultados, benchmarks sector.
 
 import yfinance as yf
 import streamlit as st
+import requests
 import time
 import json
 import os
@@ -369,28 +370,185 @@ def _safe_float(v) -> float | None:
         return None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# FUENTE CENTRAL DE EARNINGS HISTORY
+# ─────────────────────────────────────────────────────────────────────────────
+# yfinance.Ticker.earnings_dates es inestable entre versiones: en muchos
+# entornos devuelve DataFrame vacío o None sin lanzar error, incluso cuando
+# el ticker sí tiene historial. Por eso usamos como fuente PRIMARIA el
+# endpoint JSON crudo de Yahoo Finance (quoteSummary, módulo earningsHistory),
+# que es el mismo que alimenta la web pública de Yahoo y es mucho más estable.
+# yfinance se mantiene como fallback secundario.
+
+_YAHOO_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+}
+
+
+def _fetch_earnings_history_raw_api(ticker: str) -> list:
+    """
+    Llama directamente al endpoint quoteSummary de Yahoo con el módulo
+    earningsHistory, que devuelve los últimos 4 trimestres con
+    epsEstimate, epsActual y epsDifference/surprisePercent ya calculados
+    por Yahoo — sin necesidad de adivinar formato decimal vs porcentaje.
+    """
+    url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker}"
+    params = {"modules": "earningsHistory"}
+    try:
+        r = requests.get(url, params=params, headers=_YAHOO_HEADERS, timeout=12)
+        if r.status_code != 200:
+            print(f"[EarningsRaw] {ticker}: HTTP {r.status_code}")
+            return []
+        data = r.json()
+        result = data.get("quoteSummary", {}).get("result", [])
+        if not result:
+            print(f"[EarningsRaw] {ticker}: sin 'result' en la respuesta")
+            return []
+        eh_list = result[0].get("earningsHistory", {}).get("history", [])
+        if not eh_list:
+            print(f"[EarningsRaw] {ticker}: 'earningsHistory.history' vacío")
+            return []
+
+        out = []
+        for item in eh_list:
+            try:
+                q_ts = item.get("quarter", {}).get("raw")
+                eps_est = item.get("epsEstimate", {}).get("raw")
+                eps_act = item.get("epsActual", {}).get("raw")
+                surprise_pct_raw = item.get("surprisePercent", {}).get("raw")
+
+                if q_ts is None:
+                    continue
+                dt = datetime.fromtimestamp(q_ts, tz=timezone.utc)
+                quarter_num  = (dt.month - 1) // 3 + 1
+                fiscal_label = f"Q{quarter_num} '{str(dt.year)[2:]}"
+
+                surprise_pct = None
+                if surprise_pct_raw is not None:
+                    # Este endpoint da surprisePercent ya en formato porcentaje real (ej. 25.75)
+                    surprise_pct = float(surprise_pct_raw) * 100
+
+                result_label = "N/A"
+                if eps_act is None:
+                    result_label = "N/A"
+                elif surprise_pct is not None:
+                    result_label = "BEAT" if surprise_pct > 0.05 else ("MISSED" if surprise_pct < -0.05 else "MET")
+
+                out.append({
+                    "fiscal_label": fiscal_label,
+                    "date":         dt.strftime("%Y-%m-%d"),
+                    "eps_estimate": float(eps_est) if eps_est is not None else None,
+                    "eps_reported": float(eps_act) if eps_act is not None else None,
+                    "surprise_pct": surprise_pct,
+                    "result":       result_label,
+                })
+            except Exception as e:
+                print(f"[EarningsRaw] {ticker}: error parseando fila: {e}")
+                continue
+
+        # Yahoo devuelve de más antiguo a más reciente en este endpoint — invertir
+        out.sort(key=lambda x: x["date"], reverse=True)
+        print(f"[EarningsRaw] {ticker}: {len(out)} trimestres obtenidos via API directa")
+        return out
+    except Exception as e:
+        print(f"[EarningsRaw] {ticker}: excepción de red: {e}")
+        return []
+
+
+def _fetch_earnings_history_yf_fallback(ticker: str, max_items: int = 8) -> list:
+    """Fallback: intenta con Ticker.earnings_dates de yfinance."""
+    try:
+        t = yf.Ticker(ticker)
+        edates = t.earnings_dates
+        if edates is None or edates.empty:
+            print(f"[EarningsYF] {ticker}: earnings_dates vacío/None")
+            return []
+
+        col_est  = "EPS Estimate" if "EPS Estimate" in edates.columns else None
+        col_rep  = "Reported EPS" if "Reported EPS" in edates.columns else None
+        col_surp = "Surprise(%)"  if "Surprise(%)"  in edates.columns else None
+        if not col_rep:
+            print(f"[EarningsYF] {ticker}: sin columna Reported EPS. Cols: {list(edates.columns)}")
+            return []
+
+        edates_sorted = edates.sort_index(ascending=False)
+        history = []
+        for date_idx, row in edates_sorted.iterrows():
+            dt = date_idx.to_pydatetime() if hasattr(date_idx, "to_pydatetime") else date_idx
+            quarter_num  = (dt.month - 1) // 3 + 1
+            fiscal_label = f"Q{quarter_num} '{str(dt.year)[2:]}"
+
+            eps_est = _safe_float(row.get(col_est)) if col_est else None
+            eps_rep = _safe_float(row.get(col_rep)) if col_rep else None
+            surp    = _safe_float(row.get(col_surp)) if col_surp else None
+
+            if eps_rep is None:
+                history.append({
+                    "fiscal_label": fiscal_label, "date": dt.strftime("%Y-%m-%d"),
+                    "eps_estimate": eps_est, "eps_reported": None,
+                    "surprise_pct": None, "result": "N/A",
+                })
+                continue
+
+            surprise_pct = None
+            if surp is not None:
+                surprise_pct = surp * 100
+            elif eps_est is not None and eps_est != 0:
+                surprise_pct = (eps_rep - eps_est) / abs(eps_est) * 100
+
+            result = "N/A"
+            if surprise_pct is not None:
+                result = "BEAT" if surprise_pct > 0 else ("MISSED" if surprise_pct < 0 else "MET")
+
+            history.append({
+                "fiscal_label": fiscal_label, "date": dt.strftime("%Y-%m-%d"),
+                "eps_estimate": eps_est, "eps_reported": eps_rep,
+                "surprise_pct": surprise_pct, "result": result,
+            })
+            if len(history) >= max_items:
+                break
+
+        print(f"[EarningsYF] {ticker}: {len(history)} filas via yfinance fallback")
+        return history
+    except Exception as e:
+        print(f"[EarningsYF] {ticker}: excepción: {e}")
+        return []
+
+
+def _get_earnings_history_cached(ticker: str, max_items: int = 8) -> list:
+    """
+    Punto de entrada único: prueba la API directa de Yahoo primero
+    (más estable), y si falla, cae al método de yfinance.
+    Cachea por ticker en session_state para no duplicar llamadas
+    entre fetch_earnings_analysis y fetch_earnings_history.
+    """
+    cache_key = f"_earnings_hist_cache_{ticker.upper()}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    history = _fetch_earnings_history_raw_api(ticker)
+    if not history:
+        history = _fetch_earnings_history_yf_fallback(ticker, max_items)
+
+    st.session_state[cache_key] = history[:max_items]
+    return history[:max_items]
+
+
 def fetch_earnings_analysis(ticker: str, y: dict) -> dict:
     """
-    Análisis de últimos resultados usando Ticker.earnings_dates de yfinance
-    como fuente PRIMARIA y única para EPS estimado/reportado/sorpresa y fechas
-    reales de presentación. NO se usa info.get('mostRecentQuarter') porque
-    representa el cierre del periodo fiscal, no la fecha real de presentación
-    pública — son fechas distintas y mezclarlas produce errores como los
-    detectados (ej. MU: cierre de periodo vs fecha real de earnings call).
+    Análisis de últimos resultados. Usa _get_earnings_history_cached() como
+    fuente de EPS estimado/reportado/sorpresa (API directa de Yahoo con
+    fallback a yfinance). La fecha de última presentación se toma del
+    histórico (fecha real de la conference call, no el cierre del periodo
+    fiscal — son fechas distintas que no deben mezclarse).
     """
     try:
         t    = yf.Ticker(ticker)
         info = t.info
         now_utc = datetime.now(timezone.utc)
 
-        # ── Fuente única y fiable: earnings_dates ───────────────────────────
-        # Este DataFrame trae la fecha REAL de presentación (o programada)
-        # en el índice, y columnas EPS Estimate / Reported EPS / Surprise(%).
-        edates = None
-        try:
-            edates = t.earnings_dates
-        except Exception as e:
-            print(f"[Earnings] No se pudo obtener earnings_dates para {ticker}: {e}")
+        history = _get_earnings_history_cached(ticker, max_items=8)
 
         last_q_dt    = None
         next_q_dt    = None
@@ -399,58 +557,41 @@ def fetch_earnings_analysis(ticker: str, y: dict) -> dict:
         eps_surprise = None
         beat_eps     = None
 
-        if edates is not None and not edates.empty:
-            # Asegurar orden cronológico descendente (más reciente primero)
-            edates_sorted = edates.sort_index(ascending=False)
-
-            col_est  = "EPS Estimate"  if "EPS Estimate"  in edates_sorted.columns else None
-            col_rep  = "Reported EPS"  if "Reported EPS"  in edates_sorted.columns else None
-            col_surp = "Surprise(%)"   if "Surprise(%)"   in edates_sorted.columns else None
-
-            print(f"[Earnings] {ticker} — columnas disponibles: {list(edates_sorted.columns)}")
-            print(f"[Earnings] {ticker} — primeras 3 filas:\n{edates_sorted.head(3)}")
-
-            for idx, row in edates_sorted.iterrows():
-                rep_val = _safe_float(row.get(col_rep)) if col_rep else None
-                dt = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else idx
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-
-                if rep_val is not None:
-                    # Esta es la presentación más reciente CON resultado reportado
-                    last_q_dt    = dt
-                    eps_actual   = rep_val
-                    eps_estimate = _safe_float(row.get(col_est)) if col_est else None
-                    surp_raw     = _safe_float(row.get(col_surp)) if col_surp else None
-                    if surp_raw is not None:
-                        eps_surprise = surp_raw * 100  # yfinance da Surprise(%) en decimal (ej. 0.2575 = 25.75%)
-                    elif eps_estimate is not None and eps_estimate != 0:
-                        eps_surprise = (eps_actual - eps_estimate) / abs(eps_estimate) * 100
+        if history:
+            # La primera fila con eps_reported no nulo es la última presentación real
+            for h in history:
+                if h.get("eps_reported") is not None:
+                    last_q_dt    = datetime.strptime(h["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    eps_actual   = h["eps_reported"]
+                    eps_estimate = h.get("eps_estimate")
+                    eps_surprise = h.get("surprise_pct")
                     break
 
-            # Próxima presentación: primera fila SIN resultado reportado, fecha futura
-            for idx, row in edates_sorted.sort_index(ascending=True).iterrows():
-                dt = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else idx
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                rep_val = _safe_float(row.get(col_rep)) if col_rep else None
-                if rep_val is None and dt > now_utc:
-                    next_q_dt = dt
-                    break
+        # Próxima presentación: desde info (earningsTimestamp), suele ser fiable para fechas futuras
+        next_q_ts = info.get("earningsTimestamp") or info.get("earningsTimestampStart")
+        if next_q_ts:
+            candidate = datetime.fromtimestamp(next_q_ts, tz=timezone.utc)
+            if candidate > now_utc:
+                next_q_dt = candidate
+        # Si no hay fecha futura en info, buscar en el histórico una fila sin reportar
+        if next_q_dt is None and history:
+            for h in history:
+                if h.get("eps_reported") is None:
+                    try:
+                        candidate = datetime.strptime(h["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                        if candidate > now_utc:
+                            next_q_dt = candidate
+                            break
+                    except Exception:
+                        continue
 
-        # Fallback de próxima fecha si earnings_dates no la tiene
-        if next_q_dt is None:
-            next_q_ts = info.get("earningsTimestamp") or info.get("earningsTimestampStart")
-            if next_q_ts:
-                next_q_dt = datetime.fromtimestamp(next_q_ts, tz=timezone.utc)
-
-        # Fallback de EPS si earnings_dates falló completamente
+        # Fallback final de EPS si no hay histórico en absoluto
         if eps_actual is None:
             eps_actual   = _safe_float(info.get("trailingEps"))
             eps_estimate = _safe_float(info.get("epsCurrentYear")) or _safe_float(info.get("epsForward"))
             if eps_actual and eps_estimate and eps_estimate != 0:
                 eps_surprise = (eps_actual - eps_estimate) / abs(eps_estimate) * 100
-            print(f"[Earnings] {ticker} — usando fallback info.trailingEps (earnings_dates no disponible o vacío)")
+            print(f"[Earnings] {ticker} — sin histórico disponible, usando fallback info.trailingEps")
 
         last_q_date_fmt = _fmt_fecha_es(last_q_dt) if last_q_dt else "N/A"
         next_q_date_fmt = _fmt_fecha_es(next_q_dt) if next_q_dt else "N/A"
@@ -557,78 +698,9 @@ def fetch_earnings_history(ticker: str, max_items: int = 8) -> list:
     """
     Histórico de presentaciones de resultados con estimado vs reportado vs sorpresa.
     Similar a la tabla "Historical Earnings" de StockTwits/Zacks.
-    Usa Ticker.earnings_dates de yfinance, ordenado de más reciente a más antiguo.
+    Usa la fuente central cacheada (API directa de Yahoo con fallback yfinance).
     """
-    try:
-        t = yf.Ticker(ticker)
-        edates = t.earnings_dates
-        if edates is None or edates.empty:
-            print(f"[EarningsHistory] {ticker}: earnings_dates vacío o None")
-            return []
-
-        col_est  = "EPS Estimate" if "EPS Estimate" in edates.columns else None
-        col_rep  = "Reported EPS" if "Reported EPS" in edates.columns else None
-        col_surp = "Surprise(%)"  if "Surprise(%)"  in edates.columns else None
-
-        if not col_rep:
-            print(f"[EarningsHistory] {ticker}: columna 'Reported EPS' no encontrada. Columnas: {list(edates.columns)}")
-            return []
-
-        edates_sorted = edates.sort_index(ascending=False)
-        history = []
-
-        for date_idx, row in edates_sorted.iterrows():
-            dt = date_idx.to_pydatetime() if hasattr(date_idx, "to_pydatetime") else date_idx
-            if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
-                pass  # ya tiene tz
-            quarter_num  = (dt.month - 1) // 3 + 1
-            fiscal_label = f"Q{quarter_num} '{str(dt.year)[2:]}"
-
-            eps_est = _safe_float(row.get(col_est)) if col_est else None
-            eps_rep = _safe_float(row.get(col_rep)) if col_rep else None
-            surp    = _safe_float(row.get(col_surp)) if col_surp else None
-
-            # Fila futura sin resultado reportado todavía
-            if eps_rep is None:
-                history.append({
-                    "fiscal_label": fiscal_label,
-                    "date":         dt.strftime("%Y-%m-%d"),
-                    "eps_estimate": eps_est,
-                    "eps_reported": None,
-                    "surprise_pct": None,
-                    "result":       "N/A",
-                })
-                continue
-
-            # yfinance da Surprise(%) en formato decimal (0.2575 = 25.75%)
-            surprise_pct = None
-            if surp is not None:
-                surprise_pct = surp * 100
-            elif eps_est is not None and eps_est != 0:
-                surprise_pct = (eps_rep - eps_est) / abs(eps_est) * 100
-
-            if surprise_pct is not None:
-                result = "BEAT" if surprise_pct > 0 else ("MISSED" if surprise_pct < 0 else "MET")
-            else:
-                result = "N/A"
-
-            history.append({
-                "fiscal_label": fiscal_label,
-                "date":         dt.strftime("%Y-%m-%d"),
-                "eps_estimate": eps_est,
-                "eps_reported": eps_rep,
-                "surprise_pct": surprise_pct,
-                "result":       result,
-            })
-
-            if len(history) >= max_items:
-                break
-
-        print(f"[EarningsHistory] {ticker}: {len(history)} filas extraídas correctamente")
-        return history
-    except Exception as e:
-        print(f"[EarningsHistory] Error: {e}")
-        return []
+    return _get_earnings_history_cached(ticker, max_items)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SEÑAL DE CONFLUENCIA DE ENTRADA

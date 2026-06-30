@@ -66,11 +66,12 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-tab_analisis, tab_compare, tab_scanner, tab_portfolio = st.tabs([
+tab_analisis, tab_compare, tab_scanner, tab_portfolio, tab_diag = st.tabs([
     "📊  ANÁLISIS",
     "⚖️  COMPARADOR",
     "🔍  RASTREADOR",
     "💼  PORTFOLIO",
+    "🔧  DIAGNÓSTICO",
 ])
 
 # ── Tipo de cambio compartido ──────────────────────────────────────────────
@@ -300,3 +301,60 @@ with tab_scanner:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_portfolio:
     render_portfolio(fx_rate=fx_rate)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PESTAÑA 5 — DIAGNÓSTICO DE FUENTES DE DATOS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_diag:
+    st.markdown("""
+    <div style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">
+    Herramienta de diagnóstico para verificar exactamente qué datos devuelve
+    cada fuente de earnings (API directa de Yahoo vs yfinance) para un ticker.
+    Útil para detectar errores de datos sin acceso a los logs del servidor.
+    </div>
+    """, unsafe_allow_html=True)
+
+    diag_ticker = st.text_input("Ticker a diagnosticar", value="MU", key="diag_ticker").strip().upper()
+
+    if st.button("🔍 Ejecutar diagnóstico de earnings", key="btn_diag"):
+        from analysis import (
+            _fetch_earnings_history_raw_api,
+            _fetch_earnings_history_yf_fallback,
+            fetch_earnings_analysis,
+        )
+        from data_fetcher import fetch_yahoo_data
+
+        st.markdown("### 1. API directa de Yahoo (quoteSummary/earningsHistory)")
+        with st.spinner("Consultando API directa..."):
+            raw_result = _fetch_earnings_history_raw_api(diag_ticker)
+        if raw_result:
+            st.success(f"✅ {len(raw_result)} trimestres obtenidos")
+            st.json(raw_result)
+        else:
+            st.error("❌ La API directa no devolvió datos (vacío o error de red)")
+
+        st.markdown("### 2. Fallback yfinance (Ticker.earnings_dates)")
+        with st.spinner("Consultando yfinance..."):
+            yf_result = _fetch_earnings_history_yf_fallback(diag_ticker)
+        if yf_result:
+            st.success(f"✅ {len(yf_result)} trimestres obtenidos")
+            st.json(yf_result)
+        else:
+            st.error("❌ yfinance tampoco devolvió datos")
+
+        st.markdown("### 3. Resultado final de fetch_earnings_analysis()")
+        with st.spinner("Cargando datos base..."):
+            yahoo_data = fetch_yahoo_data(diag_ticker)
+        if yahoo_data:
+            ea = fetch_earnings_analysis(diag_ticker, yahoo_data)
+            st.json(ea)
+        else:
+            st.error(f"❌ No se pudo cargar yahoo_data para {diag_ticker}")
+
+        st.caption(
+            "Si la sección 1 (API directa) devuelve datos correctos pero las fechas/EPS "
+            "siguen mal en el análisis principal, el problema está en cómo se procesan "
+            "esos datos en fetch_earnings_analysis. Si AMBAS fuentes (1 y 2) fallan, "
+            "es un problema de red/disponibilidad del lado de Yahoo, no del código."
+        )
