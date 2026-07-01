@@ -177,6 +177,21 @@ def fetch_technical_data(ticker: str) -> dict:
         dist_mm50  = round((price - mm50)  / mm50  * 100, 2)
         dist_mm200 = round((price - mm200) / mm200 * 100, 2) if mm200 else None
 
+        # ── Serie histórica para gráfico (1 año) con MM50/MM200 día a día ──
+        mm50_series  = closes.rolling(window=50).mean()
+        mm200_series = closes.rolling(window=200).mean() if len(closes) >= 200 else None
+        price_history = []
+        for i in range(len(closes)):
+            d = hist.index[i]
+            date_str = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+            price_history.append({
+                "date":  date_str,
+                "close": round(float(closes.iloc[i]), 4),
+                "mm50":  round(float(mm50_series.iloc[i]), 4) if not mm50_series.isna().iloc[i] else None,
+                "mm200": (round(float(mm200_series.iloc[i]), 4)
+                          if mm200_series is not None and not mm200_series.isna().iloc[i] else None),
+            })
+
         return {
             "price":        price,
             "rsi":          rsi,
@@ -191,6 +206,7 @@ def fetch_technical_data(ticker: str) -> dict:
             "mm200_css":    mm200_cls,
             "dist_mm200":   dist_mm200,
             "cross_signal": cross_signal,
+            "price_history":price_history,
             # Metadatos
             "last_date":    last_date_str,
             "days_old":     days_old,

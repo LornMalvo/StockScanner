@@ -239,11 +239,14 @@ def calc_dcf(y: dict, rf: float | None = None) -> dict | None:
 # HISTÓRICO DE MÚLTIPLOS PROPIOS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fetch_historical_multiples(ticker: str, y: dict) -> dict | None:
+def fetch_historical_multiples(ticker: str, y: dict, sector_pe_fair: float | None = None) -> dict | None:
     """
     Calcula el PER histórico propio de los últimos 5 años.
     Método: precio anual medio / EPS anual de cada año.
     Fuente: yfinance histórico de precios + EPS anual.
+    Incluye también el PER medio "justo" del sector (benchmark de la app)
+    para poder comparar directamente PER actual vs PER histórico propio
+    vs PER medio del sector en el mismo lugar.
     """
     try:
         t = yf.Ticker(ticker)
@@ -314,28 +317,29 @@ def fetch_historical_multiples(ticker: str, y: dict) -> dict | None:
         if current_per and per_mean:
             discount = round((current_per - per_mean) / per_mean * 100, 1)
             if discount < -20:
-                signal = ("MUY BARATO vs su historia", "#6ee7b7")
+                signal = ("MUY BARATO vs su historia", "#059669")
             elif discount < -5:
-                signal = ("BARATO vs su historia", "#86efac")
+                signal = ("BARATO vs su historia", "#16a34a")
             elif discount < 5:
-                signal = ("EN LÍNEA con su historia", "#fbbf24")
+                signal = ("EN LÍNEA con su historia", "#d97706")
             elif discount < 20:
-                signal = ("CARO vs su historia", "#fb923c")
+                signal = ("CARO vs su historia", "#ea580c")
             else:
-                signal = ("MUY CARO vs su historia", "#fca5a5")
+                signal = ("MUY CARO vs su historia", "#dc2626")
         else:
             discount = None
             signal   = ("Sin comparativa", "#64748b")
 
         return {
-            "history":    per_history,
-            "per_mean":   per_mean,
-            "per_min":    per_min,
-            "per_max":    per_max,
-            "per_current":current_per,
-            "discount":   discount,
-            "signal":     signal,
-            "n_years":    len(per_history),
+            "history":       per_history,
+            "per_mean":      per_mean,
+            "per_min":       per_min,
+            "per_max":       per_max,
+            "per_current":   current_per,
+            "sector_pe_fair":sector_pe_fair,
+            "discount":      discount,
+            "signal":        signal,
+            "n_years":       len(per_history),
         }
 
     except Exception as e:
@@ -390,7 +394,7 @@ def render_dcf(dcf: dict | None, currency: str = "USD", fx_rate: float | None = 
         safe = text.replace('"', '&quot;')
         return (
             f'<span title="{safe}" style="margin-left:0.3rem;cursor:help;'
-            f'font-size:0.6rem;color:#334155;border:1px solid #334155;'
+            f'font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
             f'border-radius:50%;padding:0 3px;font-family:monospace;'
             f'vertical-align:middle;">?</span>'
         )
@@ -421,27 +425,27 @@ def render_dcf(dcf: dict | None, currency: str = "USD", fx_rate: float | None = 
     )
 
     st.markdown(
-        f'<div class="metric-card" style="border-left:3px solid #38bdf8;">'
+        f'<div class="metric-card" style="border-left:3px solid #0284c7;">'
         f'<div class="metric-label">PARÁMETROS DEL MODELO</div>'
         f'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.5rem;margin-top:0.5rem;">'
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.45rem 0.6rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">FCF base (TTM){tip_fcf}</div>'
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:600;font-size:0.9rem;">{fmt_big(fcf_base)}</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:600;font-size:0.9rem;">{fmt_big(fcf_base)}</div>'
         f'</div>'
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.45rem 0.6rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">WACC{tip_wacc}</div>'
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#38bdf8;font-weight:600;font-size:0.9rem;">{wacc_pct:.2f}%</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#0284c7;font-weight:600;font-size:0.9rem;">{wacc_pct:.2f}%</div>'
         f'</div>'
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.45rem 0.6rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">Rf (bono 10Y USA){tip_rf}</div>'
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:600;font-size:0.9rem;">{rf:.2f}%</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:600;font-size:0.9rem;">{rf:.2f}%</div>'
         f'</div>'
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.45rem 0.6rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">β · Ke · Kd(at){tip_beta}</div>'
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:600;font-size:0.9rem;">{wacc["beta"]} · {ke_pct:.1f}% · {kd_pct:.1f}%</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:600;font-size:0.9rem;">{wacc["beta"]} · {ke_pct:.1f}% · {kd_pct:.1f}%</div>'
         f'</div>'
         f'</div>'
-        f'<div style="font-size:0.7rem;color:#475569;margin-top:0.5rem;">'
+        f'<div style="font-size:0.7rem;color:#94a3b8;margin-top:0.5rem;">'
         f'WACC = Ke×{wacc["e_weight"]*100:.0f}% + Kd(at)×{wacc["d_weight"]*100:.0f}% &nbsp;·&nbsp; '
         f'ERP = {wacc["erp"]*100:.1f}% (media histórica S&amp;P 500) &nbsp;·&nbsp; '
         f'g terminal = {g_t:.1f}% &nbsp;·&nbsp; Horizonte = {dcf["years"]} años'
@@ -451,9 +455,9 @@ def render_dcf(dcf: dict | None, currency: str = "USD", fx_rate: float | None = 
 
     # Tres escenarios
     scenario_labels = {
-        "pessimistic": ("PESIMISTA",  "#fca5a5", "▼"),
-        "base":        ("BASE",       "#fbbf24", "="),
-        "optimistic":  ("OPTIMISTA",  "#6ee7b7", "▲"),
+        "pessimistic": ("PESIMISTA",  "#dc2626", "▼"),
+        "base":        ("BASE",       "#d97706", "="),
+        "optimistic":  ("OPTIMISTA",  "#059669", "▲"),
     }
 
     cols = st.columns(3)
@@ -467,11 +471,11 @@ def render_dcf(dcf: dict | None, currency: str = "USD", fx_rate: float | None = 
         ev   = sc.get("ev", 0)
 
         up_str = f"{up:+.1f}%" if up is not None else "N/A"
-        up_col = "#6ee7b7" if (up or 0) > 0 else "#fca5a5"
+        up_col = "#059669" if (up or 0) > 0 else "#dc2626"
 
         with cols[i]:
             st.markdown(f"""
-            <div style="background:#0f172a;border:2px solid {sc_col};border-radius:8px;
+            <div style="background:#f4f6f9;border:2px solid {sc_col};border-radius:8px;
                         padding:1rem;text-align:center;margin-bottom:0.5rem;">
               <div style="font-family:'IBM Plex Mono',monospace;font-size:0.7rem;
                           color:{sc_col};text-transform:uppercase;letter-spacing:0.1em;">
@@ -483,18 +487,18 @@ def render_dcf(dcf: dict | None, currency: str = "USD", fx_rate: float | None = 
               </div>
               <div style="font-size:0.75rem;color:{up_col};font-weight:700;">{up_str} vs precio actual</div>
               <div style="margin-top:0.6rem;font-size:0.72rem;color:#64748b;text-align:left;">
-                Crec. FCF proyectado: <b style="color:#f1f5f9;">{g:+.1f}%</b><br>
-                PV FCFs (10a): <b style="color:#f1f5f9;">{fmt_big(pv_f)}</b><br>
-                PV terminal: <b style="color:#f1f5f9;">{fmt_big(pv_t)}</b><br>
-                Enterprise Value: <b style="color:#f1f5f9;">{fmt_big(ev)}</b>
+                Crec. FCF proyectado: <b style="color:#0f172a;">{g:+.1f}%</b><br>
+                PV FCFs (10a): <b style="color:#0f172a;">{fmt_big(pv_f)}</b><br>
+                PV terminal: <b style="color:#0f172a;">{fmt_big(pv_t)}</b><br>
+                Enterprise Value: <b style="color:#0f172a;">{fmt_big(ev)}</b>
               </div>
             </div>
             """, unsafe_allow_html=True)
 
     # Aviso metodológico
     st.markdown("""
-    <div style="background:#1c1408;border:1px solid #92400e;border-radius:6px;
-                padding:0.7rem 0.9rem;font-size:0.75rem;color:#fbbf24;margin-top:0.3rem;">
+    <div style="background:#fffbeb;border:1px solid #d97706;border-radius:6px;
+                padding:0.7rem 0.9rem;font-size:0.75rem;color:#d97706;margin-top:0.3rem;">
       <b>⚠ Limitaciones del DCF:</b> El FCF de un solo año puede ser atípico.
       Las tasas de crecimiento futuras son estimaciones con alto margen de error.
       Un cambio del 1% en el WACC puede mover el precio objetivo un 15-25%.
@@ -525,25 +529,44 @@ def render_historical_multiples(mult: dict | None):
     per_min    = mult["per_min"]
     per_max    = mult["per_max"]
     history    = mult["history"]
+    sector_pe  = mult.get("sector_pe_fair")
 
     # Mini chart de barras horizontales
     bars = ""
     all_pers = [h["per"] for h in history]
     if per_cur:
         all_pers.append(per_cur)
+    if sector_pe:
+        all_pers.append(sector_pe)
     max_per = max(all_pers) if all_pers else 1
 
     for h in history:
         w   = min(h["per"] / max_per * 100, 100)
-        col = "#38bdf8"
+        col = "#0284c7"
         bars += (
             f'<div style="display:flex;align-items:center;gap:0.5rem;'
             f'padding:0.2rem 0;font-size:0.78rem;">'
             f'<span style="color:#64748b;min-width:2.5rem;">{h["year"]}</span>'
-            f'<div style="flex:1;background:#1e2d45;border-radius:3px;height:14px;">'
+            f'<div style="flex:1;background:#e2e8f0;border-radius:3px;height:14px;">'
             f'<div style="width:{w}%;height:14px;background:{col};border-radius:3px;"></div></div>'
-            f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;'
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#0f172a;'
             f'min-width:3.5rem;text-align:right;">{h["per"]}×</span>'
+            f'</div>'
+        )
+
+    # Barra del PER medio del sector (referencia)
+    if sector_pe:
+        w_sec = min(sector_pe / max_per * 100, 100)
+        bars += (
+            f'<div style="display:flex;align-items:center;gap:0.5rem;'
+            f'padding:0.2rem 0;font-size:0.78rem;">'
+            f'<span style="color:#7c3aed;font-weight:600;min-width:2.5rem;">SECTOR</span>'
+            f'<div style="flex:1;background:#e2e8f0;border-radius:3px;height:14px;">'
+            f'<div style="width:{w_sec}%;height:14px;background:#7c3aed;border-radius:3px;opacity:0.65;'
+            f'background-image:repeating-linear-gradient(45deg,transparent,transparent 3px,'
+            f'rgba(255,255,255,0.3) 3px,rgba(255,255,255,0.3) 6px);"></div></div>'
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#7c3aed;'
+            f'font-weight:600;min-width:3.5rem;text-align:right;">{sector_pe}×</span>'
             f'</div>'
         )
 
@@ -553,9 +576,9 @@ def render_historical_multiples(mult: dict | None):
         cur_col = sig_color
         bars += (
             f'<div style="display:flex;align-items:center;gap:0.5rem;'
-            f'padding:0.25rem 0;font-size:0.78rem;border-top:1px solid #1e2d45;margin-top:0.2rem;">'
+            f'padding:0.25rem 0;font-size:0.78rem;border-top:1px solid #e2e8f0;margin-top:0.2rem;">'
             f'<span style="color:{cur_col};font-weight:700;min-width:2.5rem;">HOY</span>'
-            f'<div style="flex:1;background:#1e2d45;border-radius:3px;height:14px;">'
+            f'<div style="flex:1;background:#e2e8f0;border-radius:3px;height:14px;">'
             f'<div style="width:{w_cur}%;height:14px;background:{cur_col};border-radius:3px;"></div></div>'
             f'<span style="font-family:\'IBM Plex Mono\',monospace;color:{cur_col};'
             f'font-weight:700;min-width:3.5rem;text-align:right;">{per_cur:.1f}×</span>'
@@ -564,25 +587,40 @@ def render_historical_multiples(mult: dict | None):
 
     discount_str = f"{discount:+.1f}%" if discount is not None else "N/A"
     per_cur_str  = f"{per_cur:.1f}×" if per_cur is not None else "N/A"
+    sector_pe_str = f"{sector_pe}×" if sector_pe is not None else "N/A"
+
+    # Comparación PER actual vs PER sector
+    vs_sector_str = "N/A"
+    vs_sector_color = "#64748b"
+    if per_cur and sector_pe:
+        vs_sector_pct = (per_cur - sector_pe) / sector_pe * 100
+        vs_sector_str = f"{vs_sector_pct:+.1f}%"
+        vs_sector_color = "#dc2626" if vs_sector_pct > 0 else "#059669"
 
     st.markdown(
         '<div class="metric-card">'
-        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0.5rem;margin-bottom:0.8rem;">'
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">'
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:0.5rem;margin-bottom:0.8rem;">'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.4rem 0.6rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">PER actual</div>'
         f'<div style="font-family:\'IBM Plex Mono\',monospace;color:{sig_color};font-weight:600;">{per_cur_str}</div></div>'
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">'
-        f'<div style="font-size:0.67rem;color:#64748b;">Media 5 años</div>'
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:600;">{per_mean}×</div></div>'
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.4rem 0.6rem;">'
+        f'<div style="font-size:0.67rem;color:#64748b;">Media 5 años (propia)</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:600;">{per_mean}×</div></div>'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.4rem 0.6rem;">'
+        f'<div style="font-size:0.67rem;color:#7c3aed;">PER medio sector</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#7c3aed;font-weight:600;">{sector_pe_str}</div></div>'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.4rem 0.6rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">Rango histórico</div>'
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#94a3b8;font-weight:600;">{per_min}× – {per_max}×</div></div>'
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">'
-        f'<div style="font-size:0.67rem;color:#64748b;">Prima/Descuento</div>'
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:{sig_color};font-weight:600;">{discount_str}</div></div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#64748b;font-weight:600;">{per_min}× – {per_max}×</div></div>'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.4rem 0.6rem;">'
+        f'<div style="font-size:0.67rem;color:#64748b;">Vs. sector</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:{vs_sector_color};font-weight:600;">{vs_sector_str}</div></div>'
         '</div>'
-        f'<div style="font-size:0.8rem;font-weight:600;color:{sig_color};margin-bottom:0.6rem;">▸ {sig_label}</div>'
+        f'<div style="font-size:0.8rem;font-weight:600;color:{sig_color};margin-bottom:0.6rem;">▸ {sig_label} '
+        f'<span style="font-weight:400;color:#64748b;">(vs su propia historia · {discount_str})</span></div>'
         f'{bars}'
+        f'<div style="font-size:0.68rem;color:#7c3aed;margin-top:0.5rem;">'
+        f'▨ SECTOR = PER "justo" de referencia usado por la app para el sector de esta empresa</div>'
         '</div>',
         unsafe_allow_html=True
     )

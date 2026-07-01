@@ -234,23 +234,23 @@ def _score_ticker(info: dict, hist: pd.DataFrame) -> dict:
     if score >= 80:
         grade = "GANGA EXCEPCIONAL"
         stars = "⭐⭐⭐"
-        grade_color = "#6ee7b7"
+        grade_color = "#059669"
     elif score >= 65:
         grade = "OPORTUNIDAD"
         stars = "⭐⭐"
-        grade_color = "#86efac"
+        grade_color = "#16a34a"
     elif score >= 50:
         grade = "INTERESANTE"
         stars = "⭐"
-        grade_color = "#fbbf24"
+        grade_color = "#d97706"
     elif score >= 35:
         grade = "NEUTRAL"
         stars = "—"
-        grade_color = "#94a3b8"
+        grade_color = "#64748b"
     else:
         grade = "EVITAR"
         stars = "✗"
-        grade_color = "#fca5a5"
+        grade_color = "#dc2626"
 
     return {
         "score":       score,
@@ -333,19 +333,19 @@ def render_scanner(fx_rate: float | None = None):
 
     st.markdown("""
     <div style="margin-bottom:1.5rem;">
-      <div style="font-family:'IBM Plex Mono',monospace;font-size:0.75rem;color:#38bdf8;
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:0.75rem;color:#0284c7;
                   text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.4rem;">
         SISTEMA DE PUNTUACIÓN — GANGA SCORE (0-100)
       </div>
-      <div style="background:#111827;border:1px solid #1e2d45;border-radius:8px;padding:1rem 1.2rem;
-                  font-size:0.82rem;color:#94a3b8;line-height:1.7;">
-        <b style="color:#f1f5f9;">Criterios fundamentales (55 pts):</b>
+      <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;padding:1rem 1.2rem;
+                  font-size:0.82rem;color:#64748b;line-height:1.7;">
+        <b style="color:#0f172a;">Criterios fundamentales (55 pts):</b>
         F1·Valoración/PEG (15) &nbsp;·&nbsp; F2·Margen neto (10) &nbsp;·&nbsp;
         F3·Crecimiento ingresos (10) &nbsp;·&nbsp; F4·ROE (10) &nbsp;·&nbsp; F5·Balance/FCF (10)<br>
-        <b style="color:#f1f5f9;">Criterios técnicos / precio (45 pts):</b>
+        <b style="color:#0f172a;">Criterios técnicos / precio (45 pts):</b>
         T1·Distancia al máximo anual (15) &nbsp;·&nbsp; T2·Corrección reciente 3M (15) &nbsp;·&nbsp;
         T3·RSI zona oportunidad (10) &nbsp;·&nbsp; T4·Precio bajo MMs (5)<br>
-        <b style="color:#fca5a5;">Penalizaciones:</b>
+        <b style="color:#dc2626;">Penalizaciones:</b>
         RSI sobrecompra (-10) &nbsp;·&nbsp; Short ratio alto (-5) &nbsp;·&nbsp; En máximos anuales (-10)
       </div>
     </div>
@@ -373,7 +373,7 @@ def render_scanner(fx_rate: float | None = None):
     if not iniciar:
         st.markdown("""
         <div style="text-align:center;padding:2rem;color:#64748b;font-size:0.88rem;">
-          Configura los parámetros y pulsa <b style="color:#38bdf8;">INICIAR RASTREO</b>.<br>
+          Configura los parámetros y pulsa <b style="color:#0284c7;">INICIAR RASTREO</b>.<br>
           El S&P 500 tarda ~5 min. Una lista corta tarda segundos.
         </div>
         """, unsafe_allow_html=True)
@@ -413,7 +413,7 @@ def render_scanner(fx_rate: float | None = None):
         return
 
     st.markdown(f"""
-    <div style="font-family:'IBM Plex Mono',monospace;font-size:0.8rem;color:#38bdf8;
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:0.8rem;color:#0284c7;
                 margin:1rem 0 0.5rem 0;">
       ✔ {len(results)} resultado{'s' if len(results)!=1 else ''} encontrado{'s' if len(results)!=1 else ''}
       &nbsp;·&nbsp; ordenados por Ganga Score
@@ -450,13 +450,13 @@ def render_scanner(fx_rate: float | None = None):
         details_html = ""
         for key, (pts, max_pts, note) in r["details"].items():
             if pts < 0:
-                pt_color = "#fca5a5"
+                pt_color = "#dc2626"
                 pt_str   = str(pts)
             elif pts == 0:
                 pt_color = "#64748b"
                 pt_str   = "0"
             else:
-                pt_color = "#6ee7b7"
+                pt_color = "#059669"
                 pt_str   = f"+{pts}"
             # Tooltip
             tip = SCANNER_TOOLTIPS.get(key, "")
@@ -465,15 +465,15 @@ def render_scanner(fx_rate: float | None = None):
                 tip_safe = tip.replace('"','&quot;').replace("'","&#39;")
                 tip_html = (
                     '<span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;">'
-                    '<span style="font-size:0.6rem;color:#1e3a5f;border:1px solid #1e3a5f;'
+                    '<span style="font-size:0.6rem;color:#0284c7;border:1px solid #0284c7;'
                     'border-radius:50%;padding:0 3px;font-family:\'IBM Plex Mono\',monospace;">?</span>'
                     f'<span class="tooltip-box">{tip}</span>'
                     '</span>'
                 )
             details_html += (
                 '<div style="display:flex;justify-content:space-between;align-items:center;'
-                'padding:0.22rem 0;font-size:0.75rem;border-bottom:1px solid #1a2540;">'
-                f'<span style="color:#94a3b8;">{key}{tip_html}</span>'
+                'padding:0.22rem 0;font-size:0.75rem;border-bottom:1px solid #eef1f5;">'
+                f'<span style="color:#64748b;">{key}{tip_html}</span>'
                 f'<span style="color:#64748b;margin:0 0.5rem;">{note}</span>'
                 f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:{pt_color};">{pt_str}/{max_pts}</span>'
                 '</div>'
@@ -483,7 +483,7 @@ def render_scanner(fx_rate: float | None = None):
             st.markdown(f"""
             <div style="margin-bottom:0.8rem;">
               <span style="font-family:'IBM Plex Mono',monospace;font-size:1.4rem;
-                           font-weight:600;color:#f1f5f9;">${price:,.2f}</span>
+                           font-weight:600;color:#0f172a;">${price:,.2f}</span>
               {price_eur_str}
               <span style="font-size:0.78rem;color:#64748b;margin-left:0.6rem;">{sector}</span>
               <div style="margin-top:0.4rem;">
@@ -492,54 +492,54 @@ def render_scanner(fx_rate: float | None = None):
               </div>
             </div>
 
-            <div style="background:#1e2d45;border-radius:4px;height:6px;margin-bottom:1rem;">
+            <div style="background:#334155;border-radius:4px;height:6px;margin-bottom:1rem;">
               <div style="height:6px;border-radius:4px;background:{bar_color};width:{score}%;"></div>
             </div>
 
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.5rem;
                         margin-bottom:1rem;font-size:0.82rem;">
-              <div style="background:#0f172a;border-radius:6px;padding:0.5rem 0.7rem;">
+              <div style="background:#f4f6f9;border-radius:6px;padding:0.5rem 0.7rem;">
                 <div style="color:#64748b;font-size:0.7rem;">PEG</div>
-                <div style="font-family:'IBM Plex Mono',monospace;color:#f1f5f9;font-weight:600;">
+                <div style="font-family:'IBM Plex Mono',monospace;color:#0f172a;font-weight:600;">
                   {f"{peg:.2f}" if peg else "N/A"}
                 </div>
               </div>
-              <div style="background:#0f172a;border-radius:6px;padding:0.5rem 0.7rem;">
+              <div style="background:#f4f6f9;border-radius:6px;padding:0.5rem 0.7rem;">
                 <div style="color:#64748b;font-size:0.7rem;">Margen neto</div>
-                <div style="font-family:'IBM Plex Mono',monospace;color:#f1f5f9;font-weight:600;">
+                <div style="font-family:'IBM Plex Mono',monospace;color:#0f172a;font-weight:600;">
                   {f"{pm:.1f}%" if pm else "N/A"}
                 </div>
               </div>
-              <div style="background:#0f172a;border-radius:6px;padding:0.5rem 0.7rem;">
+              <div style="background:#f4f6f9;border-radius:6px;padding:0.5rem 0.7rem;">
                 <div style="color:#64748b;font-size:0.7rem;">Crec. ingresos</div>
                 <div style="font-family:'IBM Plex Mono',monospace;
-                            color:{'#6ee7b7' if (rg or 0)>0 else '#fca5a5'};font-weight:600;">
+                            color:{'#059669' if (rg or 0)>0 else '#dc2626'};font-weight:600;">
                   {f"+{rg:.1f}%" if rg else "N/A"}
                 </div>
               </div>
-              <div style="background:#0f172a;border-radius:6px;padding:0.5rem 0.7rem;">
+              <div style="background:#f4f6f9;border-radius:6px;padding:0.5rem 0.7rem;">
                 <div style="color:#64748b;font-size:0.7rem;">ROE</div>
-                <div style="font-family:'IBM Plex Mono',monospace;color:#f1f5f9;font-weight:600;">
+                <div style="font-family:'IBM Plex Mono',monospace;color:#0f172a;font-weight:600;">
                   {f"{roe_v:.1f}%" if roe_v else "N/A"}
                 </div>
               </div>
-              <div style="background:#0f172a;border-radius:6px;padding:0.5rem 0.7rem;">
+              <div style="background:#f4f6f9;border-radius:6px;padding:0.5rem 0.7rem;">
                 <div style="color:#64748b;font-size:0.7rem;">RSI</div>
                 <div style="font-family:'IBM Plex Mono',monospace;
-                            color:{'#6ee7b7' if rsi_v and rsi_v<40 else '#fca5a5' if rsi_v and rsi_v>65 else '#f1f5f9'};
+                            color:{'#059669' if rsi_v and rsi_v<40 else '#dc2626' if rsi_v and rsi_v>65 else '#0f172a'};
                             font-weight:600;">
                   {f"{rsi_v:.0f}" if rsi_v else "N/A"}
                 </div>
               </div>
-              <div style="background:#0f172a;border-radius:6px;padding:0.5rem 0.7rem;">
+              <div style="background:#f4f6f9;border-radius:6px;padding:0.5rem 0.7rem;">
                 <div style="color:#64748b;font-size:0.7rem;">Dist. máx. anual</div>
-                <div style="font-family:'IBM Plex Mono',monospace;color:#6ee7b7;font-weight:600;">
+                <div style="font-family:'IBM Plex Mono',monospace;color:#059669;font-weight:600;">
                   {f"-{dist_max:.1f}%" if dist_max else "N/A"}
                 </div>
               </div>
             </div>
 
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:#38bdf8;
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:#0284c7;
                         text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.4rem;">
               Desglose de criterios
             </div>

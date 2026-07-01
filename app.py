@@ -3,9 +3,10 @@ from data_fetcher import fetch_yahoo_data, fetch_usd_eur_rate, fetch_technical_d
 from report import render_report
 from stock_scanner import render_scanner
 from portfolio import render_portfolio
+from favorites import render_favorite_star, render_favorites_tab
 
 st.set_page_config(
-    page_title="Análisis Fundamental",
+    page_title="Stock Scanner",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -14,64 +15,64 @@ st.set_page_config(
 st.markdown("""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@300;400;600&display=swap');
-  html, body, [class*="css"] { font-family:'Inter',sans-serif; background-color:#0a0e1a; color:#e2e8f0; }
-  .stApp { background-color:#0a0e1a; }
-  .hero { padding:2rem 0 1rem 0; border-bottom:1px solid #1e2d45; margin-bottom:1.5rem; }
-  .hero h1 { font-family:'IBM Plex Mono',monospace; font-size:1.5rem; font-weight:600; color:#38bdf8; letter-spacing:-0.02em; margin:0; }
+  html, body, [class*="css"] { font-family:'Inter',sans-serif; background-color:#f8fafc; color:#1e293b; }
+  .stApp { background-color:#f8fafc; }
+  .hero { padding:2rem 0 1rem 0; border-bottom:1px solid #e2e8f0; margin-bottom:1.5rem; }
+  .hero h1 { font-family:'IBM Plex Mono',monospace; font-size:1.5rem; font-weight:600; color:#0284c7; letter-spacing:-0.02em; margin:0; }
   .hero p  { font-size:0.83rem; color:#64748b; margin:0.25rem 0 0 0; }
-  .metric-card { background:#111827; border:1px solid #1e2d45; border-radius:8px; padding:1rem 1.2rem; margin-bottom:0.8rem; }
+  .metric-card { background:#ffffff; border:1px solid #e2e8f0; border-radius:8px; padding:1rem 1.2rem; margin-bottom:0.8rem; }
   .metric-label { font-size:0.72rem; color:#64748b; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:0.2rem; }
-  .metric-value { font-family:'IBM Plex Mono',monospace; font-size:1.3rem; font-weight:600; color:#f1f5f9; }
-  .section-header { font-family:'IBM Plex Mono',monospace; font-size:0.75rem; color:#38bdf8; text-transform:uppercase; letter-spacing:0.12em; padding:0.4rem 0; border-bottom:1px solid #1e2d45; margin:1.5rem 0 1rem 0; }
-  .badge-buy  { background:#064e3b; color:#6ee7b7; padding:2px 10px; border-radius:4px; font-size:0.78rem; font-family:'IBM Plex Mono',monospace; }
-  .badge-sell { background:#4c0519; color:#fca5a5; padding:2px 10px; border-radius:4px; font-size:0.78rem; font-family:'IBM Plex Mono',monospace; }
-  .badge-hold { background:#1c1917; color:#fbbf24; padding:2px 10px; border-radius:4px; font-size:0.78rem; font-family:'IBM Plex Mono',monospace; }
-  .verdict-box { background:#0f172a; border:1px solid #1e40af; border-left:4px solid #38bdf8; border-radius:8px; padding:1.4rem 1.6rem; margin:1.5rem 0; }
-  .verdict-title { font-family:'IBM Plex Mono',monospace; font-size:0.7rem; color:#38bdf8; text-transform:uppercase; letter-spacing:0.1em; margin-bottom:0.6rem; }
-  .verdict-main { font-size:1.1rem; font-weight:600; color:#f1f5f9; }
-  .verdict-sub  { font-size:0.82rem; color:#94a3b8; margin-top:0.3rem; }
-  .audit-ok  { color:#6ee7b7; }
-  .audit-warn{ color:#fbbf24; }
-  .audit-err { color:#fca5a5; }
+  .metric-value { font-family:'IBM Plex Mono',monospace; font-size:1.3rem; font-weight:600; color:#0f172a; }
+  .section-header { font-family:'IBM Plex Mono',monospace; font-size:0.75rem; color:#0284c7; text-transform:uppercase; letter-spacing:0.12em; padding:0.4rem 0; border-bottom:1px solid #e2e8f0; margin:1.5rem 0 1rem 0; }
+  .badge-buy  { background:#d1fae5; color:#059669; padding:2px 10px; border-radius:4px; font-size:0.78rem; font-family:'IBM Plex Mono',monospace; }
+  .badge-sell { background:#fee2e2; color:#dc2626; padding:2px 10px; border-radius:4px; font-size:0.78rem; font-family:'IBM Plex Mono',monospace; }
+  .badge-hold { background:#fef3c7; color:#d97706; padding:2px 10px; border-radius:4px; font-size:0.78rem; font-family:'IBM Plex Mono',monospace; }
+  .verdict-box { background:#f4f6f9; border:1px solid #1d4ed8; border-left:4px solid #0284c7; border-radius:8px; padding:1.4rem 1.6rem; margin:1.5rem 0; }
+  .verdict-title { font-family:'IBM Plex Mono',monospace; font-size:0.7rem; color:#0284c7; text-transform:uppercase; letter-spacing:0.1em; margin-bottom:0.6rem; }
+  .verdict-main { font-size:1.1rem; font-weight:600; color:#0f172a; }
+  .verdict-sub  { font-size:0.82rem; color:#64748b; margin-top:0.3rem; }
+  .audit-ok  { color:#059669; }
+  .audit-warn{ color:#d97706; }
+  .audit-err { color:#dc2626; }
   .stButton > button { background:#1d4ed8; color:#fff; border:none; border-radius:6px; padding:0.55rem 1.6rem; font-family:'IBM Plex Mono',monospace; font-size:0.85rem; font-weight:600; letter-spacing:0.04em; cursor:pointer; width:100%; }
   .stButton > button:hover { background:#2563eb; }
-  .stTextInput > div > div > input { background:#111827; border:1px solid #1e2d45; border-radius:6px; color:#f1f5f9; font-family:'IBM Plex Mono',monospace; font-size:1rem; padding:0.5rem 0.8rem; }
-  .row-kv { display:flex; justify-content:space-between; align-items:center; padding:0.45rem 0; border-bottom:1px solid #1a2540; font-size:0.88rem; }
+  .stTextInput > div > div > input { background:#ffffff; border:1px solid #e2e8f0; border-radius:6px; color:#0f172a; font-family:'IBM Plex Mono',monospace; font-size:1rem; padding:0.5rem 0.8rem; }
+  .row-kv { display:flex; justify-content:space-between; align-items:center; padding:0.45rem 0; border-bottom:1px solid #eef1f5; font-size:0.88rem; }
   .row-kv:last-child { border-bottom:none; }
-  .row-key { color:#94a3b8; }
-  .row-val { font-family:'IBM Plex Mono',monospace; color:#f1f5f9; font-weight:600; }
-  .row-val.green  { color:#6ee7b7; }
-  .row-val.red    { color:#fca5a5; }
-  .row-val.yellow { color:#fbbf24; }
-  .progress-bar-bg   { background:#1e2d45; border-radius:4px; height:8px; margin-top:0.5rem; }
-  .progress-bar-fill { height:8px; border-radius:4px; background:linear-gradient(90deg,#1d4ed8,#38bdf8); }
-  .ttm-row { display:flex; justify-content:space-between; padding:0.35rem 0; font-family:'IBM Plex Mono',monospace; font-size:0.82rem; border-bottom:1px solid #1a2540; color:#94a3b8; }
-  .ttm-row:last-child { border-bottom:none; color:#f1f5f9; font-weight:600; }
-  .ttm-val { color:#e2e8f0; }
+  .row-key { color:#64748b; }
+  .row-val { font-family:'IBM Plex Mono',monospace; color:#0f172a; font-weight:600; }
+  .row-val.green  { color:#059669; }
+  .row-val.red    { color:#dc2626; }
+  .row-val.yellow { color:#d97706; }
+  .progress-bar-bg   { background:#334155; border-radius:4px; height:8px; margin-top:0.5rem; }
+  .progress-bar-fill { height:8px; border-radius:4px; background:linear-gradient(90deg,#1d4ed8,#0284c7); }
+  .ttm-row { display:flex; justify-content:space-between; padding:0.35rem 0; font-family:'IBM Plex Mono',monospace; font-size:0.82rem; border-bottom:1px solid #eef1f5; color:#64748b; }
+  .ttm-row:last-child { border-bottom:none; color:#0f172a; font-weight:600; }
+  .ttm-val { color:#1e293b; }
   .tooltip-wrap { display:inline-block; vertical-align:middle; }
-  .tooltip-box { visibility:hidden; opacity:0; background:#1e293b; color:#e2e8f0; font-size:0.75rem; line-height:1.5; border:1px solid #334155; border-radius:6px; padding:0.5rem 0.75rem; position:absolute; z-index:9999; bottom:125%; left:50%; transform:translateX(-50%); width:260px; pointer-events:none; transition:opacity 0.15s; font-family:'Inter',sans-serif; font-weight:400; text-transform:none; letter-spacing:0; box-shadow:0 4px 12px rgba(0,0,0,0.4); }
+  .tooltip-box { visibility:hidden; opacity:0; background:#1e293b; color:#f8fafc; font-size:0.75rem; line-height:1.5; border:1px solid #e2e8f0; border-radius:6px; padding:0.5rem 0.75rem; position:absolute; z-index:9999; bottom:125%; left:50%; transform:translateX(-50%); width:260px; pointer-events:none; transition:opacity 0.15s; font-family:'Inter',sans-serif; font-weight:400; text-transform:none; letter-spacing:0; box-shadow:0 4px 12px rgba(0,0,0,0.15); }
   .tooltip-wrap:hover .tooltip-box { visibility:visible; opacity:1; }
-  .stTabs [data-baseweb="tab-list"] { background:#0a0e1a; border-bottom:1px solid #1e2d45; gap:0; }
+  .stTabs [data-baseweb="tab-list"] { background:#f8fafc; border-bottom:1px solid #e2e8f0; gap:0; }
   .stTabs [data-baseweb="tab"] { font-family:'IBM Plex Mono',monospace; font-size:0.8rem; color:#64748b; padding:0.6rem 1.4rem; border-bottom:2px solid transparent; }
-  .stTabs [aria-selected="true"] { color:#38bdf8 !important; border-bottom:2px solid #38bdf8 !important; background:transparent !important; }
+  .stTabs [aria-selected="true"] { color:#0284c7 !important; border-bottom:2px solid #0284c7 !important; background:transparent !important; }
   /* Comparación lado a lado */
-  .compare-divider { border:none; border-left:1px solid #1e2d45; margin:0 0.5rem; }
+  .compare-divider { border:none; border-left:1px solid #e2e8f0; margin:0 0.5rem; }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="hero">
-  <h1>▸ ANÁLISIS FUNDAMENTAL</h1>
-  <p>Yahoo Finance · Análisis técnico · DCF · Portfolio Tracker · Comparador</p>
+  <h1>▸ STOCK SCANNER</h1>
+  <p>Yahoo Finance · Análisis técnico · Portfolio Tracker · Comparador</p>
 </div>
 """, unsafe_allow_html=True)
 
-tab_analisis, tab_compare, tab_scanner, tab_portfolio, tab_diag = st.tabs([
+tab_analisis, tab_compare, tab_scanner, tab_portfolio, tab_favorites = st.tabs([
     "📊  ANÁLISIS",
     "⚖️  COMPARADOR",
     "🔍  RASTREADOR",
     "💼  PORTFOLIO",
-    "🔧  DIAGNÓSTICO",
+    "★  FAVORITOS",
 ])
 
 # ── Tipo de cambio compartido ──────────────────────────────────────────────
@@ -95,6 +96,12 @@ with tab_analisis:
         )
     with col2:
         buscar = st.button("ANALIZAR →", key="btn_analizar")
+
+    # Si venimos de "Analizar" desde la pestaña Favoritos, forzar búsqueda automática
+    jump_ticker = st.session_state.pop("_jump_to_analysis", None)
+    if jump_ticker and not buscar:
+        ticker_input = jump_ticker
+        buscar = True
 
     if buscar and ticker_input:
         ticker = ticker_input.strip().upper()
@@ -121,14 +128,20 @@ with tab_analisis:
         yahoo_data   = st.session_state["last_yahoo_data"]
         tech_data    = st.session_state["last_tech_data"]
         company_name = yahoo_data.get("company_name", ticker)
+        sector_name  = yahoo_data.get("sector", "")
 
-        st.markdown(f"""
-        <div style="margin:1rem 0 0.5rem 0;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:0.8rem;color:#38bdf8;">TICKER ANALIZADO</span><br>
-          <span style="font-size:1.15rem;font-weight:600;color:#f1f5f9;">{ticker} → {company_name}</span>
-          <span style="font-size:0.8rem;color:#64748b;margin-left:0.6rem;">{yahoo_data.get('sector','')}</span>
-        </div>
-        """, unsafe_allow_html=True)
+        col_hdr1, col_hdr2 = st.columns([5, 1])
+        with col_hdr1:
+            st.markdown(f"""
+            <div style="margin:1rem 0 0.5rem 0;">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:0.8rem;color:#0284c7;">TICKER ANALIZADO</span><br>
+              <span style="font-size:1.15rem;font-weight:600;color:#0f172a;">{ticker} → {company_name}</span>
+              <span style="font-size:0.8rem;color:#64748b;margin-left:0.6rem;">{sector_name}</span>
+            </div>
+            """, unsafe_allow_html=True)
+        with col_hdr2:
+            st.markdown('<div style="margin-top:1.3rem;"></div>', unsafe_allow_html=True)
+            render_favorite_star(ticker, company_name, sector_name)
 
         render_report(ticker, company_name, yahoo_data, fx_rate, tech_data, fx_meta)
 
@@ -178,19 +191,19 @@ with tab_compare:
                         if v is None: return "N/A"
                         try:    return fmt.format(v) + suffix
                         except: return str(v)
-                    col_a = col_b = "#f1f5f9"
+                    col_a = col_b = "#0f172a"
                     if val_a is not None and val_b is not None:
                         try:
                             if low_good:
-                                col_a = "#6ee7b7" if val_a < val_b else "#fca5a5"
-                                col_b = "#6ee7b7" if val_b < val_a else "#fca5a5"
+                                col_a = "#059669" if val_a < val_b else "#dc2626"
+                                col_b = "#059669" if val_b < val_a else "#dc2626"
                             else:
-                                col_a = "#6ee7b7" if val_a > val_b else "#fca5a5"
-                                col_b = "#6ee7b7" if val_b > val_a else "#fca5a5"
+                                col_a = "#059669" if val_a > val_b else "#dc2626"
+                                col_b = "#059669" if val_b > val_a else "#dc2626"
                         except Exception:
                             pass
                     return (
-                        f'<tr style="border-bottom:1px solid #1a2540;">'
+                        f'<tr style="border-bottom:1px solid #eef1f5;">'
                         f'<td style="padding:0.32rem 0.6rem;font-size:0.8rem;color:#64748b;">{label}</td>'
                         f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;'
                         f'padding:0.32rem 0.6rem;color:{col_a};font-weight:600;">{fv(val_a)}</td>'
@@ -208,30 +221,30 @@ with tab_compare:
                     return f"${v:,.0f}"
 
                 na, nb = data_a.get("company_name",ticker_a)[:22], data_b.get("company_name",ticker_b)[:22]
-                hs = "padding:0.35rem 0.6rem;font-size:0.75rem;color:#38bdf8;text-align:right;border-bottom:1px solid #1e2d45;"
+                hs = "padding:0.35rem 0.6rem;font-size:0.75rem;color:#0284c7;text-align:right;border-bottom:1px solid #e2e8f0;"
 
                 rows = (
                     _cmp_row("Precio actual",   data_a.get("price"),         data_b.get("price"),        fmt="${:,.2f}", low_good=False)
                   + _cmp_row("Market Cap",      _big(data_a.get("market_cap")), _big(data_b.get("market_cap")), fmt="{}", low_good=False)
-                  + "<tr><td colspan='3' style='padding:0.2rem;background:#0a0e1a;font-size:0.65rem;color:#334155;text-transform:uppercase;letter-spacing:0.08em;'>VALORACIÓN</td></tr>"
+                  + "<tr><td colspan='3' style='padding:0.2rem;background:#f8fafc;font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>VALORACIÓN</td></tr>"
                   + _cmp_row("PER Forward",     data_a.get("pe_forward"),    data_b.get("pe_forward"),   fmt="{:.1f}×", low_good=True)
                   + _cmp_row("PEG Ratio",       data_a.get("peg_ratio"),     data_b.get("peg_ratio"),    fmt="{:.2f}",  low_good=True)
                   + _cmp_row("EV/EBITDA",       data_a.get("ev_ebitda"),     data_b.get("ev_ebitda"),    fmt="{:.1f}×", low_good=True)
                   + _cmp_row("Price/Sales",     data_a.get("price_sales"),   data_b.get("price_sales"),  fmt="{:.2f}×", low_good=True)
-                  + "<tr><td colspan='3' style='padding:0.2rem;background:#0a0e1a;font-size:0.65rem;color:#334155;text-transform:uppercase;letter-spacing:0.08em;'>RENTABILIDAD</td></tr>"
+                  + "<tr><td colspan='3' style='padding:0.2rem;background:#f8fafc;font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>RENTABILIDAD</td></tr>"
                   + _cmp_row("Margen neto",     (data_a.get("profit_margin") or 0)*100,  (data_b.get("profit_margin") or 0)*100,  fmt="{:.1f}%", low_good=False)
                   + _cmp_row("Margen operativo",(data_a.get("operating_margin") or 0)*100,(data_b.get("operating_margin") or 0)*100,fmt="{:.1f}%",low_good=False)
                   + _cmp_row("ROE",             (data_a.get("roe") or 0)*100,            (data_b.get("roe") or 0)*100,            fmt="{:.1f}%", low_good=False)
                   + _cmp_row("ROA",             (data_a.get("roa") or 0)*100,            (data_b.get("roa") or 0)*100,            fmt="{:.1f}%", low_good=False)
-                  + "<tr><td colspan='3' style='padding:0.2rem;background:#0a0e1a;font-size:0.65rem;color:#334155;text-transform:uppercase;letter-spacing:0.08em;'>CRECIMIENTO</td></tr>"
+                  + "<tr><td colspan='3' style='padding:0.2rem;background:#f8fafc;font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>CRECIMIENTO</td></tr>"
                   + _cmp_row("Revenue YoY",     data_a.get("revenue_yoy"),   data_b.get("revenue_yoy"),  fmt="{:+.1f}%",low_good=False)
                   + _cmp_row("Earnings YoY",    data_a.get("earnings_yoy"),  data_b.get("earnings_yoy"), fmt="{:+.1f}%",low_good=False)
                   + _cmp_row("EPS TTM",         data_a.get("eps_ttm"),       data_b.get("eps_ttm"),      fmt="${:.2f}", low_good=False)
-                  + "<tr><td colspan='3' style='padding:0.2rem;background:#0a0e1a;font-size:0.65rem;color:#334155;text-transform:uppercase;letter-spacing:0.08em;'>BALANCE</td></tr>"
+                  + "<tr><td colspan='3' style='padding:0.2rem;background:#f8fafc;font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>BALANCE</td></tr>"
                   + _cmp_row("Free Cash Flow",  _big(data_a.get("free_cash_flow")), _big(data_b.get("free_cash_flow")), fmt="{}", low_good=False)
                   + _cmp_row("Deuda/Equity",    data_a.get("debt_equity"),   data_b.get("debt_equity"),  fmt="{:.1f}%", low_good=True)
                   + _cmp_row("Current Ratio",   data_a.get("current_ratio"), data_b.get("current_ratio"),fmt="{:.2f}×", low_good=False)
-                  + "<tr><td colspan='3' style='padding:0.2rem;background:#0a0e1a;font-size:0.65rem;color:#334155;text-transform:uppercase;letter-spacing:0.08em;'>TÉCNICO</td></tr>"
+                  + "<tr><td colspan='3' style='padding:0.2rem;background:#f8fafc;font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>TÉCNICO</td></tr>"
                   + _cmp_row("Beta",            data_a.get("beta"),          data_b.get("beta"),         fmt="{:.2f}",  low_good=True)
                   + _cmp_row("Short Ratio",     data_a.get("short_ratio"),   data_b.get("short_ratio"),  fmt="{:.1f}d", low_good=True)
                   + _cmp_row("Div. Yield",      (data_a.get("dividend_yield") or 0)*100,(data_b.get("dividend_yield") or 0)*100, fmt="{:.2f}%", low_good=False)
@@ -240,10 +253,10 @@ with tab_compare:
                 st.markdown(
                     '<div class="metric-card" style="padding:0.5rem;">'
                     '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">'
-                    '<thead><tr style="background:#0a0e1a;">'
+                    '<thead><tr style="background:#f8fafc;">'
                     f'<th style="{hs}text-align:left;color:#64748b;">Métrica</th>'
-                    f'<th style="{hs}color:#38bdf8;">{ticker_a} — {na}</th>'
-                    f'<th style="{hs}color:#fbbf24;">{ticker_b} — {nb}</th>'
+                    f'<th style="{hs}color:#0284c7;">{ticker_a} — {na}</th>'
+                    f'<th style="{hs}color:#d97706;">{ticker_b} — {nb}</th>'
                     f'</tr></thead><tbody>{rows}</tbody></table></div>'
                     '<div style="font-size:0.7rem;color:#64748b;margin-top:0.5rem;">'
                     'Verde = mejor valor entre los dos · Rojo = peor</div>'
@@ -263,10 +276,10 @@ with tab_compare:
                         price_a = data_a.get("price", 0)
                         st.markdown(
                             f'<div class="metric-card"><div class="metric-label">{ticker_a} — Técnico</div>'
-                            f'RSI: <b style="color:#f1f5f9;">{rsi_a}</b> &nbsp;·&nbsp; '
-                            f'MM50: <b style="color:{"#6ee7b7" if mm50_a and price_a > mm50_a else "#fca5a5"};">'
+                            f'RSI: <b style="color:#0f172a;">{rsi_a}</b> &nbsp;·&nbsp; '
+                            f'MM50: <b style="color:{"#059669" if mm50_a and price_a > mm50_a else "#dc2626"};">'
                             f'{"▲" if mm50_a and price_a > mm50_a else "▼"}</b> &nbsp;·&nbsp; '
-                            f'MM200: <b style="color:{"#6ee7b7" if mm200_a and price_a > mm200_a else "#fca5a5"};">'
+                            f'MM200: <b style="color:{"#059669" if mm200_a and price_a > mm200_a else "#dc2626"};">'
                             f'{"▲" if mm200_a and price_a > mm200_a else "▼"}</b></div>',
                             unsafe_allow_html=True)
                 with col_tb:
@@ -278,10 +291,10 @@ with tab_compare:
                         price_b = data_b.get("price", 0)
                         st.markdown(
                             f'<div class="metric-card"><div class="metric-label">{ticker_b} — Técnico</div>'
-                            f'RSI: <b style="color:#f1f5f9;">{rsi_b}</b> &nbsp;·&nbsp; '
-                            f'MM50: <b style="color:{"#6ee7b7" if mm50_b and price_b > mm50_b else "#fca5a5"};">'
+                            f'RSI: <b style="color:#0f172a;">{rsi_b}</b> &nbsp;·&nbsp; '
+                            f'MM50: <b style="color:{"#059669" if mm50_b and price_b > mm50_b else "#dc2626"};">'
                             f'{"▲" if mm50_b and price_b > mm50_b else "▼"}</b> &nbsp;·&nbsp; '
-                            f'MM200: <b style="color:{"#6ee7b7" if mm200_b and price_b > mm200_b else "#fca5a5"};">'
+                            f'MM200: <b style="color:{"#059669" if mm200_b and price_b > mm200_b else "#dc2626"};">'
                             f'{"▲" if mm200_b and price_b > mm200_b else "▼"}</b></div>',
                             unsafe_allow_html=True)
 
@@ -304,68 +317,7 @@ with tab_portfolio:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PESTAÑA 5 — DIAGNÓSTICO DE FUENTES DE DATOS
+# PESTAÑA 5 — FAVORITOS
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_diag:
-    st.markdown("""
-    <div style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">
-    Herramienta de diagnóstico para verificar qué datos devuelve cada fuente
-    de earnings para un ticker. Fuente primaria: Finnhub. Fallback: yfinance.
-    </div>
-    """, unsafe_allow_html=True)
-
-    diag_ticker = st.text_input("Ticker a diagnosticar", value="MU", key="diag_ticker").strip().upper()
-
-    if st.button("🔍 Ejecutar diagnóstico de earnings", key="btn_diag"):
-        from analysis import (
-            _fetch_earnings_finnhub,
-            _fetch_earnings_yf_fallback,
-            fetch_earnings_analysis,
-        )
-        from data_fetcher import fetch_yahoo_data
-        import os
-
-        # Mostrar estado de la key
-        try:
-            key_preview = str(st.secrets.get("FINNHUB_API_KEY",""))[:8] + "..."
-            st.info(f"FINNHUB_API_KEY encontrada: {key_preview}")
-        except Exception:
-            st.error("❌ FINNHUB_API_KEY no encontrada en Secrets")
-
-        st.markdown("### 1. Finnhub (fuente primaria)")
-        with st.spinner("Consultando Finnhub..."):
-            finnhub_result = _fetch_earnings_finnhub(diag_ticker, limit=8)
-        if finnhub_result:
-            st.success(f"✅ {len(finnhub_result)} trimestres obtenidos de Finnhub")
-            st.json(finnhub_result)
-        else:
-            st.error("❌ Finnhub no devolvió datos — revisar API key o cobertura del ticker")
-
-        st.markdown("### 2. yfinance (fallback)")
-        with st.spinner("Consultando yfinance..."):
-            yf_result = _fetch_earnings_yf_fallback(diag_ticker)
-        if yf_result:
-            st.success(f"✅ {len(yf_result)} trimestres obtenidos de yfinance")
-            st.json(yf_result)
-        else:
-            st.warning("⚠ yfinance no devolvió datos (esperado si Finnhub funciona correctamente)")
-
-        st.markdown("### 3. fetch_earnings_analysis() — resultado final")
-        with st.spinner("Cargando datos base de Yahoo..."):
-            yahoo_data = fetch_yahoo_data(diag_ticker)
-        if yahoo_data:
-            # Limpiar caché para forzar recarga limpia
-            cache_key = f"_earnings_hist_cache_{diag_ticker}"
-            if cache_key in st.session_state:
-                del st.session_state[cache_key]
-            ea = fetch_earnings_analysis(diag_ticker, yahoo_data)
-            st.json(ea)
-        else:
-            st.error(f"❌ No se pudo cargar yahoo_data para {diag_ticker}")
-
-        st.caption(
-            "Si Finnhub devuelve datos correctos (sección 1), el análisis y el "
-            "histórico de resultados deben funcionar correctamente. "
-            "Si Finnhub falla, verificar que FINNHUB_API_KEY está bien configurada "
-            "en Streamlit → Settings → Secrets."
-        )
+with tab_favorites:
+    render_favorites_tab()

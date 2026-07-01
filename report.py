@@ -1,9 +1,10 @@
 """
-report.py — v1.8
-Renderiza el informe completo en Streamlit con el diseño oscuro.
+report.py — v1.9
+Renderiza el informe completo en Streamlit con el diseño claro.
 """
 
 import streamlit as st
+import plotly.graph_objects as go
 from analysis import (
     calc_entry_signal, calc_trend, fetch_peer_data, get_manual_competitors,
     render_entry_signal, render_trend, render_peers,
@@ -17,6 +18,84 @@ from dcf import (
     render_historical_multiples,
 )
 from pdf_export import render_pdf_download_button
+
+
+# ─── Gráfico de cotización con MM50/MM200 ────────────────────────────────────
+
+def _render_price_chart(tech: dict, ticker: str, currency: str = "USD"):
+    """
+    Gráfico interactivo de cotización a 1 año con MM50 y MM200 superpuestas.
+    Zoom, pan y tooltip con fecha + precio al pasar el cursor (nativo de Plotly).
+    """
+    history = tech.get("price_history", [])
+    if not history:
+        return
+
+    dates  = [h["date"]  for h in history]
+    closes = [h["close"] for h in history]
+    mm50s  = [h["mm50"]  for h in history]
+    mm200s = [h["mm200"] for h in history]
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=dates, y=closes, mode="lines", name="Precio",
+        line=dict(color="#0284c7", width=2),
+        hovertemplate="<b>%{x}</b><br>Precio: " + currency + " %{y:.2f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=dates, y=mm50s, mode="lines", name="MM50",
+        line=dict(color="#d97706", width=1.4, dash="solid"),
+        hovertemplate="<b>%{x}</b><br>MM50: " + currency + " %{y:.2f}<extra></extra>",
+    ))
+    if any(v is not None for v in mm200s):
+        fig.add_trace(go.Scatter(
+            x=dates, y=mm200s, mode="lines", name="MM200",
+            line=dict(color="#dc2626", width=1.4, dash="solid"),
+            hovertemplate="<b>%{x}</b><br>MM200: " + currency + " %{y:.2f}<extra></extra>",
+        ))
+
+    fig.update_layout(
+        height=380,
+        margin=dict(l=10, r=10, t=10, b=10),
+        plot_bgcolor="#ffffff",
+        paper_bgcolor="#ffffff",
+        font=dict(family="Inter, sans-serif", size=12, color="#1e293b"),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0,
+                    font=dict(size=11)),
+        xaxis=dict(
+            showgrid=False, showline=True, linecolor="#e2e8f0",
+            rangeslider=dict(visible=False),
+            rangeselector=dict(
+                buttons=[
+                    dict(count=1, label="1M", step="month", stepmode="backward"),
+                    dict(count=3, label="3M", step="month", stepmode="backward"),
+                    dict(count=6, label="6M", step="month", stepmode="backward"),
+                    dict(step="all", label="1A"),
+                ],
+                bgcolor="#f4f6f9", activecolor="#dbeafe",
+                font=dict(size=10, color="#334155"),
+            ),
+        ),
+        yaxis=dict(
+            showgrid=True, gridcolor="#f1f5f9", showline=True, linecolor="#e2e8f0",
+            tickprefix=f"{currency} ",
+        ),
+    )
+
+    st.plotly_chart(fig, use_container_width=True, config={
+        "displayModeBar": True,
+        "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+        "displaylogo": False,
+        "scrollZoom": True,
+    })
+    st.markdown(
+        '<div style="font-size:0.68rem;color:#94a3b8;margin-top:-0.5rem;margin-bottom:0.8rem;">'
+        '📈 Arrastra para hacer zoom · Doble clic para restablecer · Usa los botones 1M/3M/6M/1A '
+        'para cambiar el rango · Pasa el cursor para ver fecha y precio exactos</div>',
+        unsafe_allow_html=True
+    )
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -152,7 +231,7 @@ def _kv(label, value, color_class="row-val"):
         tip_safe = tip.replace('"', '&quot;').replace("'", "&#39;")
         tip_html = f"""
         <span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;">
-          <span style="font-size:0.65rem;color:#1e3a5f;border:1px solid #1e3a5f;
+          <span style="font-size:0.65rem;color:#0284c7;border:1px solid #0284c7;
                        border-radius:50%;padding:0 3px;font-family:'IBM Plex Mono',monospace;">?</span>
           <span class="tooltip-box">{tip}</span>
         </span>"""
@@ -548,31 +627,31 @@ def _evaluate(y: dict) -> dict:
         diag_icon  = "—"
     elif upside >= 30:
         diag       = "MUY INFRAVALORADA — Oportunidad excepcional"
-        diag_color = "#6ee7b7"
+        diag_color = "#059669"
         diag_icon  = "▲▲"
     elif upside >= 12:
         diag       = "INFRAVALORADA — Potencial alcista significativo"
-        diag_color = "#86efac"
+        diag_color = "#16a34a"
         diag_icon  = "▲"
     elif upside >= 3:
         diag       = "LIGERAMENTE INFRAVALORADA — Entrada atractiva"
-        diag_color = "#bef264"
+        diag_color = "#65a30d"
         diag_icon  = "↑"
     elif upside >= -3:
         diag       = "PRECIO JUSTO — En rango de valor razonable"
-        diag_color = "#fbbf24"
+        diag_color = "#d97706"
         diag_icon  = "="
     elif upside >= -15:
         diag       = "EN OBSERVACIÓN — Precio por encima del valor objetivo"
-        diag_color = "#fb923c"
+        diag_color = "#ea580c"
         diag_icon  = "↓"
     elif upside >= -30:
         diag       = "SOBREVALORADA — Riesgo de corrección moderada"
-        diag_color = "#f87171"
+        diag_color = "#dc2626"
         diag_icon  = "▼"
     else:
         diag       = "MUY SOBREVALORADA — Riesgo de corrección severa"
-        diag_color = "#fca5a5"
+        diag_color = "#dc2626"
         diag_icon  = "▼▼"
 
     # ── Valoración relativa al sector ─────────────────────────────────────
@@ -676,14 +755,14 @@ def render_report(ticker, company_name, y: dict,
         if tip:
             tip_html = (
                 '<span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;">'
-                '<span style="font-size:0.65rem;color:#1e3a5f;border:1px solid #1e3a5f;'
+                '<span style="font-size:0.65rem;color:#0284c7;border:1px solid #0284c7;'
                 'border-radius:50%;padding:0 3px;font-family:\'IBM Plex Mono\',monospace;">?</span>'
                 f'<span class="tooltip-box">{tip}</span></span>'
             )
         bench_html = ""
         if bench_val is not None:
             bench_html = (
-                f'<span style="font-size:0.7rem;color:#475569;margin-left:0.4rem;'
+                f'<span style="font-size:0.7rem;color:#94a3b8;margin-left:0.4rem;'
                 f'font-family:\'IBM Plex Mono\',monospace;">sect:{bench_label}</span>'
             )
         return (
@@ -707,12 +786,12 @@ def render_report(ticker, company_name, y: dict,
     alert_rows = ""
     for name, f in [("Precio de mercado", pf), ("Fundamentales", ff), ("Técnico RSI/MMs", tf)]:
         if f.get("ok") is False:
-            col = f.get("color","#fbbf24")
+            col = f.get("color","#d97706")
             alert_rows += (
-                f'<div style="background:#1c1408;border:1px solid {col};border-left:4px solid {col};'
+                f'<div style="background:#fffbeb;border:1px solid {col};border-left:4px solid {col};'
                 f'border-radius:6px;padding:0.5rem 0.8rem;margin-bottom:0.4rem;font-size:0.8rem;">'
                 f'<span style="color:{col};font-weight:700;">⚠ {name.upper()}</span>'
-                f'<span style="color:#94a3b8;margin-left:0.5rem;">{f.get("label","")}</span>'
+                f'<span style="color:#64748b;margin-left:0.5rem;">{f.get("label","")}</span>'
                 f'<div style="color:#64748b;font-size:0.71rem;margin-top:0.15rem;">'
                 f'Verifica este dato en la fuente original antes de operar.</div></div>'
             )
@@ -720,7 +799,7 @@ def render_report(ticker, company_name, y: dict,
         st.markdown(alert_rows, unsafe_allow_html=True)
 
     def _source_row(dato, trust, fecha, fresh):
-        t_col  = trust.get("color","#94a3b8")
+        t_col  = trust.get("color","#64748b")
         t_icon = trust.get("icon","")
         t_lbl  = trust.get("label","")
         f_col  = fresh.get("color","#64748b") if fresh else "#64748b"
@@ -728,17 +807,17 @@ def render_report(ticker, company_name, y: dict,
         f_lbl  = fresh.get("label","") if fresh else ""
         return (
             '<div style="display:grid;grid-template-columns:2fr 1fr 2fr;gap:0.4rem;'
-            'padding:0.35rem 0;border-bottom:1px solid #1a2540;align-items:center;">'
-            f'<span style="font-size:0.8rem;color:#e2e8f0;">{dato}</span>'
+            'padding:0.35rem 0;border-bottom:1px solid #eef1f5;align-items:center;">'
+            f'<span style="font-size:0.8rem;color:#1e293b;">{dato}</span>'
             f'<span style="font-size:0.72rem;color:{t_col};font-family:\'IBM Plex Mono\',monospace;">{t_icon} {t_lbl}</span>'
             f'<span style="font-size:0.73rem;color:{f_col};">{f_icon} {f_lbl} '
             f'<span style="color:#64748b;font-size:0.68rem;">({fecha})</span></span>'
             '</div>'
         )
 
-    TRUST_Y    = {"icon":"🟡","label":"Yahoo Finance", "color":"#fbbf24"}
-    TRUST_CALC = {"icon":"🟠","label":"Calculado app", "color":"#fb923c"}
-    TRUST_ESTI = {"icon":"🔴","label":"Estimado",      "color":"#fca5a5"}
+    TRUST_Y    = {"icon":"🟡","label":"Yahoo Finance", "color":"#d97706"}
+    TRUST_CALC = {"icon":"🟠","label":"Calculado app", "color":"#ea580c"}
+    TRUST_ESTI = {"icon":"🔴","label":"Estimado",      "color":"#dc2626"}
 
     rows = (
         _source_row("Precio actual",               TRUST_Y,    meta_y.get("price_date","N/A"),    pf)
@@ -750,22 +829,22 @@ def render_report(ticker, company_name, y: dict,
     )
     hdr = (
         '<div style="display:grid;grid-template-columns:2fr 1fr 2fr;gap:0.4rem;'
-        'padding:0.2rem 0;border-bottom:1px solid #1e2d45;margin-bottom:0.2rem;">'
-        '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;letter-spacing:0.06em;">Dato</span>'
-        '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;letter-spacing:0.06em;">Fuente</span>'
-        '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;letter-spacing:0.06em;">Última actualización</span>'
+        'padding:0.2rem 0;border-bottom:1px solid #e2e8f0;margin-bottom:0.2rem;">'
+        '<span style="font-size:0.66rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;">Dato</span>'
+        '<span style="font-size:0.66rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;">Fuente</span>'
+        '<span style="font-size:0.66rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;">Última actualización</span>'
         '</div>'
     )
     legend = (
         '<div style="margin-top:0.6rem;font-size:0.71rem;color:#64748b;">'
         '🟡 Yahoo Finance &nbsp;·&nbsp; 🟠 Calculado por la app &nbsp;·&nbsp; 🔴 Estimación analistas</div>'
-        '<div style="margin-top:0.4rem;font-size:0.7rem;color:#475569;line-height:1.55;">'
+        '<div style="margin-top:0.4rem;font-size:0.7rem;color:#94a3b8;line-height:1.55;">'
         '⚠ Yahoo Finance agrega datos de múltiples proveedores. Para cifras críticas, '
         'verifica directamente en los informes trimestrales (10-K/10-Q en SEC EDGAR).</div>'
     )
     st.markdown(
-        f'<div class="metric-card" style="border-left:3px solid #334155;">'
-        f'<div style="font-size:0.69rem;color:#475569;margin-bottom:0.5rem;">'
+        f'<div class="metric-card" style="border-left:3px solid #cbd5e1;">'
+        f'<div style="font-size:0.69rem;color:#94a3b8;margin-bottom:0.5rem;">'
         f'Consulta: <span style="color:#64748b;">{meta_y.get("fetch_time","N/A")}</span></div>'
         f'{hdr}{rows}{legend}</div>',
         unsafe_allow_html=True
@@ -795,8 +874,18 @@ def render_report(ticker, company_name, y: dict,
         # E · Mercado y consenso
         _section("MERCADO Y CONSENSO &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo · 🔴 Consenso analistas</span>")
         rec = y.get("recommendation","N/A")
+        target_mean_val = y.get("target_mean")
+        price_now_val   = y.get("price")
+        target_upside_html = _fmt_price(target_mean_val, currency_y, fx_rate)
+        if target_mean_val and price_now_val:
+            upside_analysts = (target_mean_val - price_now_val) / price_now_val * 100
+            up_color = "#059669" if upside_analysts >= 0 else "#dc2626"
+            target_upside_html += (
+                f' <span style="color:{up_color};font-weight:700;font-size:0.85em;">'
+                f'({upside_analysts:+.1f}%)</span>'
+            )
         html  = _kv("Precio Actual",      _fmt_price(y.get("price"), currency_y, fx_rate))
-        html += _kv("Objetivo Analistas", _fmt_price(y.get("target_mean"), currency_y, fx_rate))
+        html += _kv("Objetivo Analistas", target_upside_html)
         html += _kv("Rango",
             f"{_fmt_price(y.get('target_low'),currency_y,fx_rate)} – {_fmt_price(y.get('target_high'),currency_y,fx_rate)}")
         html += _kv("Recomendación", _badge(rec))
@@ -804,7 +893,7 @@ def render_report(ticker, company_name, y: dict,
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
         # G · Rentabilidad
-        _section("RENTABILIDAD &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo &nbsp;·&nbsp; <span style=\"color:#475569;\">sect: media sector</span></span>")
+        _section("RENTABILIDAD &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo &nbsp;·&nbsp; <span style=\"color:#94a3b8;\">sect: media sector</span></span>")
         html  = _kv_bench("Profit Margin",
             _fmt_num((y.get("profit_margin") or 0)*100,2,suffix="%"),
             sbm.get("profit_m"), f"{sbm.get('profit_m')}%", _color_pct(y.get("profit_margin")))
@@ -822,7 +911,7 @@ def render_report(ticker, company_name, y: dict,
 
     with col_b:
         # F · Valoración
-        _section("VALORACIÓN &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo · 🔴 Forward estimado &nbsp;·&nbsp; <span style=\"color:#475569;\">sect: media sector</span></span>")
+        _section("VALORACIÓN &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo · 🔴 Forward estimado &nbsp;·&nbsp; <span style=\"color:#94a3b8;\">sect: media sector</span></span>")
         html  = _kv("PER Trailing", _fmt_num(y.get("pe_trailing"),2))
         html += _kv_bench("PER Forward", _fmt_num(y.get("pe_forward"),2),
             sbm.get("pe_fwd"), f"{sbm.get('pe_fwd')}x")
@@ -867,9 +956,11 @@ def render_report(ticker, company_name, y: dict,
         _section("DESGLOSE TTM &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
         def ttm_fmt(v):
             return _fmt_big(v, "") if v is not None else "—"
+        # Ordenar del trimestre más antiguo al más reciente por fecha real
+        quarters_sorted = sorted(yahoo_quarters[:4], key=lambda q: q.get("date",""))
         rows_t = ""
         ytot   = 0
-        for i, q in enumerate(yahoo_quarters[:4]):
+        for i, q in enumerate(quarters_sorted):
             val   = q.get("value") or 0
             ytot += val
             rows_t += (
@@ -879,7 +970,7 @@ def render_report(ticker, company_name, y: dict,
             )
         rows_t += (
             f'<div class="ttm-row"><span>TOTAL TTM</span>'
-            f'<span style="color:#fbbf24;">{ttm_fmt(ytot)}</span></div>'
+            f'<span style="color:#d97706;">{ttm_fmt(ytot)}</span></div>'
         )
         st.markdown(f'<div class="metric-card">{rows_t}</div>', unsafe_allow_html=True)
 
@@ -900,7 +991,7 @@ def render_report(ticker, company_name, y: dict,
     tip_yoy_safe = tip_yoy.replace('"','&quot;')
     tip_yoy_html = (
         f'<span title="{tip_yoy_safe}" style="margin-left:0.4rem;cursor:help;'
-        f'font-size:0.62rem;color:#fb923c;border:1px solid #fb923c;'
+        f'font-size:0.62rem;color:#ea580c;border:1px solid #ea580c;'
         f'border-radius:50%;padding:0 4px;font-family:monospace;'
         f'vertical-align:middle;">?</span>'
     )
@@ -913,7 +1004,6 @@ def render_report(ticker, company_name, y: dict,
         _fmt_num(earn_yoy,2,suffix="%") if earn_yoy is not None else "N/A", _color_pct(earn_yoy))
     html += _kv("EPS (TTM)",     _fmt_price(y.get("eps_ttm"),    currency_y, fx_rate))
     html += _kv("EPS (Forward)", _fmt_price(y.get("eps_forward"), currency_y, fx_rate))
-    st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
     # Desglose con valores absolutos de los dos años fiscales comparados
     rev_cur, rev_prev   = y.get("rev_year_cur"), y.get("rev_year_prev")
@@ -921,48 +1011,49 @@ def render_report(ticker, company_name, y: dict,
     ni_cur, ni_prev      = y.get("ni_year_cur"), y.get("ni_year_prev")
     ni_dcur, ni_dprev    = y.get("ni_date_cur"), y.get("ni_date_prev")
 
+    breakdown_html = ""
     if rev_cur is not None or ni_cur is not None:
         def _fy_label(date_str):
             if not date_str: return "Año N/A"
             return f"FY {date_str[:4]}"
 
         breakdown_html = (
-            '<div style="margin-top:0.6rem;font-size:0.7rem;color:#94a3b8;text-transform:uppercase;'
-            'letter-spacing:0.08em;margin-bottom:0.4rem;">Desglose: de dónde salen estos números</div>'
+            '<div style="margin-top:0.9rem;font-size:0.7rem;color:#64748b;text-transform:uppercase;'
+            'letter-spacing:0.08em;margin-bottom:0.4rem;">Desglose</div>'
             '<table style="width:100%;border-collapse:collapse;">'
-            '<thead><tr style="border-bottom:1px solid #1e2d45;">'
-            '<th style="text-align:left;padding:0.25rem 0.5rem;font-size:0.67rem;color:#475569;">Concepto</th>'
+            '<thead><tr style="border-bottom:1px solid #e2e8f0;">'
+            '<th style="text-align:left;padding:0.25rem 0.5rem;font-size:0.67rem;color:#94a3b8;">Concepto</th>'
         )
         if rev_dprev:
-            breakdown_html += f'<th style="text-align:right;padding:0.25rem 0.5rem;font-size:0.67rem;color:#475569;">{_fy_label(rev_dprev)}</th>'
+            breakdown_html += f'<th style="text-align:right;padding:0.25rem 0.5rem;font-size:0.67rem;color:#94a3b8;">{_fy_label(rev_dprev)}</th>'
         if rev_dcur:
-            breakdown_html += f'<th style="text-align:right;padding:0.25rem 0.5rem;font-size:0.67rem;color:#475569;">{_fy_label(rev_dcur)}</th>'
+            breakdown_html += f'<th style="text-align:right;padding:0.25rem 0.5rem;font-size:0.67rem;color:#94a3b8;">{_fy_label(rev_dcur)}</th>'
         breakdown_html += (
-            '<th style="text-align:right;padding:0.25rem 0.5rem;font-size:0.67rem;color:#475569;">Variación</th>'
+            '<th style="text-align:right;padding:0.25rem 0.5rem;font-size:0.67rem;color:#94a3b8;">Variación</th>'
             '</tr></thead><tbody>'
         )
 
         if rev_cur is not None and rev_prev is not None:
             breakdown_html += (
-                '<tr style="border-bottom:1px solid #1a2540;">'
-                '<td style="padding:0.4rem 0.5rem;font-size:0.82rem;color:#e2e8f0;">Revenue (Ingresos totales)</td>'
-                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#94a3b8;">{_fmt_big(rev_prev,"$")}</td>'
-                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:600;">{_fmt_big(rev_cur,"$")}</td>'
-                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:{"#6ee7b7" if rev_yoy and rev_yoy>=0 else "#fca5a5"};font-weight:600;">{rev_yoy:+.1f}%</td>'
+                '<tr style="border-bottom:1px solid #eef1f5;">'
+                '<td style="padding:0.4rem 0.5rem;font-size:0.82rem;color:#1e293b;">Revenue (Ingresos totales)</td>'
+                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#64748b;">{_fmt_big(rev_prev,"$")}</td>'
+                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:600;">{_fmt_big(rev_cur,"$")}</td>'
+                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:{"#059669" if rev_yoy and rev_yoy>=0 else "#dc2626"};font-weight:600;">{rev_yoy:+.1f}%</td>'
                 '</tr>'
             )
         if ni_cur is not None and ni_prev is not None:
             breakdown_html += (
                 '<tr>'
-                '<td style="padding:0.4rem 0.5rem;font-size:0.82rem;color:#e2e8f0;">Net Income (Beneficio neto)</td>'
-                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#94a3b8;">{_fmt_big(ni_prev,"$")}</td>'
-                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:600;">{_fmt_big(ni_cur,"$")}</td>'
-                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:{"#6ee7b7" if earn_yoy and earn_yoy>=0 else "#fca5a5"};font-weight:600;">{earn_yoy:+.1f}%</td>'
+                '<td style="padding:0.4rem 0.5rem;font-size:0.82rem;color:#1e293b;">Net Income (Beneficio neto)</td>'
+                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#64748b;">{_fmt_big(ni_prev,"$")}</td>'
+                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:600;">{_fmt_big(ni_cur,"$")}</td>'
+                f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:{"#059669" if earn_yoy and earn_yoy>=0 else "#dc2626"};font-weight:600;">{earn_yoy:+.1f}%</td>'
                 '</tr>'
             )
         breakdown_html += '</tbody></table>'
 
-        st.markdown(f'<div class="metric-card">{breakdown_html}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="metric-card">{html}{breakdown_html}</div>', unsafe_allow_html=True)
 
     st.markdown(
         '<div style="font-size:0.71rem;color:#64748b;margin-top:-0.4rem;margin-bottom:0.8rem;padding:0 0.2rem;">'
@@ -982,22 +1073,29 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     _section("CONSULTA DE RESULTADOS")
     seeking_alpha_url = f"https://seekingalpha.com/symbol/{ticker}/earnings"
+    stocktwits_url     = f"https://stocktwits.com/symbol/{ticker}/earnings"
     st.markdown(
         '<div class="metric-card">'
-        '<div style="font-size:0.85rem;color:#cbd5e1;line-height:1.7;margin-bottom:0.8rem;">'
+        '<div style="font-size:0.85rem;color:#94a3b8;line-height:1.7;margin-bottom:0.8rem;">'
         f'Los datos de EPS estimado/reportado y el histórico de sorpresas de resultados '
         f'requieren una fuente de consenso de analistas en tiempo real que no podemos '
         f'garantizar al 100% de fiabilidad desde esta app. Para consultar los últimos '
         f'resultados presentados, los próximos programados y el histórico completo de '
-        f'<b style="color:#f1f5f9;">{ticker}</b>, usa el enlace directo a Seeking Alpha:</div>'
+        f'<b style="color:#0f172a;">{ticker}</b>, usa uno de estos enlaces directos:</div>'
+        '<div style="display:flex;gap:0.7rem;flex-wrap:wrap;">'
         f'<a href="{seeking_alpha_url}" target="_blank" style="display:inline-block;'
         f'background:#1d4ed8;color:#fff;padding:0.6rem 1.4rem;border-radius:6px;'
         f'text-decoration:none;font-family:\'IBM Plex Mono\',monospace;font-size:0.85rem;'
-        f'font-weight:600;letter-spacing:0.03em;">📊 Ver resultados de {ticker} en Seeking Alpha →</a>'
-        '<div style="font-size:0.7rem;color:#475569;margin-top:0.7rem;">'
-        'Seeking Alpha agrega consenso de múltiples proveedores (Refinitiv, FactSet) '
-        'con actualización en tiempo real y mayor cobertura histórica que las fuentes '
-        'gratuitas disponibles vía API.</div>'
+        f'font-weight:600;letter-spacing:0.03em;">📊 Ver en Seeking Alpha →</a>'
+        f'<a href="{stocktwits_url}" target="_blank" style="display:inline-block;'
+        f'background:#059669;color:#fff;padding:0.6rem 1.4rem;border-radius:6px;'
+        f'text-decoration:none;font-family:\'IBM Plex Mono\',monospace;font-size:0.85rem;'
+        f'font-weight:600;letter-spacing:0.03em;">💬 Ver en StockTwits →</a>'
+        '</div>'
+        '<div style="font-size:0.7rem;color:#94a3b8;margin-top:0.7rem;">'
+        'Seeking Alpha agrega consenso de múltiples proveedores (Refinitiv, FactSet) con '
+        'actualización en tiempo real. StockTwits muestra el histórico de earnings en '
+        'formato tabla (estimado/reportado/sorpresa) similar al que ya conoces.</div>'
         '</div>',
         unsafe_allow_html=True
     )
@@ -1009,13 +1107,15 @@ def render_report(ticker, company_name, y: dict,
     _section(f"ANÁLISIS TÉCNICO &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance · último dato: {tech_date}</span>")
 
     if tech and not tech.get("error"):
+        _render_price_chart(tech, ticker, currency_y)
+
         col_t1, col_t2 = st.columns(2)
 
         with col_t1:
             rsi_val = tech.get("rsi")
             rsi_lbl = tech.get("rsi_label","N/A")
             rsi_pct = min(max(rsi_val or 0, 0), 100)
-            bar_col = "#fca5a5" if rsi_pct >= 70 else "#6ee7b7" if rsi_pct <= 30 else "#38bdf8"
+            bar_col = "#dc2626" if rsi_pct >= 70 else "#059669" if rsi_pct <= 30 else "#0284c7"
             rsi_css = tech.get("rsi_css","")
             st.markdown(
                 '<div class="metric-card">'
@@ -1031,7 +1131,7 @@ def render_report(ticker, company_name, y: dict,
                 'color:#64748b;margin-top:0.2rem;">'
                 '<span>0 — Sobreventa</span><span>50</span><span>Sobrecompra — 100</span>'
                 '</div>'
-                '<div style="margin-top:0.5rem;font-size:0.78rem;color:#94a3b8;">'
+                '<div style="margin-top:0.5rem;font-size:0.78rem;color:#64748b;">'
                 '▸ RSI &lt; 30: sobreventa (posible rebote) &nbsp;|&nbsp; RSI &gt; 70: sobrecompra'
                 '</div></div>',
                 unsafe_allow_html=True
@@ -1095,25 +1195,25 @@ def render_report(ticker, company_name, y: dict,
     upside       = ev["upside"]
     vs_hist      = ev["vs_hist"]
     price_now    = y.get("price") or 0
-    diag_color   = ev.get("diag_color","#f1f5f9")
+    diag_color   = ev.get("diag_color","#0f172a")
     diag_icon    = ev.get("diag_icon","")
 
     # Contexto sectorial
     st.markdown(
-        '<div class="metric-card" style="border-left:3px solid #38bdf8;">'
+        '<div class="metric-card" style="border-left:3px solid #0284c7;">'
         '<div class="metric-label">CONTEXTO SECTORIAL</div>'
-        f'<div style="font-size:0.95rem;font-weight:600;color:#f1f5f9;margin-bottom:0.4rem;">{ev["sector_label"]}</div>'
-        f'<div style="font-size:0.8rem;color:#94a3b8;line-height:1.6;">{ev["sector_nota"]}</div>'
+        f'<div style="font-size:0.95rem;font-weight:600;color:#0f172a;margin-bottom:0.4rem;">{ev["sector_label"]}</div>'
+        f'<div style="font-size:0.8rem;color:#64748b;line-height:1.6;">{ev["sector_nota"]}</div>'
         '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.5rem;margin-top:0.8rem;">'
-        '<div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">'
+        '<div style="background:#f4f6f9;border-radius:6px;padding:0.4rem 0.6rem;">'
         f'<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">PER justo sector</div>'
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#38bdf8;font-weight:600;">{ev["pe_ref"]}×</div></div>'
-        '<div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#0284c7;font-weight:600;">{ev["pe_ref"]}×</div></div>'
+        '<div style="background:#f4f6f9;border-radius:6px;padding:0.4rem 0.6rem;">'
         f'<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">PEG aceptable</div>'
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#38bdf8;font-weight:600;">&lt;{ev["peg_ok"]}</div></div>'
-        '<div style="background:#0f172a;border-radius:6px;padding:0.4rem 0.6rem;">'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#0284c7;font-weight:600;">&lt;{ev["peg_ok"]}</div></div>'
+        '<div style="background:#f4f6f9;border-radius:6px;padding:0.4rem 0.6rem;">'
         f'<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">EV/EBITDA justo</div>'
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#38bdf8;font-weight:600;">{ev["ev_ebitda_fair"]}×</div></div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#0284c7;font-weight:600;">{ev["ev_ebitda_fair"]}×</div></div>'
         '</div></div>',
         unsafe_allow_html=True
     )
@@ -1127,7 +1227,7 @@ def render_report(ticker, company_name, y: dict,
     reliability_notes = []
     if fair is None:
         reliability_notes.append((
-            "#fca5a5",
+            "#dc2626",
             "⚠ VALOR OBJETIVO NO CALCULABLE: no hay datos suficientes (EPS, EV/EBITDA, "
             "consenso de analistas) para aplicar ningún método de valoración a esta empresa. "
             "El diagnóstico general no está disponible."
@@ -1136,7 +1236,7 @@ def render_report(ticker, company_name, y: dict,
         rev_yoy_val = y.get("revenue_yoy")
         rev_yoy_str = f"{rev_yoy_val:.1f}%" if rev_yoy_val is not None else "N/D"
         reliability_notes.append((
-            "#38bdf8",
+            "#0284c7",
             f"ℹ️ VALORACIÓN HYPER-GROWTH: esta empresa tiene EPS negativo o nulo, por lo que "
             f"PER/PEG no son aplicables. Se usó el método EV/Sales al detectar crecimiento de "
             f"ingresos superior al 25% YoY (actual: {rev_yoy_str}). Este método es menos preciso "
@@ -1145,7 +1245,7 @@ def render_report(ticker, company_name, y: dict,
         ))
     elif n_methods <= 1:
         reliability_notes.append((
-            "#fbbf24",
+            "#d97706",
             f"⚠ FIABILIDAD LIMITADA: el valor objetivo se calculó con un único método "
             f"disponible ({ev['methods_used'][0].split(' →')[0] if ev.get('methods_used') else 'desconocido'}). "
             f"Con más de un método el resultado sería más robusto. Interpreta el upside con cautela."
@@ -1153,46 +1253,46 @@ def render_report(ticker, company_name, y: dict,
 
     if fund_stale:
         reliability_notes.append((
-            "#fbbf24",
+            "#d97706",
             f"⚠ DATOS FUNDAMENTALES DESACTUALIZADOS: {fund_fresh.get('label','')}. "
             f"Los ratios de valoración pueden no reflejar los resultados más recientes de la empresa."
         ))
 
     for note_color, note_text in reliability_notes:
         st.markdown(
-            f'<div style="background:#0f172a;border:1px solid {note_color};border-left:4px solid {note_color};'
+            f'<div style="background:#f4f6f9;border:1px solid {note_color};border-left:4px solid {note_color};'
             f'border-radius:6px;padding:0.6rem 0.9rem;margin-bottom:0.6rem;font-size:0.78rem;'
             f'color:{note_color};line-height:1.6;">{note_text}</div>',
             unsafe_allow_html=True
         )
 
     # Salud fundamental
-    bar_col_h = "#6ee7b7" if health_score>=70 else "#fbbf24" if health_score>=45 else "#fca5a5"
+    bar_col_h = "#059669" if health_score>=70 else "#d97706" if health_score>=45 else "#dc2626"
     bd_html = "".join(
-        f'<div style="font-size:0.75rem;color:#94a3b8;padding:0.2rem 0;border-bottom:1px solid #1a2540;">▸ {b}</div>'
+        f'<div style="font-size:0.75rem;color:#64748b;padding:0.2rem 0;border-bottom:1px solid #eef1f5;">▸ {b}</div>'
         for b in ev["health_breakdown"]
     )
-    with st.expander(f"SALUD FUNDAMENTAL: {health_score}/100 — ver desglose", expanded=False):
+    with st.expander(f"SALUD FUNDAMENTAL: {health_score}/100 — ver desglose", expanded=True):
         st.markdown(
-            '<div style="background:#111827;border-radius:8px;padding:0.8rem 1rem;">'
+            '<div style="background:#ffffff;border-radius:8px;padding:0.8rem 1rem;">'
             f'<div style="display:flex;align-items:baseline;gap:0.8rem;margin-bottom:0.5rem;">'
             f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:1.6rem;font-weight:600;color:{bar_col_h};">{health_score}</span>'
-            f'<span style="color:#64748b;font-size:0.85rem;">/ 100 — sector: <b style="color:#f1f5f9;">{ev["sector_label"]}</b></span>'
+            f'<span style="color:#64748b;font-size:0.85rem;">/ 100 — sector: <b style="color:#0f172a;">{ev["sector_label"]}</b></span>'
             '</div>'
-            f'<div style="background:#1e2d45;border-radius:4px;height:8px;margin-bottom:1rem;">'
+            f'<div style="background:#334155;border-radius:4px;height:8px;margin-bottom:1rem;">'
             f'<div style="height:8px;border-radius:4px;background:{bar_col_h};width:{health_score}%;"></div></div>'
             f'{bd_html}</div>',
             unsafe_allow_html=True
         )
 
     # Metodología de valoración
-    mh = "".join(f'<div style="font-size:0.76rem;color:#94a3b8;padding:0.18rem 0;">▸ {m}</div>'
+    mh = "".join(f'<div style="font-size:0.76rem;color:#64748b;padding:0.18rem 0;">▸ {m}</div>'
                  for m in ev.get("methods_used",[])
     ) or '<div style="font-size:0.76rem;color:#64748b;">Sin datos suficientes para calcular valor objetivo.</div>'
-    with st.expander("METODOLOGÍA DE VALORACIÓN — ver cálculo del valor objetivo", expanded=False):
+    with st.expander("METODOLOGÍA DE VALORACIÓN — ver cálculo del valor objetivo", expanded=True):
         st.markdown(
-            '<div style="background:#111827;border-radius:8px;padding:0.8rem 1rem;">'
-            f'<div style="font-size:0.72rem;color:#38bdf8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.5rem;">'
+            '<div style="background:#ffffff;border-radius:8px;padding:0.8rem 1rem;">'
+            f'<div style="font-size:0.72rem;color:#0284c7;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.5rem;">'
             f'Métodos aplicados (sector: {ev["sector_label"]})</div>'
             f'{mh}'
             '<div style="margin-top:0.6rem;font-size:0.72rem;color:#64748b;">'
@@ -1205,11 +1305,11 @@ def render_report(ticker, company_name, y: dict,
     vs_items = ev.get("vs_sector","")
     if " · " in vs_items:
         vs_html = "".join(
-            f'<div style="font-size:0.8rem;color:#e2e8f0;padding:0.25rem 0;border-bottom:1px solid #1a2540;">▸ {item}</div>'
+            f'<div style="font-size:0.8rem;color:#1e293b;padding:0.25rem 0;border-bottom:1px solid #eef1f5;">▸ {item}</div>'
             for item in vs_items.split(" · ")
         )
     else:
-        vs_html = f'<div style="font-size:0.8rem;color:#94a3b8;">{vs_items}</div>'
+        vs_html = f'<div style="font-size:0.8rem;color:#64748b;">{vs_items}</div>'
     st.markdown(
         f'<div class="metric-card"><div class="metric-label">MÚLTIPLOS VS BENCHMARKS DEL SECTOR</div>{vs_html}</div>',
         unsafe_allow_html=True
@@ -1222,7 +1322,7 @@ def render_report(ticker, company_name, y: dict,
     fair_str    = f"{fair_usd}{fair_eur}" if fair else "N/A"
     hist_str    = f"{vs_hist:+.2f}% vs media 52W" if vs_hist is not None else "N/A"
     price_eur   = f" (€{price_now*fx_rate:,.2f})" if (fx_rate and currency_y=="USD") else ""
-    up_color    = "#6ee7b7" if (upside or 0) > 0 else "#fca5a5"
+    up_color    = "#059669" if (upside or 0) > 0 else "#dc2626"
 
     # Métodos usados para construir el tooltip del valor objetivo
     methods_list = ev.get("methods_used", [])
@@ -1232,7 +1332,7 @@ def render_report(ticker, company_name, y: dict,
         safe = text.replace('"', '&quot;')
         return (
             f'<span title="{safe}" style="margin-left:0.3rem;cursor:help;'
-            f'font-size:0.6rem;color:#475569;border:1px solid #475569;'
+            f'font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
             f'border-radius:50%;padding:0 3px;font-family:monospace;'
             f'vertical-align:middle;">?</span>'
         )
@@ -1262,17 +1362,17 @@ def render_report(ticker, company_name, y: dict,
         f'<span class="verdict-main" style="color:{diag_color};">{ev["diag"]}</span>'
         '</div>'
         f'<div class="verdict-sub" style="margin-top:0.6rem;">'
-        f'<span style="color:#94a3b8;">Precio actual:</span>'
-        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#f1f5f9;"> {currency_y} {price_now:,.2f}{price_eur}</span>'
-        f'&nbsp;·&nbsp;<span style="color:#94a3b8;">Valor objetivo{tip_vo}:</span>'
-        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#f1f5f9;"> {fair_str}</span>'
+        f'<span style="color:#64748b;">Precio actual:</span>'
+        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#0f172a;"> {currency_y} {price_now:,.2f}{price_eur}</span>'
+        f'&nbsp;·&nbsp;<span style="color:#64748b;">Valor objetivo{tip_vo}:</span>'
+        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#0f172a;"> {fair_str}</span>'
         f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:700;color:{up_color};"> ({upside_str})</span>'
         '</div>'
-        f'<div class="verdict-sub"><span style="color:#94a3b8;">Vs. media 52W:</span>'
-        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#fbbf24;"> {hist_str}</span></div>'
+        f'<div class="verdict-sub"><span style="color:#64748b;">Vs. media 52W:</span>'
+        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#d97706;"> {hist_str}</span></div>'
         f'<div class="verdict-sub" style="margin-top:0.4rem;">'
-        f'<span style="color:#94a3b8;">Riesgo técnico (short){tip_risk}:</span>'
-        f'<span style="color:#e2e8f0;"> {ev["risk"]}%</span></div>'
+        f'<span style="color:#64748b;">Riesgo técnico (short){tip_risk}:</span>'
+        f'<span style="color:#1e293b;"> {ev["risk"]}%</span></div>'
         '</div>',
         unsafe_allow_html=True
     )
@@ -1281,7 +1381,7 @@ def render_report(ticker, company_name, y: dict,
     # HISTÓRICO DE MÚLTIPLOS PROPIOS
     # ════════════════════════════════════════════════════════════════════
     with st.spinner("Calculando múltiplos históricos…"):
-        mult_data = fetch_historical_multiples(ticker, y)
+        mult_data = fetch_historical_multiples(ticker, y, sector_pe_fair=ev.get("pe_ref"))
     render_historical_multiples(mult_data)
 
     # ════════════════════════════════════════════════════════════════════

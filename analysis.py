@@ -819,16 +819,16 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
     heavy_total = sum(1 for c in checks if c[3] >= 2)
 
     if score_pct >= 80 and heavy_ok >= heavy_total - 1:
-        level, color, icon = "ENTRADA IDEAL",   "#6ee7b7", "🟢"
+        level, color, icon = "ENTRADA IDEAL",   "#059669", "🟢"
         desc = "Confluencia fuerte: múltiples factores técnicos y fundamentales alineados."
     elif score_pct >= 60 and heavy_ok >= heavy_total // 2 + 1:
-        level, color, icon = "ENTRADA POSIBLE", "#86efac", "🟡"
+        level, color, icon = "ENTRADA POSIBLE", "#16a34a", "🟡"
         desc = "Buena confluencia, aunque no todos los factores clave están alineados."
     elif score_pct >= 40:
-        level, color, icon = "VIGILAR",         "#fbbf24", "🟠"
+        level, color, icon = "VIGILAR",         "#d97706", "🟠"
         desc = "Algunos factores positivos, pero faltan condiciones clave para una entrada óptima."
     else:
-        level, color, icon = "NO ES MOMENTO",   "#fca5a5", "🔴"
+        level, color, icon = "NO ES MOMENTO",   "#dc2626", "🔴"
         desc = "Pocos factores alineados. Esperar mejor precio, menor RSI o mejores fundamentales."
 
     MAX_POSSIBLE_CHECKS = 8   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección (8 reales max)
@@ -891,12 +891,12 @@ def calc_trend(y: dict | None) -> dict | None:
     rev_streak = streak_up(rev_changes)
     eps_streak = streak_up(eps_changes)
 
-    if rev_streak >= 2 and eps_streak >= 2:   sig = ("ACELERACIÓN",  "#6ee7b7")
-    elif rev_streak >= 1 or eps_streak >= 1:  sig = ("MEJORANDO",    "#86efac")
+    if rev_streak >= 2 and eps_streak >= 2:   sig = ("ACELERACIÓN",  "#059669")
+    elif rev_streak >= 1 or eps_streak >= 1:  sig = ("MEJORANDO",    "#16a34a")
     elif sum(1 for c in rev_changes if c > 0) >= len(rev_changes) // 2:
-        sig = ("ESTABLE", "#fbbf24")
+        sig = ("ESTABLE", "#d97706")
     else:
-        sig = ("DETERIORANDO", "#fca5a5")
+        sig = ("DETERIORANDO", "#dc2626")
 
     return {
         "rev_quarters":  rev_sorted,
@@ -1134,30 +1134,30 @@ def render_company_description(company_info: dict, company_name: str):
     employees = company_info.get("employees")
     website   = company_info.get("website","")
     emp_str   = f"{employees:,}" if employees else "N/A"
-    web_html  = f'<a href="{website}" target="_blank" style="color:#38bdf8;">{website}</a>' if website else "N/A"
+    web_html  = f'<a href="{website}" target="_blank" style="color:#0284c7;">{website}</a>' if website else "N/A"
     desc_short = desc if len(desc) <= 1000 else desc[:1000] + "…"
     insiders   = company_info.get("insiders", [])
     fcf_q      = company_info.get("fcf_quality")
 
     tags = ""
-    if industry:  tags += f'<span style="background:#1e2d45;color:#94a3b8;padding:2px 9px;border-radius:4px;font-size:0.75rem;margin-right:0.4rem;">{industry}</span>'
-    if country:   tags += f'<span style="background:#1e2d45;color:#94a3b8;padding:2px 9px;border-radius:4px;font-size:0.75rem;margin-right:0.4rem;">🌍 {country}</span>'
-    if employees: tags += f'<span style="background:#1e2d45;color:#94a3b8;padding:2px 9px;border-radius:4px;font-size:0.75rem;">👥 {emp_str} empleados</span>'
+    if industry:  tags += f'<span style="background:#334155;color:#64748b;padding:2px 9px;border-radius:4px;font-size:0.75rem;margin-right:0.4rem;">{industry}</span>'
+    if country:   tags += f'<span style="background:#334155;color:#64748b;padding:2px 9px;border-radius:4px;font-size:0.75rem;margin-right:0.4rem;">🌍 {country}</span>'
+    if employees: tags += f'<span style="background:#334155;color:#64748b;padding:2px 9px;border-radius:4px;font-size:0.75rem;">👥 {emp_str} empleados</span>'
 
     # Calidad del beneficio
     fcf_html = ""
     if fcf_q is not None:
         if fcf_q >= 0.9:
-            fcf_col = "#6ee7b7"
+            fcf_col = "#059669"
             fcf_lbl = "Beneficio de alta calidad — se convierte en caja real"
         elif fcf_q >= 0.5:
-            fcf_col = "#fbbf24"
+            fcf_col = "#d97706"
             fcf_lbl = "Calidad moderada — parte del beneficio no es caja"
         elif fcf_q >= 0:
-            fcf_col = "#fb923c"
+            fcf_col = "#ea580c"
             fcf_lbl = "Calidad baja — beneficio contable supera al FCF"
         else:
-            fcf_col = "#fca5a5"
+            fcf_col = "#dc2626"
             fcf_lbl = "FCF negativo — cuidado con la calidad del beneficio"
         tip_fcf_q = (
             'Calidad del beneficio = FCF / Beneficio Neto. '
@@ -1170,12 +1170,12 @@ def render_company_description(company_info: dict, company_name: str):
         )
         tip_html = (
             f'<span title="{tip_fcf_q}" style="margin-left:0.3rem;cursor:help;'
-            f'font-size:0.6rem;color:#334155;border:1px solid #334155;'
+            f'font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
             f'border-radius:50%;padding:0 3px;font-family:monospace;'
             f'vertical-align:middle;">?</span>'
         )
         fcf_html = (
-            f'<div style="margin-top:0.7rem;padding:0.5rem 0.7rem;background:#0f172a;border-radius:6px;'
+            f'<div style="margin-top:0.7rem;padding:0.5rem 0.7rem;background:#f4f6f9;border-radius:6px;'
             f'border-left:3px solid {fcf_col};">'
             f'<span style="font-size:0.7rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;">'
             f'Calidad del beneficio (FCF/Net Income){tip_html}</span><br>'
@@ -1187,7 +1187,7 @@ def render_company_description(company_info: dict, company_name: str):
     st.markdown(
         '<div class="metric-card">'
         f'<div style="margin-bottom:0.7rem;">{tags}</div>'
-        f'<div style="font-size:0.85rem;color:#cbd5e1;line-height:1.75;">{desc_short}</div>'
+        f'<div style="font-size:0.85rem;color:#94a3b8;line-height:1.75;">{desc_short}</div>'
         f'{fcf_html}'
         f'<div style="margin-top:0.6rem;font-size:0.75rem;color:#64748b;">🌐 {web_html}</div>'
         '</div>',
@@ -1200,35 +1200,35 @@ def render_company_description(company_info: dict, company_name: str):
         sells = [i for i in insiders if i["is_sell"]]
         net_signal = ""
         if len(buys) > len(sells) * 1.5:
-            net_signal = '<span style="color:#6ee7b7;font-weight:700;">🟢 SEÑAL ALCISTA — más compras que ventas de insiders</span>'
+            net_signal = '<span style="color:#059669;font-weight:700;">🟢 SEÑAL ALCISTA — más compras que ventas de insiders</span>'
         elif len(sells) > len(buys) * 2:
-            net_signal = '<span style="color:#fca5a5;font-weight:700;">🔴 SEÑAL BAJISTA — ventas significativas de insiders</span>'
+            net_signal = '<span style="color:#dc2626;font-weight:700;">🔴 SEÑAL BAJISTA — ventas significativas de insiders</span>'
         else:
             net_signal = '<span style="color:#64748b;">Actividad mixta de insiders</span>'
 
         rows_ins = ""
         for ins in insiders[:8]:
-            col  = "#6ee7b7" if ins["is_buy"] else "#fca5a5" if ins["is_sell"] else "#94a3b8"
+            col  = "#059669" if ins["is_buy"] else "#dc2626" if ins["is_sell"] else "#64748b"
             icon = "▲" if ins["is_buy"] else "▼" if ins["is_sell"] else "—"
             val_str = f"${ins['value']/1e6:.1f}M" if ins["value"] > 1e6 else (f"${ins['value']:,.0f}" if ins["value"] else "")
             rows_ins += (
                 f'<div style="display:grid;grid-template-columns:0.8fr 2fr 2fr 1fr;gap:0.3rem;'
-                f'padding:0.3rem 0;border-bottom:1px solid #1a2540;font-size:0.76rem;">'
+                f'padding:0.3rem 0;border-bottom:1px solid #eef1f5;font-size:0.76rem;">'
                 f'<span style="color:{col};font-weight:700;">{icon} {ins["date"]}</span>'
-                f'<span style="color:#94a3b8;">{ins["relation"]}</span>'
-                f'<span style="color:#e2e8f0;">{ins["text"]}</span>'
+                f'<span style="color:#64748b;">{ins["relation"]}</span>'
+                f'<span style="color:#1e293b;">{ins["text"]}</span>'
                 f'<span style="font-family:\'IBM Plex Mono\',monospace;color:{col};text-align:right;">{val_str}</span>'
                 f'</div>'
             )
 
         st.markdown(
-            '<div class="metric-card" style="border-left:3px solid #334155;">'
+            '<div class="metric-card" style="border-left:3px solid #cbd5e1;">'
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.6rem;">'
-            '<span style="font-size:0.7rem;color:#38bdf8;text-transform:uppercase;letter-spacing:0.1em;">Transacciones de Insiders (últimas)</span>'
+            '<span style="font-size:0.7rem;color:#0284c7;text-transform:uppercase;letter-spacing:0.1em;">Transacciones de Insiders (últimas)</span>'
             f'<span style="font-size:0.78rem;">{net_signal}</span>'
             '</div>'
             f'{rows_ins}'
-            '<div style="font-size:0.68rem;color:#475569;margin-top:0.4rem;">Fuente: Yahoo Finance · Las compras de insiders son señal alcista frecuente</div>'
+            '<div style="font-size:0.68rem;color:#94a3b8;margin-top:0.4rem;">Fuente: Yahoo Finance · Las compras de insiders son señal alcista frecuente</div>'
             '</div>',
             unsafe_allow_html=True
         )
@@ -1252,14 +1252,14 @@ def render_news(news_items: list):
         link_open = f'<a href="{url}" target="_blank" style="text-decoration:none;color:inherit;">' if url else ""
         link_close= "</a>" if url else ""
         rows += (
-            '<div style="padding:0.55rem 0;border-bottom:1px solid #1a2540;">'
+            '<div style="padding:0.55rem 0;border-bottom:1px solid #eef1f5;">'
             '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.6rem;">'
             f'<div style="flex:1;">{link_open}'
-            f'<span style="font-size:0.83rem;color:#e2e8f0;line-height:1.55;">{title}</span>'
+            f'<span style="font-size:0.83rem;color:#1e293b;line-height:1.55;">{title}</span>'
             f'{link_close}</div>'
-            f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;color:#38bdf8;white-space:nowrap;margin-top:2px;">{date}</span>'
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;color:#0284c7;white-space:nowrap;margin-top:2px;">{date}</span>'
             '</div>'
-            f'<div style="font-size:0.72rem;color:#475569;margin-top:0.15rem;">{publisher}</div>'
+            f'<div style="font-size:0.72rem;color:#94a3b8;margin-top:0.15rem;">{publisher}</div>'
             '</div>'
         )
 
@@ -1293,28 +1293,28 @@ def render_earnings_analysis(ea: dict):
     warn_html = ""
     for w in warns:
         warn_html += (
-            '<div style="background:#1a1000;border:1px solid #f59e0b;border-left:4px solid #f59e0b;'
+            '<div style="background:#fffbeb;border:1px solid #d97706;border-left:4px solid #d97706;'
             'border-radius:6px;padding:0.7rem 0.9rem;margin-bottom:0.8rem;">'
-            '<div style="color:#fbbf24;font-weight:700;font-size:0.8rem;margin-bottom:0.3rem;">'
+            '<div style="color:#d97706;font-weight:700;font-size:0.8rem;margin-bottom:0.3rem;">'
             '⚡ EMPRESA EN FASE DE CRECIMIENTO / EXPANSIÓN</div>'
-            f'<div style="color:#fcd34d;font-size:0.78rem;line-height:1.6;">{w}</div>'
+            f'<div style="color:#92400e;font-size:0.78rem;line-height:1.6;">{w}</div>'
             '</div>'
         )
 
     # Fechas con formato español y tiempo transcurrido/restante
-    desde_str = f' <span style="color:#475569;">(hace {tiempo_desde})</span>' if tiempo_desde else ""
-    hasta_str = f' <span style="color:#475569;">(en {tiempo_hasta})</span>' if tiempo_hasta else ""
+    desde_str = f' <span style="color:#94a3b8;">(hace {tiempo_desde})</span>' if tiempo_desde else ""
+    hasta_str = f' <span style="color:#94a3b8;">(en {tiempo_hasta})</span>' if tiempo_hasta else ""
 
     dates_html = (
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-bottom:0.8rem;">'
-        '<div style="background:#0f172a;border-radius:6px;padding:0.6rem 0.8rem;">'
+        '<div style="background:#f4f6f9;border-radius:6px;padding:0.6rem 0.8rem;">'
         '<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">Última presentación</div>'
-        f'<div style="font-size:0.92rem;color:#f1f5f9;font-weight:600;">{last_q_fmt}</div>'
+        f'<div style="font-size:0.92rem;color:#0f172a;font-weight:600;">{last_q_fmt}</div>'
         f'<div style="font-size:0.74rem;margin-top:0.15rem;">{desde_str}</div>'
         '</div>'
-        '<div style="background:#0f172a;border-radius:6px;padding:0.6rem 0.8rem;">'
+        '<div style="background:#f4f6f9;border-radius:6px;padding:0.6rem 0.8rem;">'
         '<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">Próxima presentación</div>'
-        f'<div style="font-size:0.92rem;color:#38bdf8;font-weight:600;">{next_q_fmt}</div>'
+        f'<div style="font-size:0.92rem;color:#0284c7;font-weight:600;">{next_q_fmt}</div>'
         f'<div style="font-size:0.74rem;margin-top:0.15rem;">{hasta_str}</div>'
         '</div>'
         '</div>'
@@ -1323,10 +1323,10 @@ def render_earnings_analysis(ea: dict):
     # Tabla de expectativas EPS y Revenue vs reportado
     def _beat_badge(beat):
         if beat is True:
-            return '<span style="background:#064e3b;color:#6ee7b7;padding:2px 9px;border-radius:4px;font-size:0.72rem;font-weight:700;">✔ SUPERÓ</span>'
+            return '<span style="background:#d1fae5;color:#059669;padding:2px 9px;border-radius:4px;font-size:0.72rem;font-weight:700;">✔ SUPERÓ</span>'
         elif beat is False:
-            return '<span style="background:#4c0519;color:#fca5a5;padding:2px 9px;border-radius:4px;font-size:0.72rem;font-weight:700;">✘ NO ALCANZÓ</span>'
-        return '<span style="background:#1e2d45;color:#94a3b8;padding:2px 9px;border-radius:4px;font-size:0.72rem;">N/A</span>'
+            return '<span style="background:#fee2e2;color:#dc2626;padding:2px 9px;border-radius:4px;font-size:0.72rem;font-weight:700;">✘ NO ALCANZÓ</span>'
+        return '<span style="background:#334155;color:#64748b;padding:2px 9px;border-radius:4px;font-size:0.72rem;">N/A</span>'
 
     def _fmt_rev(v):
         if v is None: return "N/A"
@@ -1339,7 +1339,7 @@ def render_earnings_analysis(ea: dict):
     eps_est_str  = f"${eps_est:.2f}"     if eps_est is not None     else "N/A"
     eps_act_str  = f"${eps_act:.2f}"     if eps_act is not None     else "N/A"
     eps_surp_str = f"{eps_surprise:+.2f}%" if eps_surprise is not None else "N/A"
-    surp_color   = "#6ee7b7" if (eps_surprise or 0) >= 0 else "#fca5a5"
+    surp_color   = "#059669" if (eps_surprise or 0) >= 0 else "#dc2626"
 
     # Revenue: si Finnhub dio estimado y real, los mostramos en valor absoluto
     rev_est      = ea.get("rev_estimate")
@@ -1351,7 +1351,7 @@ def render_earnings_analysis(ea: dict):
         rev_est_str  = _fmt_rev(rev_est)
         rev_act_str  = _fmt_rev(rev_act)
         rev_surp_str = f"{rev_surp:+.2f}%" if rev_surp is not None else "N/A"
-        rev_color    = "#6ee7b7" if (rev_surp or 0) >= 0 else "#fca5a5"
+        rev_color    = "#059669" if (rev_surp or 0) >= 0 else "#dc2626"
         rev_source   = "Fuente: Finnhub · Estimado = consenso de analistas previo a la presentación"
     else:
         # Fallback — solo crecimiento YoY
@@ -1359,37 +1359,37 @@ def render_earnings_analysis(ea: dict):
         rev_est_str  = "—"
         rev_act_str  = f"{rev_growth:+.1f}% YoY" if rev_growth is not None else "N/A"
         rev_surp_str = "—"
-        rev_color    = "#6ee7b7" if (rev_growth or 0) >= 0 else "#fca5a5"
+        rev_color    = "#059669" if (rev_growth or 0) >= 0 else "#dc2626"
         rev_source   = "Revenue: estimado de consenso no disponible · Se muestra variación YoY"
 
     expect_html = (
         '<div style="margin-bottom:0.8rem;">'
-        '<div style="font-size:0.7rem;color:#38bdf8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.4rem;">'
+        '<div style="font-size:0.7rem;color:#0284c7;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.4rem;">'
         'Expectativas del mercado vs resultado real</div>'
         '<table style="width:100%;border-collapse:collapse;">'
-        '<thead><tr style="border-bottom:1px solid #1e2d45;">'
+        '<thead><tr style="border-bottom:1px solid #e2e8f0;">'
         '<th style="text-align:left;padding:0.3rem 0.5rem;font-size:0.68rem;color:#64748b;text-transform:uppercase;">Métrica</th>'
         '<th style="text-align:right;padding:0.3rem 0.5rem;font-size:0.68rem;color:#64748b;text-transform:uppercase;">Estimado</th>'
         '<th style="text-align:right;padding:0.3rem 0.5rem;font-size:0.68rem;color:#64748b;text-transform:uppercase;">Reportado</th>'
         '<th style="text-align:right;padding:0.3rem 0.5rem;font-size:0.68rem;color:#64748b;text-transform:uppercase;">Sorpresa</th>'
         '<th style="text-align:center;padding:0.3rem 0.5rem;font-size:0.68rem;color:#64748b;text-transform:uppercase;">Resultado</th>'
         '</tr></thead><tbody>'
-        '<tr style="border-bottom:1px solid #1a2540;">'
-        '<td style="padding:0.4rem 0.5rem;font-size:0.82rem;color:#e2e8f0;">EPS</td>'
-        f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#94a3b8;">{eps_est_str}</td>'
-        f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:600;">{eps_act_str}</td>'
+        '<tr style="border-bottom:1px solid #eef1f5;">'
+        '<td style="padding:0.4rem 0.5rem;font-size:0.82rem;color:#1e293b;">EPS</td>'
+        f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#64748b;">{eps_est_str}</td>'
+        f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:600;">{eps_act_str}</td>'
         f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:{surp_color};font-weight:600;">{eps_surp_str}</td>'
         f'<td style="padding:0.4rem 0.5rem;text-align:center;">{_beat_badge(beat_eps)}</td>'
         '</tr>'
         '<tr>'
-        '<td style="padding:0.4rem 0.5rem;font-size:0.82rem;color:#e2e8f0;">Revenue</td>'
-        f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#94a3b8;">{rev_est_str}</td>'
+        '<td style="padding:0.4rem 0.5rem;font-size:0.82rem;color:#1e293b;">Revenue</td>'
+        f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:#64748b;">{rev_est_str}</td>'
         f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:{rev_color};font-weight:600;">{rev_act_str}</td>'
         f'<td style="padding:0.4rem 0.5rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;color:{rev_color};font-weight:600;">{rev_surp_str}</td>'
         f'<td style="padding:0.4rem 0.5rem;text-align:center;">{_beat_badge(beat_revenue)}</td>'
         '</tr>'
         '</tbody></table>'
-        f'<div style="font-size:0.68rem;color:#475569;margin-top:0.4rem;">{rev_source}</div>'
+        f'<div style="font-size:0.68rem;color:#94a3b8;margin-top:0.4rem;">{rev_source}</div>'
         '</div>'
 
     )
@@ -1398,14 +1398,14 @@ def render_earnings_analysis(ea: dict):
     pos_html = ""
     if pos:
         items = "".join(
-            f'<div style="display:flex;gap:0.5rem;padding:0.3rem 0;border-bottom:1px solid #1a2540;font-size:0.8rem;">'
-            f'<span style="color:#6ee7b7;min-width:1rem;">✔</span>'
-            f'<span style="color:#e2e8f0;">{p}</span></div>'
+            f'<div style="display:flex;gap:0.5rem;padding:0.3rem 0;border-bottom:1px solid #eef1f5;font-size:0.8rem;">'
+            f'<span style="color:#059669;min-width:1rem;">✔</span>'
+            f'<span style="color:#1e293b;">{p}</span></div>'
             for p in pos
         )
         pos_html = (
             '<div style="margin-bottom:0.6rem;">'
-            '<div style="font-size:0.7rem;color:#6ee7b7;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.3rem;">Puntos positivos</div>'
+            '<div style="font-size:0.7rem;color:#059669;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.3rem;">Puntos positivos</div>'
             f'{items}</div>'
         )
 
@@ -1413,14 +1413,14 @@ def render_earnings_analysis(ea: dict):
     neg_html = ""
     if neg:
         items = "".join(
-            f'<div style="display:flex;gap:0.5rem;padding:0.3rem 0;border-bottom:1px solid #1a2540;font-size:0.8rem;">'
-            f'<span style="color:#fca5a5;min-width:1rem;">✘</span>'
-            f'<span style="color:#e2e8f0;">{n}</span></div>'
+            f'<div style="display:flex;gap:0.5rem;padding:0.3rem 0;border-bottom:1px solid #eef1f5;font-size:0.8rem;">'
+            f'<span style="color:#dc2626;min-width:1rem;">✘</span>'
+            f'<span style="color:#1e293b;">{n}</span></div>'
             for n in neg
         )
         neg_html = (
             '<div style="margin-bottom:0.6rem;">'
-            '<div style="font-size:0.7rem;color:#fca5a5;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.3rem;">Puntos a vigilar</div>'
+            '<div style="font-size:0.7rem;color:#dc2626;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.3rem;">Puntos a vigilar</div>'
             f'{items}</div>'
         )
 
@@ -1455,12 +1455,12 @@ def render_earnings_history(history: list):
 
     def badge(result):
         if result == "BEAT":
-            return '<span style="background:#064e3b;color:#6ee7b7;padding:3px 10px;border-radius:4px;font-size:0.7rem;font-weight:700;">BEAT</span>'
+            return '<span style="background:#d1fae5;color:#059669;padding:3px 10px;border-radius:4px;font-size:0.7rem;font-weight:700;">BEAT</span>'
         elif result == "MISSED":
-            return '<span style="background:#4c0519;color:#fca5a5;padding:3px 10px;border-radius:4px;font-size:0.7rem;font-weight:700;">MISSED</span>'
+            return '<span style="background:#fee2e2;color:#dc2626;padding:3px 10px;border-radius:4px;font-size:0.7rem;font-weight:700;">MISSED</span>'
         elif result == "MET":
-            return '<span style="background:#1e2d45;color:#fbbf24;padding:3px 10px;border-radius:4px;font-size:0.7rem;font-weight:700;">MET</span>'
-        return '<span style="background:#1e2d45;color:#64748b;padding:3px 10px;border-radius:4px;font-size:0.7rem;">N/A</span>'
+            return '<span style="background:#334155;color:#d97706;padding:3px 10px;border-radius:4px;font-size:0.7rem;font-weight:700;">MET</span>'
+        return '<span style="background:#334155;color:#64748b;padding:3px 10px;border-radius:4px;font-size:0.7rem;">N/A</span>'
 
     def fmt_rev(v):
         if v is None: return "--"
@@ -1475,15 +1475,15 @@ def render_earnings_history(history: list):
         grid  = "0.7fr 0.9fr 0.9fr 0.7fr 1fr 1fr 0.7fr 0.8fr"
         hdr = (
             '<div style="display:grid;grid-template-columns:{g};gap:0.3rem;'
-            'padding:0.3rem 0;border-bottom:1px solid #1e2d45;margin-bottom:0.2rem;">'.format(g=grid)
-            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;">Periodo</span>'
-            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;text-align:right;">EPS Est.</span>'
-            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;text-align:right;">EPS Real</span>'
-            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;text-align:right;">EPS %</span>'
-            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;text-align:right;">Rev. Est.</span>'
-            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;text-align:right;">Rev. Real</span>'
-            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;text-align:right;">Rev. %</span>'
-            + '<span style="font-size:0.62rem;color:#475569;text-transform:uppercase;text-align:center;">Resultado</span>'
+            'padding:0.3rem 0;border-bottom:1px solid #e2e8f0;margin-bottom:0.2rem;">'.format(g=grid)
+            + '<span style="font-size:0.62rem;color:#94a3b8;text-transform:uppercase;">Periodo</span>'
+            + '<span style="font-size:0.62rem;color:#94a3b8;text-transform:uppercase;text-align:right;">EPS Est.</span>'
+            + '<span style="font-size:0.62rem;color:#94a3b8;text-transform:uppercase;text-align:right;">EPS Real</span>'
+            + '<span style="font-size:0.62rem;color:#94a3b8;text-transform:uppercase;text-align:right;">EPS %</span>'
+            + '<span style="font-size:0.62rem;color:#94a3b8;text-transform:uppercase;text-align:right;">Rev. Est.</span>'
+            + '<span style="font-size:0.62rem;color:#94a3b8;text-transform:uppercase;text-align:right;">Rev. Real</span>'
+            + '<span style="font-size:0.62rem;color:#94a3b8;text-transform:uppercase;text-align:right;">Rev. %</span>'
+            + '<span style="font-size:0.62rem;color:#94a3b8;text-transform:uppercase;text-align:center;">Resultado</span>'
             + '</div>'
         )
         rows = ""
@@ -1491,20 +1491,20 @@ def render_earnings_history(history: list):
             eps_est = f"${h['eps_estimate']:.2f}" if h.get("eps_estimate") is not None else "--"
             eps_rep = f"${h['eps_reported']:.2f}" if h.get("eps_reported") is not None else "--"
             eps_s   = f"{h['surprise_pct']:+.1f}%" if h.get("surprise_pct") is not None else "--"
-            eps_c   = "#6ee7b7" if (h.get("surprise_pct") or 0) >= 0 else "#fca5a5"
+            eps_c   = "#059669" if (h.get("surprise_pct") or 0) >= 0 else "#dc2626"
             r_est   = fmt_rev(h.get("rev_estimate"))
             r_act   = fmt_rev(h.get("rev_actual"))
             r_s     = f"{h['rev_surprise']:+.1f}%" if h.get("rev_surprise") is not None else "--"
-            r_c     = "#6ee7b7" if (h.get("rev_surprise") or 0) >= 0 else "#fca5a5"
+            r_c     = "#059669" if (h.get("rev_surprise") or 0) >= 0 else "#dc2626"
             rows += (
                 f'<div style="display:grid;grid-template-columns:{grid};gap:0.3rem;'
-                f'padding:0.45rem 0;border-bottom:1px solid #1a2540;align-items:center;">'
-                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.82rem;color:#f1f5f9;font-weight:600;">{h["fiscal_label"]}</span>'
-                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:#94a3b8;text-align:right;">{eps_est}</span>'
-                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:#e2e8f0;text-align:right;">{eps_rep}</span>'
+                f'padding:0.45rem 0;border-bottom:1px solid #eef1f5;align-items:center;">'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.82rem;color:#0f172a;font-weight:600;">{h["fiscal_label"]}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:#64748b;text-align:right;">{eps_est}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:#1e293b;text-align:right;">{eps_rep}</span>'
                 f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:{eps_c};text-align:right;font-weight:600;">{eps_s}</span>'
-                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:#94a3b8;text-align:right;">{r_est}</span>'
-                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:#e2e8f0;text-align:right;">{r_act}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:#64748b;text-align:right;">{r_est}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:#1e293b;text-align:right;">{r_act}</span>'
                 f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.78rem;color:{r_c};text-align:right;font-weight:600;">{r_s}</span>'
                 f'<span style="text-align:center;">{badge(h.get("result","N/A"))}</span>'
                 f'</div>'
@@ -1515,12 +1515,12 @@ def render_earnings_history(history: list):
         grid = "1fr 1.2fr 1.2fr 1fr 0.9fr"
         hdr = (
             '<div style="display:grid;grid-template-columns:{g};gap:0.4rem;'
-            'padding:0.3rem 0;border-bottom:1px solid #1e2d45;margin-bottom:0.2rem;">'.format(g=grid)
-            + '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;">Periodo</span>'
-            + '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;text-align:right;">EPS Est.</span>'
-            + '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;text-align:right;">EPS Real</span>'
-            + '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;text-align:right;">Sorpresa</span>'
-            + '<span style="font-size:0.66rem;color:#475569;text-transform:uppercase;text-align:center;">Resultado</span>'
+            'padding:0.3rem 0;border-bottom:1px solid #e2e8f0;margin-bottom:0.2rem;">'.format(g=grid)
+            + '<span style="font-size:0.66rem;color:#94a3b8;text-transform:uppercase;">Periodo</span>'
+            + '<span style="font-size:0.66rem;color:#94a3b8;text-transform:uppercase;text-align:right;">EPS Est.</span>'
+            + '<span style="font-size:0.66rem;color:#94a3b8;text-transform:uppercase;text-align:right;">EPS Real</span>'
+            + '<span style="font-size:0.66rem;color:#94a3b8;text-transform:uppercase;text-align:right;">Sorpresa</span>'
+            + '<span style="font-size:0.66rem;color:#94a3b8;text-transform:uppercase;text-align:center;">Resultado</span>'
             + '</div>'
         )
         rows = ""
@@ -1528,13 +1528,13 @@ def render_earnings_history(history: list):
             est   = f"${h['eps_estimate']:.2f}" if h.get("eps_estimate") is not None else "--"
             rep   = f"${h['eps_reported']:.2f}" if h.get("eps_reported") is not None else "--"
             surp  = f"{h['surprise_pct']:+.2f}%" if h.get("surprise_pct") is not None else "--"
-            surp_c = "#6ee7b7" if (h.get("surprise_pct") or 0) >= 0 else "#fca5a5"
+            surp_c = "#059669" if (h.get("surprise_pct") or 0) >= 0 else "#dc2626"
             rows += (
                 f'<div style="display:grid;grid-template-columns:{grid};gap:0.4rem;'
-                f'padding:0.5rem 0;border-bottom:1px solid #1a2540;align-items:center;">'
-                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.85rem;color:#f1f5f9;font-weight:600;">{h["fiscal_label"]}</span>'
-                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.82rem;color:#94a3b8;text-align:right;">{est}</span>'
-                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.82rem;color:#e2e8f0;text-align:right;">{rep}</span>'
+                f'padding:0.5rem 0;border-bottom:1px solid #eef1f5;align-items:center;">'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.85rem;color:#0f172a;font-weight:600;">{h["fiscal_label"]}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.82rem;color:#64748b;text-align:right;">{est}</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.82rem;color:#1e293b;text-align:right;">{rep}</span>'
                 f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.82rem;color:{surp_c};text-align:right;font-weight:600;">{surp}</span>'
                 f'<span style="text-align:center;">{badge(h.get("result","N/A"))}</span>'
                 f'</div>'
@@ -1543,7 +1543,7 @@ def render_earnings_history(history: list):
 
     st.markdown(
         f'<div class="metric-card">{hdr}{rows}'
-        f'<div style="font-size:0.68rem;color:#475569;margin-top:0.5rem;">{source}</div>'
+        f'<div style="font-size:0.68rem;color:#94a3b8;margin-top:0.5rem;">{source}</div>'
         f'</div>',
         unsafe_allow_html=True
     )
@@ -1568,9 +1568,9 @@ def render_entry_signal(signal: dict):
 
     if not rel_ok:
         st.markdown(
-            f'<div style="background:#0f172a;border:1px solid #fbbf24;border-left:4px solid #fbbf24;'
+            f'<div style="background:#f4f6f9;border:1px solid #d97706;border-left:4px solid #d97706;'
             f'border-radius:6px;padding:0.6rem 0.9rem;margin-bottom:0.6rem;font-size:0.78rem;'
-            f'color:#fbbf24;line-height:1.6;">'
+            f'color:#d97706;line-height:1.6;">'
             f'⚠ FIABILIDAD REDUCIDA: solo se pudieron evaluar {n_total} de 8 criterios posibles '
             f'por falta de datos (técnico, valoración o fundamentales). El score puede no ser '
             f'representativo — interpreta esta señal con cautela adicional.</div>',
@@ -1579,37 +1579,37 @@ def render_entry_signal(signal: dict):
 
     rows = ""
     for name, ok, detail, weight in checks:
-        dot_color = color if ok else "#374151"
+        dot_color = color if ok else "#d1d9e0"
         dot       = "●" if ok else "○"
         w_dots    = "●" * weight
         rows += (
             '<div style="display:flex;align-items:flex-start;gap:0.6rem;padding:0.35rem 0;'
-            'border-bottom:1px solid #1a2540;font-size:0.82rem;">'
+            'border-bottom:1px solid #eef1f5;font-size:0.82rem;">'
             f'<span style="color:{dot_color};font-size:1rem;min-width:1rem;">{dot}</span>'
             '<div style="flex:1;">'
-            f'<span style="color:{"#f1f5f9" if ok else "#64748b"};">{name}</span>'
+            f'<span style="color:{"#0f172a" if ok else "#64748b"};">{name}</span>'
             f'<span style="color:#64748b;font-size:0.74rem;margin-left:0.4rem;">({detail})</span>'
             '</div>'
-            f'<span style="color:#1e3a5f;font-size:0.65rem;min-width:2rem;text-align:right;">{w_dots}</span>'
+            f'<span style="color:#0ea5e9;font-size:0.65rem;min-width:2rem;text-align:right;">{w_dots}</span>'
             '</div>'
         )
 
     st.markdown(
-        f'<div style="background:#0f172a;border:2px solid {color};border-radius:10px;padding:1.2rem 1.4rem;margin-bottom:1rem;">'
+        f'<div style="background:#f4f6f9;border:2px solid {color};border-radius:10px;padding:1.2rem 1.4rem;margin-bottom:1rem;">'
         '<div style="display:flex;align-items:center;gap:0.8rem;margin-bottom:0.8rem;">'
         f'<span style="font-size:1.5rem;">{icon}</span>'
         '<div>'
         f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.05rem;font-weight:700;color:{color};">{level}</div>'
-        f'<div style="font-size:0.8rem;color:#94a3b8;margin-top:0.1rem;">{desc}</div>'
+        f'<div style="font-size:0.8rem;color:#64748b;margin-top:0.1rem;">{desc}</div>'
         '</div>'
         '<div style="margin-left:auto;text-align:right;">'
         f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.8rem;font-weight:700;color:{color};">'
         f'{score}<span style="font-size:1rem;color:#64748b;">/100</span></div>'
         f'<div style="font-size:0.72rem;color:#64748b;">{n_ok}/{n_total} criterios</div>'
         '</div></div>'
-        f'<div style="background:#1e2d45;border-radius:4px;height:6px;margin-bottom:1rem;">'
+        f'<div style="background:#334155;border-radius:4px;height:6px;margin-bottom:1rem;">'
         f'<div style="height:6px;border-radius:4px;background:{color};width:{score}%;"></div></div>'
-        '<div style="font-size:0.68rem;color:#38bdf8;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.3rem;">'
+        '<div style="font-size:0.68rem;color:#0284c7;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.3rem;">'
         'DESGLOSE DE FACTORES</div>'
         f'{rows}</div>',
         unsafe_allow_html=True
@@ -1654,8 +1654,8 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
         return f"${v:,.0f}"
 
     def abs_bars(quarters: list, label: str, is_eps: bool = False,
-                 c_up: str = "#6ee7b7", c_down: str = "#fca5a5",
-                 c_neutral: str = "#38bdf8") -> str:
+                 c_up: str = "#059669", c_down: str = "#dc2626",
+                 c_neutral: str = "#0284c7") -> str:
         """
         Genera barras verticales con valores absolutos.
         La altura es proporcional al valor. El color indica si subió/bajó vs trimestre anterior.
@@ -1678,7 +1678,7 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
                 bars += (
                     '<div style="display:flex;flex-direction:column;align-items:center;'
                     'gap:0.15rem;flex:1;">'
-                    '<div style="font-size:0.68rem;color:#374151;">—</div>'
+                    '<div style="font-size:0.68rem;color:#d1d9e0;">—</div>'
                     '<div style="height:80px;"></div>'
                     f'<div style="font-size:0.62rem;color:#64748b;">{date}</div>'
                     '</div>'
@@ -1716,10 +1716,10 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
             )
 
         return (
-            f'<div style="font-size:0.7rem;color:#94a3b8;text-transform:uppercase;'
+            f'<div style="font-size:0.7rem;color:#64748b;text-transform:uppercase;'
             f'letter-spacing:0.08em;margin-bottom:0.4rem;">{label}</div>'
             '<div style="display:flex;gap:0.4rem;align-items:flex-end;'
-            'padding-bottom:1rem;margin-bottom:0.6rem;border-bottom:1px solid #1a2540;">'
+            'padding-bottom:1rem;margin-bottom:0.6rem;border-bottom:1px solid #eef1f5;">'
             f'{bars}</div>'
         )
 
@@ -1738,14 +1738,14 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
         f'<div style="text-align:right;">'
         f'<div style="font-size:0.7rem;color:#64748b;">Trimestres</div>'
         f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.2rem;'
-        f'color:#f1f5f9;font-weight:600;">{trend["total_q"]}</div>'
+        f'color:#0f172a;font-weight:600;">{trend["total_q"]}</div>'
         '</div></div>'
     )
     legend = (
-        '<div style="font-size:0.68rem;color:#475569;margin-top:0.2rem;">'
-        '<span style="color:#6ee7b7;">■</span> Sube vs trimestre anterior &nbsp;'
-        '<span style="color:#fca5a5;">■</span> Baja vs trimestre anterior &nbsp;'
-        '<span style="color:#38bdf8;">■</span> Primer dato disponible &nbsp;·&nbsp;'
+        '<div style="font-size:0.68rem;color:#94a3b8;margin-top:0.2rem;">'
+        '<span style="color:#059669;">■</span> Sube vs trimestre anterior &nbsp;'
+        '<span style="color:#dc2626;">■</span> Baja vs trimestre anterior &nbsp;'
+        '<span style="color:#0284c7;">■</span> Primer dato disponible &nbsp;·&nbsp;'
         'El % sobre cada barra indica la variación QoQ</div>'
     )
 
@@ -1791,19 +1791,19 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
 
     def td_col(val, low_good=True, ref=None, sfx="x", dec=1):
         if val is None:
-            return '<td style="color:#374151;text-align:right;padding:0.3rem 0.5rem;">—</td>'
-        col = "#f1f5f9"
+            return '<td style="color:#d1d9e0;text-align:right;padding:0.3rem 0.5rem;">—</td>'
+        col = "#0f172a"
         if ref is not None:
-            col = "#6ee7b7" if (val < ref) == low_good else "#fca5a5"
+            col = "#059669" if (val < ref) == low_good else "#dc2626"
         return f'<td style="font-family:\'IBM Plex Mono\',monospace;color:{col};text-align:right;padding:0.3rem 0.5rem;">{val:,.{dec}f}{sfx}</td>'
 
     def make_row(ticker, name, d, is_main=False):
-        bg    = "#1e3a5f" if is_main else "#111827"
-        bdr   = "border-left:3px solid #38bdf8;" if is_main else ""
-        nc    = "#38bdf8" if is_main else "#e2e8f0"
-        badge = '<span style="font-size:0.65rem;background:#1e3a5f;color:#38bdf8;padding:1px 5px;border-radius:3px;margin-left:0.3rem;">TÚ</span>' if is_main else ""
+        bg    = "#dbeafe" if is_main else "#ffffff"
+        bdr   = "border-left:3px solid #0284c7;" if is_main else ""
+        nc    = "#0284c7" if is_main else "#334155"
+        badge = '<span style="font-size:0.65rem;background:#dbeafe;color:#0284c7;padding:1px 5px;border-radius:3px;margin-left:0.3rem;">TÚ</span>' if is_main else ""
         return (
-            f'<tr style="background:{bg};{bdr}border-bottom:1px solid #1a2540;">'
+            f'<tr style="background:{bg};{bdr}border-bottom:1px solid #eef1f5;">'
             f'<td style="padding:0.3rem 0.6rem;white-space:nowrap;">'
             f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:700;color:{nc};">{ticker}</span>'
             f'<span style="font-size:0.72rem;color:#64748b;margin-left:0.3rem;">{name}</span>{badge}</td>'
@@ -1813,7 +1813,7 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
             + td_col(d.get("profit_m"),   low_good=False, ref=10,      sfx="%")
             + td_col(d.get("roe"),        low_good=False, ref=12,      sfx="%")
             + td_col(d.get("rev_growth"), low_good=False, ref=5,       sfx="%")
-            + f'<td style="font-family:\'IBM Plex Mono\',monospace;color:#94a3b8;text-align:right;padding:0.3rem 0.5rem;font-size:0.8rem;">{mc_fmt(d.get("market_cap"))}</td>'
+            + f'<td style="font-family:\'IBM Plex Mono\',monospace;color:#64748b;text-align:right;padding:0.3rem 0.5rem;font-size:0.8rem;">{mc_fmt(d.get("market_cap"))}</td>'
             + '</tr>'
         )
 
@@ -1828,7 +1828,7 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
     }, is_main=True)
 
     peer_rows = "".join(make_row(p["ticker"], p["name"], p) for p in peers_data)
-    hs = "padding:0.4rem 0.5rem;font-size:0.68rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;text-align:right;border-bottom:1px solid #1e2d45;"
+    hs = "padding:0.4rem 0.5rem;font-size:0.68rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;text-align:right;border-bottom:1px solid #e2e8f0;"
 
     # Tooltips en cabeceras de columna
     # IMPORTANTE: dentro de tablas los tooltips necesitan position:fixed
@@ -1839,7 +1839,7 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
             f'<th style="{hs}text-align:{align};">'
             f'{label}'
             f'<span style="margin-left:0.3rem;position:relative;cursor:help;display:inline-block;">'
-            f'<span style="font-size:0.6rem;color:#1e3a5f;border:1px solid #1e3a5f;'
+            f'<span style="font-size:0.6rem;color:#0284c7;border:1px solid #0284c7;'
             f'border-radius:50%;padding:0 3px;font-family:\'IBM Plex Mono\',monospace;" '
             f'title="{tip_safe}">?</span>'
             f'</span></th>'
@@ -1848,7 +1848,7 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
     table = (
         '<div style="overflow-x:auto;">'
         '<table style="width:100%;border-collapse:collapse;font-size:0.83rem;">'
-        '<thead><tr style="background:#0a0e1a;">'
+        '<thead><tr style="background:#f8fafc;">'
         f'<th style="{hs}text-align:left;">Empresa</th>'
         + th("PER Fwd",   f"PER Forward: precio / beneficio estimado próximos 12 meses. Referencia sector: {pe_ref}×. Verde si está por debajo.")
         + th("PEG",       f"PEG = PER / crecimiento anual. <1 = empresa barata respecto a su crecimiento. Referencia sector: <{peg_ref}.")
@@ -1951,31 +1951,31 @@ def calc_short_squeeze(y: dict) -> dict:
     # ── Clasificación de probabilidad ─────────────────────────────────────
     if score >= 70:
         level   = "MUY ALTA"
-        color   = "#fca5a5"
+        color   = "#dc2626"
         icon    = "🔥"
         summary = ("Confluencia de factores bajistas extremos. El potencial de squeeze es muy elevado "
                    "si llega un catalizador alcista (buenos resultados, noticia positiva, upgrade de analista). "
                    "Alto riesgo/oportunidad: movimientos de +20/30% en días no son inusuales en estos casos.")
     elif score >= 45:
         level   = "MODERADA-ALTA"
-        color   = "#fb923c"
+        color   = "#ea580c"
         icon    = "⚡"
         summary = ("Presión bajista significativa. Un catalizador positivo podría desencadenar coberturas "
                    "forzadas y amplificar el movimiento alcista más allá de lo que justificarían los fundamentales.")
     elif score >= 25:
         level   = "MODERADA"
-        color   = "#fbbf24"
+        color   = "#d97706"
         icon    = "⚠️"
         summary = ("Short interest notable pero no en niveles de squeeze inminente. "
                    "Vigilar si continúa aumentando en los próximos meses.")
     elif score >= 10:
         level   = "BAJA"
-        color   = "#6ee7b7"
+        color   = "#059669"
         icon    = "✓"
         summary = "Presión bajista limitada. Poco riesgo de squeeze pero también poca presión compradora forzada."
     else:
         level   = "MUY BAJA"
-        color   = "#38bdf8"
+        color   = "#0284c7"
         icon    = "○"
         summary = "Posiciones cortas mínimas. El mercado no muestra desconfianza bajista significativa."
 
@@ -2040,7 +2040,7 @@ def render_short_squeeze(sq: dict):
         safe = text.replace('"','&quot;')
         return (
             f'<span title="{safe}" style="margin-left:0.3rem;cursor:help;'
-            f'font-size:0.6rem;color:#334155;border:1px solid #334155;'
+            f'font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
             f'border-radius:50%;padding:0 3px;font-family:monospace;'
             f'vertical-align:middle;">?</span>'
         )
@@ -2049,15 +2049,15 @@ def render_short_squeeze(sq: dict):
     factor_rows = ""
     for fname, pts, max_pts, flbl in factors:
         pct_bar = (pts / max_pts * 100) if max_pts else 0
-        bar_col = color if pts > 0 else "#1e2d45"
+        bar_col = color if pts > 0 else "#334155"
         factor_rows += (
             f'<div style="margin-bottom:0.5rem;">'
             f'<div style="display:flex;justify-content:space-between;font-size:0.78rem;margin-bottom:0.2rem;">'
-            f'<span style="color:#94a3b8;">{fname}</span>'
+            f'<span style="color:#64748b;">{fname}</span>'
             f'<span style="font-family:\'IBM Plex Mono\',monospace;color:{color if pts>0 else "#64748b"};">'
             f'{pts}/{max_pts}</span>'
             f'</div>'
-            f'<div style="background:#1e2d45;border-radius:3px;height:6px;">'
+            f'<div style="background:#334155;border-radius:3px;height:6px;">'
             f'<div style="width:{pct_bar:.0f}%;height:6px;border-radius:3px;background:{bar_col};"></div>'
             f'</div>'
             f'<div style="font-size:0.72rem;color:#64748b;margin-top:0.15rem;">{flbl}</div>'
@@ -2088,33 +2088,33 @@ def render_short_squeeze(sq: dict):
         f'</div>'
         f'</div>'
         # Barra de score
-        f'<div style="background:#1e2d45;border-radius:4px;height:8px;margin-bottom:1rem;">'
+        f'<div style="background:#334155;border-radius:4px;height:8px;margin-bottom:1rem;">'
         f'<div style="height:8px;border-radius:4px;background:{color};width:{score}%;"></div>'
         f'</div>'
         # Métricas clave en grid
         f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.5rem;margin-bottom:1rem;">'
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.45rem 0.6rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">Short Ratio{tip_sr}</div>'
         f'<div style="font-family:\'IBM Plex Mono\',monospace;color:{color};font-weight:700;">'
         f'{sq["short_ratio"]:.1f} días</div></div>'
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.45rem 0.6rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">Short % del Float{tip_pf}</div>'
         f'<div style="font-family:\'IBM Plex Mono\',monospace;color:{color};font-weight:700;">'
         f'{sq["pct_float"]:.1f}%</div></div>'
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.45rem 0.6rem;">'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.45rem 0.6rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">Acciones en corto</div>'
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:600;">'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:600;">'
         f'{fmt_shares(sq["shares_short"])}</div></div>'
         f'</div>'
         # Desglose por factor
-        f'<div style="font-size:0.7rem;color:#38bdf8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.5rem;">'
+        f'<div style="font-size:0.7rem;color:#0284c7;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.5rem;">'
         f'Desglose de factores</div>'
         f'{factor_rows}'
         # Resumen
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.6rem 0.8rem;margin-top:0.5rem;">'
-        f'<div style="font-size:0.78rem;color:#cbd5e1;line-height:1.6;">{summary}</div>'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.6rem 0.8rem;margin-top:0.5rem;">'
+        f'<div style="font-size:0.78rem;color:#94a3b8;line-height:1.6;">{summary}</div>'
         f'</div>'
-        f'<div style="font-size:0.68rem;color:#475569;margin-top:0.5rem;">'
+        f'<div style="font-size:0.68rem;color:#94a3b8;margin-top:0.5rem;">'
         f'Fuente: Yahoo Finance · El short squeeze no es predecible con certeza — requiere un catalizador externo.'
         f'</div>'
         f'</div>',

@@ -90,7 +90,7 @@ def fetch_portfolio_quotes(tickers: list) -> dict:
 
 def render_portfolio(fx_rate: float | None = None):
     st.markdown("""
-    <div style="font-family:'IBM Plex Mono',monospace;font-size:0.75rem;color:#38bdf8;
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:0.75rem;color:#0284c7;
                 text-transform:uppercase;letter-spacing:0.1em;padding:1rem 0 0.5rem 0;">
     💼 PORTFOLIO TRACKER
     </div>
@@ -174,7 +174,7 @@ def render_portfolio(fx_rate: float | None = None):
 
     total_pnl     = total_value_usd - total_cost_usd
     total_pnl_pct = (total_pnl / total_cost_usd * 100) if total_cost_usd else 0
-    pnl_col       = "#6ee7b7" if total_pnl >= 0 else "#fca5a5"
+    pnl_col       = "#059669" if total_pnl >= 0 else "#dc2626"
 
     def fmt_usd(v, show_eur=True):
         s = f"${v:,.2f}"
@@ -184,18 +184,18 @@ def render_portfolio(fx_rate: float | None = None):
 
     # ── Resumen global ────────────────────────────────────────────────────
     st.markdown(
-        '<div class="metric-card" style="border-left:3px solid #38bdf8;">'
+        '<div class="metric-card" style="border-left:3px solid #0284c7;">'
         '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.5rem;">'
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.5rem 0.7rem;">'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.5rem 0.7rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">Valor actual</div>'
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#f1f5f9;font-weight:700;font-size:1rem;">{fmt_usd(total_value_usd)}</div></div>'
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.5rem 0.7rem;">'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:700;font-size:1rem;">{fmt_usd(total_value_usd)}</div></div>'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.5rem 0.7rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">Coste total</div>'
-        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#94a3b8;font-weight:600;">{fmt_usd(total_cost_usd)}</div></div>'
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.5rem 0.7rem;">'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#64748b;font-weight:600;">{fmt_usd(total_cost_usd)}</div></div>'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.5rem 0.7rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">P&L total</div>'
         f'<div style="font-family:\'IBM Plex Mono\',monospace;color:{pnl_col};font-weight:700;">{fmt_usd(total_pnl)}</div></div>'
-        f'<div style="background:#0f172a;border-radius:6px;padding:0.5rem 0.7rem;">'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.5rem 0.7rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">Rentabilidad</div>'
         f'<div style="font-family:\'IBM Plex Mono\',monospace;color:{pnl_col};font-weight:700;">{total_pnl_pct:+.2f}%</div></div>'
         '</div></div>',
@@ -203,11 +203,11 @@ def render_portfolio(fx_rate: float | None = None):
     )
 
     # ── Tabla de posiciones ───────────────────────────────────────────────
-    st.markdown('<div style="font-size:0.7rem;color:#38bdf8;text-transform:uppercase;letter-spacing:0.1em;margin:1rem 0 0.4rem 0;">POSICIONES</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:0.7rem;color:#0284c7;text-transform:uppercase;letter-spacing:0.1em;margin:1rem 0 0.4rem 0;">POSICIONES</div>', unsafe_allow_html=True)
 
-    hs = "padding:0.35rem 0.5rem;font-size:0.67rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;border-bottom:1px solid #1e2d45;"
+    hs = "padding:0.35rem 0.5rem;font-size:0.67rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;border-bottom:1px solid #e2e8f0;"
     header = (
-        f'<tr style="background:#0a0e1a;">'
+        f'<tr style="background:#f8fafc;">'
         f'<th style="{hs}text-align:left;">Empresa</th>'
         f'<th style="{hs}text-align:right;">Acciones</th>'
         f'<th style="{hs}text-align:right;">P. Compra</th>'
@@ -222,7 +222,7 @@ def render_portfolio(fx_rate: float | None = None):
 
     rows_html = ""
     for r in sorted(rows_data, key=lambda x: x["curr_val"], reverse=True):
-        pnl_c   = "#6ee7b7" if r["pnl"] >= 0 else "#fca5a5"
+        pnl_c   = "#059669" if r["pnl"] >= 0 else "#dc2626"
         sign    = "+" if r["pnl"] >= 0 else ""
         weight  = (r["curr_val"] / total_value_usd * 100) if total_value_usd else 0
         ticker  = r["ticker"]
@@ -231,19 +231,19 @@ def render_portfolio(fx_rate: float | None = None):
         eur_pnl = f'<span style="color:#64748b;font-size:0.75em;">(€{r["pnl"]*fx_rate:,.0f})</span>' if fx_rate else ""
 
         rows_html += (
-            f'<tr style="background:#111827;border-bottom:1px solid #1a2540;" id="row-{ticker}">'
+            f'<tr style="background:#ffffff;border-bottom:1px solid #eef1f5;" id="row-{ticker}">'
             f'<td style="padding:0.35rem 0.5rem;">'
-            f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:700;color:#38bdf8;">{ticker}</span>'
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:700;color:#0284c7;">{ticker}</span>'
             f'<span style="font-size:0.72rem;color:#64748b;margin-left:0.3rem;">{r["name"]}</span></td>'
-            f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;padding:0.35rem 0.5rem;color:#94a3b8;">{r["shares"]:,.0f}</td>'
-            f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;padding:0.35rem 0.5rem;color:#94a3b8;">${r["avg_cost"]:,.2f}</td>'
-            f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;padding:0.35rem 0.5rem;color:#f1f5f9;">${r["price"]:,.2f}</td>'
-            f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;padding:0.35rem 0.5rem;color:#f1f5f9;">${r["curr_val"]:,.0f} {eur_val}</td>'
+            f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;padding:0.35rem 0.5rem;color:#64748b;">{r["shares"]:,.0f}</td>'
+            f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;padding:0.35rem 0.5rem;color:#64748b;">${r["avg_cost"]:,.2f}</td>'
+            f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;padding:0.35rem 0.5rem;color:#0f172a;">${r["price"]:,.2f}</td>'
+            f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;padding:0.35rem 0.5rem;color:#0f172a;">${r["curr_val"]:,.0f} {eur_val}</td>'
             f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;padding:0.35rem 0.5rem;color:{pnl_c};">{sign}${abs(r["pnl"]):,.0f} {eur_pnl}</td>'
             f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;padding:0.35rem 0.5rem;color:{pnl_c};font-weight:700;">{sign}{r["pnl_pct"]:.1f}%</td>'
             f'<td style="text-align:right;padding:0.35rem 0.5rem;">'
-            f'<div style="background:#1e2d45;border-radius:3px;height:6px;width:60px;margin-left:auto;">'
-            f'<div style="height:6px;border-radius:3px;background:#38bdf8;width:{min(weight,100):.0f}%;"></div></div>'
+            f'<div style="background:#334155;border-radius:3px;height:6px;width:60px;margin-left:auto;">'
+            f'<div style="height:6px;border-radius:3px;background:#0284c7;width:{min(weight,100):.0f}%;"></div></div>'
             f'<span style="font-size:0.7rem;color:#64748b;">{weight:.1f}%</span></td>'
             f'<td style="text-align:center;padding:0.35rem 0.5rem;">'
             f'<span style="font-size:0.7rem;color:#64748b;">{r["date_add"]}</span></td>'
@@ -268,16 +268,16 @@ def render_portfolio(fx_rate: float | None = None):
 
     # ── Diversificación por sector ────────────────────────────────────────
     if sector_values and total_value_usd > 0:
-        st.markdown('<div style="font-size:0.7rem;color:#38bdf8;text-transform:uppercase;letter-spacing:0.1em;margin:1.2rem 0 0.5rem 0;">DIVERSIFICACIÓN POR SECTOR</div>', unsafe_allow_html=True)
+        st.markdown('<div style="font-size:0.7rem;color:#0284c7;text-transform:uppercase;letter-spacing:0.1em;margin:1.2rem 0 0.5rem 0;">DIVERSIFICACIÓN POR SECTOR</div>', unsafe_allow_html=True)
         sector_rows = ""
         for sec, val in sorted(sector_values.items(), key=lambda x: x[1], reverse=True):
             pct = val / total_value_usd * 100
             # Colorear concentración excesiva
-            bar_col = "#fca5a5" if pct > 40 else "#fbbf24" if pct > 25 else "#38bdf8"
+            bar_col = "#dc2626" if pct > 40 else "#d97706" if pct > 25 else "#0284c7"
             sector_rows += (
                 f'<div style="display:flex;align-items:center;gap:0.5rem;padding:0.3rem 0;">'
-                f'<span style="font-size:0.8rem;color:#e2e8f0;min-width:160px;">{sec or "Sin clasificar"}</span>'
-                f'<div style="flex:1;background:#1e2d45;border-radius:3px;height:10px;">'
+                f'<span style="font-size:0.8rem;color:#1e293b;min-width:160px;">{sec or "Sin clasificar"}</span>'
+                f'<div style="flex:1;background:#334155;border-radius:3px;height:10px;">'
                 f'<div style="width:{pct:.0f}%;height:10px;border-radius:3px;background:{bar_col};"></div></div>'
                 f'<span style="font-family:\'IBM Plex Mono\',monospace;color:{bar_col};'
                 f'min-width:3.5rem;text-align:right;">{pct:.1f}%</span>'
@@ -286,7 +286,7 @@ def render_portfolio(fx_rate: float | None = None):
             )
         if any(v/total_value_usd > 0.40 for v in sector_values.values()):
             sector_rows += (
-                '<div style="margin-top:0.5rem;font-size:0.72rem;color:#fca5a5;">'
+                '<div style="margin-top:0.5rem;font-size:0.72rem;color:#dc2626;">'
                 '⚠ Concentración elevada en un sector (&gt;40%). Considera diversificar.</div>'
             )
         st.markdown(f'<div class="metric-card">{sector_rows}</div>', unsafe_allow_html=True)
