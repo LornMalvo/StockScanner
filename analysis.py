@@ -1148,10 +1148,16 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
         level, color, icon = "NO ES MOMENTO",   "#fca5a5", "🔴"
         desc = "Pocos factores alineados. Esperar mejor precio, menor RSI o mejores fundamentales."
 
+    MAX_POSSIBLE_CHECKS = 8   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección (8 reales max)
+    missing_checks = MAX_POSSIBLE_CHECKS - len(checks)
+    reliability_ok = missing_checks <= 1   # tolerable perder 1 check (p.ej. PEG no aplicable)
+
     return {
         "level": level, "color": color, "icon": icon, "desc": desc,
         "score": round(score_pct), "n_ok": n_ok,
         "n_total": len(checks), "checks": checks,
+        "missing_checks": missing_checks,
+        "reliability_ok": reliability_ok,
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1874,6 +1880,19 @@ def render_entry_signal(signal: dict):
     n_ok    = signal["n_ok"]
     n_total = signal["n_total"]
     checks  = signal["checks"]
+    missing = signal.get("missing_checks", 0)
+    rel_ok  = signal.get("reliability_ok", True)
+
+    if not rel_ok:
+        st.markdown(
+            f'<div style="background:#0f172a;border:1px solid #fbbf24;border-left:4px solid #fbbf24;'
+            f'border-radius:6px;padding:0.6rem 0.9rem;margin-bottom:0.6rem;font-size:0.78rem;'
+            f'color:#fbbf24;line-height:1.6;">'
+            f'⚠ FIABILIDAD REDUCIDA: solo se pudieron evaluar {n_total} de 8 criterios posibles '
+            f'por falta de datos (técnico, valoración o fundamentales). El score puede no ser '
+            f'representativo — interpreta esta señal con cautela adicional.</div>',
+            unsafe_allow_html=True
+        )
 
     rows = ""
     for name, ok, detail, weight in checks:

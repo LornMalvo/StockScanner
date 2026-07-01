@@ -8,9 +8,8 @@ from analysis import (
     calc_entry_signal, calc_trend, fetch_peer_data, get_manual_competitors,
     render_entry_signal, render_trend, render_peers,
     fetch_company_description, fetch_recent_news, fetch_earnings_analysis,
-    fetch_earnings_history, render_earnings_history,
     fetch_last_cross_date, render_company_description, render_news,
-    render_earnings_analysis, get_sector_benchmarks,
+    get_sector_benchmarks,
     calc_short_squeeze, render_short_squeeze,
 )
 from dcf import (
@@ -186,77 +185,77 @@ SECTOR_PROFILES = {
     "Technology": {
         "pe_fair": 28, "pe_high": 50,
         "peg_ok": 1.5, "margin_ok": 0.12, "roe_ok": 0.15,
-        "ev_ebitda_fair": 22,
+        "ev_ebitda_fair": 22, "ev_sales_fair": 8,
         "methods": ["peg", "per", "ev_ebitda"],
         "nota": "Tecnología cotiza con prima estructural por crecimiento. PEG < 1.5 y márgenes > 12% son señales positivas.",
     },
     "Communication Services": {
         "pe_fair": 22, "pe_high": 40,
         "peg_ok": 1.3, "margin_ok": 0.10, "roe_ok": 0.12,
-        "ev_ebitda_fair": 18,
+        "ev_ebitda_fair": 18, "ev_sales_fair": 5,
         "methods": ["peg", "ev_ebitda", "per"],
         "nota": "Servicios de comunicación valora el crecimiento de usuarios y EBITDA. Los múltiplos varían mucho entre plataformas y telecos.",
     },
     "Consumer Cyclical": {
         "pe_fair": 20, "pe_high": 35,
         "peg_ok": 1.2, "margin_ok": 0.06, "roe_ok": 0.12,
-        "ev_ebitda_fair": 14,
+        "ev_ebitda_fair": 14, "ev_sales_fair": 2.5,
         "methods": ["per", "ev_ebitda", "peg"],
         "nota": "Cíclico al consumo: los márgenes caen en recesión. PER < 20 con ROE > 12% es señal sólida.",
     },
     "Consumer Defensive": {
         "pe_fair": 22, "pe_high": 32,
         "peg_ok": 2.0, "margin_ok": 0.07, "roe_ok": 0.15,
-        "ev_ebitda_fair": 16,
+        "ev_ebitda_fair": 16, "ev_sales_fair": 2,
         "methods": ["per", "ev_ebitda", "peg"],
         "nota": "Defensivo al consumo: se valora por estabilidad y dividendos. PER hasta 22 es razonable.",
     },
     "Healthcare": {
         "pe_fair": 24, "pe_high": 45,
         "peg_ok": 1.8, "margin_ok": 0.10, "roe_ok": 0.12,
-        "ev_ebitda_fair": 18,
+        "ev_ebitda_fair": 18, "ev_sales_fair": 6,
         "methods": ["peg", "per", "ev_ebitda"],
         "nota": "Salud tiene prima por pipeline y patentes. Farmacéuticas puras pueden tener PER alto justificado.",
     },
     "Financials": {
         "pe_fair": 14, "pe_high": 22,
         "peg_ok": 1.0, "margin_ok": 0.15, "roe_ok": 0.10,
-        "ev_ebitda_fair": 10,
+        "ev_ebitda_fair": 10, "ev_sales_fair": 3,
         "methods": ["nav", "per", "peg"],
         "nota": "Financieras se valoran por Price/Book y ROE. EV/EBITDA menos relevante; se prefiere P/B < 1.5 + ROE > 10%.",
     },
     "Industrials": {
         "pe_fair": 20, "pe_high": 32,
         "peg_ok": 1.5, "margin_ok": 0.07, "roe_ok": 0.12,
-        "ev_ebitda_fair": 14,
+        "ev_ebitda_fair": 14, "ev_sales_fair": 2,
         "methods": ["per", "ev_ebitda", "peg"],
         "nota": "Industriales valoran flujo de caja operativo y márgenes estables. PER < 20 y D/E < 1 son buenas señales.",
     },
     "Energy": {
         "pe_fair": 14, "pe_high": 22,
         "peg_ok": 1.0, "margin_ok": 0.08, "roe_ok": 0.10,
-        "ev_ebitda_fair": 6,
+        "ev_ebitda_fair": 6, "ev_sales_fair": 1.5,
         "methods": ["ev_ebitda", "per", "dcf_lite"],
         "nota": "Energía se valora principalmente por EV/EBITDA (ciclo de commodity). EV/EBITDA < 6 es barato para el sector.",
     },
     "Basic Materials": {
         "pe_fair": 16, "pe_high": 26,
         "peg_ok": 1.2, "margin_ok": 0.06, "roe_ok": 0.10,
-        "ev_ebitda_fair": 8,
+        "ev_ebitda_fair": 8, "ev_sales_fair": 1.5,
         "methods": ["ev_ebitda", "per", "peg"],
         "nota": "Materiales básicos depende del ciclo. EV/EBITDA es la métrica principal; los márgenes fluctúan con el precio del commodity.",
     },
     "Real Estate": {
         "pe_fair": 30, "pe_high": 55,
         "peg_ok": 2.5, "margin_ok": 0.20, "roe_ok": 0.08,
-        "ev_ebitda_fair": 20,
+        "ev_ebitda_fair": 20, "ev_sales_fair": 8,
         "methods": ["ev_ebitda", "dcf_lite", "per"],
         "nota": "REITs y real estate se valoran por FFO/AFFO y EV/EBITDA. El PER convencional puede ser engañoso por la depreciación.",
     },
     "Utilities": {
         "pe_fair": 18, "pe_high": 28,
         "peg_ok": 2.0, "margin_ok": 0.10, "roe_ok": 0.08,
-        "ev_ebitda_fair": 12,
+        "ev_ebitda_fair": 12, "ev_sales_fair": 3,
         "methods": ["per", "ev_ebitda", "dcf_lite"],
         "nota": "Utilities cotizan por estabilidad regulatoria y dividendos. PER < 18 y yield > 3% son señales atractivas.",
     },
@@ -264,7 +263,7 @@ SECTOR_PROFILES = {
     "_default": {
         "pe_fair": 20, "pe_high": 35,
         "peg_ok": 1.5, "margin_ok": 0.08, "roe_ok": 0.10,
-        "ev_ebitda_fair": 14,
+        "ev_ebitda_fair": 14, "ev_sales_fair": 3,
         "methods": ["per", "peg", "ev_ebitda"],
         "nota": "Sector no clasificado. Se aplican benchmarks genéricos.",
     },
@@ -284,6 +283,14 @@ def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str]]:
     """
     Calcula el valor objetivo usando los métodos relevantes para el sector.
     Devuelve (fair_value, lista_de_métodos_usados).
+
+    FALLBACK HYPER-GROWTH: si la empresa tiene EPS negativo o nulo (PER/PEG
+    no aplicables) y el crecimiento de ingresos YoY supera el 25%, se sustituye
+    la valoración por múltiplos de beneficio por EV/Sales — comparando el
+    múltiplo EV/Sales actual de la empresa contra el EV/Sales "justo" del
+    sector. Es el método estándar para valorar empresas pre-rentabilidad
+    con alto crecimiento (ej. SaaS en expansión, biotecnológicas en fase
+    de escalado comercial).
     """
     price       = y.get("price") or 0
     eps_fwd     = y.get("eps_forward")
@@ -299,9 +306,35 @@ def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str]]:
     roe         = y.get("roe") or 0
     earn_growth = (y.get("earnings_yoy") or 0) / 100
     target_mean = y.get("target_mean")
+    ev_revenue  = y.get("ev_revenue")
+    rev_yoy     = y.get("revenue_yoy")
 
     methods_used = []
     targets      = []
+
+    # ── FALLBACK HYPER-GROWTH: EV/Sales cuando PER/PEG no aplican ──────────
+    is_eps_negative = (eps_fwd is None or eps_fwd <= 0) and (eps_ttm is None or eps_ttm <= 0)
+    is_hyper_growth = is_eps_negative and rev_yoy is not None and rev_yoy > 25
+
+    if is_hyper_growth and ev_revenue and ev_revenue > 0:
+        ev_sales_fair = profile.get("ev_sales_fair", 3)
+        ratio = ev_sales_fair / ev_revenue
+        val   = price * ratio
+        if val > 0:
+            targets.append(val)
+            methods_used.append(
+                f"EV/Sales hyper-growth ({ev_sales_fair}× sector vs {ev_revenue:.1f}× actual, "
+                f"Rev YoY {rev_yoy:.0f}%) → {val:,.2f}"
+            )
+        # En modo hyper-growth NO se usan PER/PEG aunque el sector los liste,
+        # porque el EPS negativo los invalida por definición.
+        if target_mean and target_mean > 0:
+            targets.append(target_mean)
+            methods_used.append(f"Consenso analistas → {target_mean:,.2f}")
+        if not targets:
+            return None, []
+        fair_value = sum(targets) / len(targets)
+        return fair_value, methods_used
 
     for method in profile["methods"]:
 
@@ -368,20 +401,42 @@ def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str]]:
 
 # ─── Salud fundamental ajustada al sector ────────────────────────────────────
 
-def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[str]]:
-    """Calcula la salud fundamental (0-100) con umbrales del sector."""
+def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[str], list[str]]:
+    """
+    Calcula la salud fundamental (0-100) con umbrales del sector.
+    Devuelve (score, breakdown, missing_fields) — missing_fields lista los
+    campos que no tenían dato real (None) y se excluyeron del cálculo, para
+    no penalizar falsamente una métrica desconocida como si fuera "0" o "mala".
+    """
     score    = 0
     breakdown = []
+    missing_fields = []
 
-    profit_m   = y.get("profit_margin") or 0
-    roe        = y.get("roe") or 0
-    rev_yoy    = y.get("revenue_yoy") or 0
-    earn_yoy   = y.get("earnings_yoy") or 0
-    peg        = y.get("peg_ratio")
-    short_r    = y.get("short_ratio") or 0
-    debt_eq    = y.get("debt_equity") or 0
-    curr_ratio = y.get("current_ratio") or 0
-    fcf        = y.get("free_cash_flow") or 0
+    profit_m_raw   = y.get("profit_margin")
+    roe_raw        = y.get("roe")
+    rev_yoy_raw    = y.get("revenue_yoy")
+    earn_yoy_raw   = y.get("earnings_yoy")
+    peg            = y.get("peg_ratio")
+    short_r        = y.get("short_ratio") or 0
+    debt_eq_raw    = y.get("debt_equity")
+    curr_ratio_raw = y.get("current_ratio")
+    fcf_raw        = y.get("free_cash_flow")
+
+    if profit_m_raw is None:   missing_fields.append("Margen neto")
+    if roe_raw is None:        missing_fields.append("ROE")
+    if rev_yoy_raw is None:    missing_fields.append("Crecimiento ingresos")
+    if earn_yoy_raw is None:   missing_fields.append("Crecimiento beneficios")
+    if debt_eq_raw is None:    missing_fields.append("Deuda/Equity")
+    if curr_ratio_raw is None: missing_fields.append("Current Ratio")
+    if fcf_raw is None:        missing_fields.append("Free Cash Flow")
+
+    profit_m   = profit_m_raw   if profit_m_raw   is not None else 0
+    roe        = roe_raw        if roe_raw        is not None else 0
+    rev_yoy    = rev_yoy_raw    if rev_yoy_raw    is not None else 0
+    earn_yoy   = earn_yoy_raw   if earn_yoy_raw   is not None else 0
+    debt_eq    = debt_eq_raw    if debt_eq_raw    is not None else 0
+    curr_ratio = curr_ratio_raw if curr_ratio_raw is not None else 0
+    fcf        = fcf_raw        if fcf_raw        is not None else 0
 
     margin_ok = profile["margin_ok"]
     roe_ok    = profile["roe_ok"]
@@ -445,7 +500,9 @@ def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[str]]:
     breakdown.append(f"Balance (FCF/Liquidez/Deuda): +{b_pts}/10")
 
     score = min(100, score)
-    return score, breakdown
+    if missing_fields:
+        breakdown.append(f"⚠ Datos no disponibles (excluidos del cálculo, no penalizados): {', '.join(missing_fields)}")
+    return score, breakdown, missing_fields
 
 
 # ─── Evaluación final ─────────────────────────────────────────────────────────
@@ -465,10 +522,13 @@ def _evaluate(y: dict) -> dict:
     price_book  = y.get("price_book")
 
     # ── Salud fundamental ────────────────────────────────────────────────
-    health_score, health_breakdown = _calc_health_score(y, profile)
+    health_score, health_breakdown, health_missing = _calc_health_score(y, profile)
 
     # ── Valor objetivo ───────────────────────────────────────────────────
     fair_value, methods_used = _calc_fair_value(y, profile)
+
+    # Flag informativo: ¿se usó el fallback hyper-growth (EV/Sales)?
+    is_hyper_growth = any("hyper-growth" in m for m in methods_used)
 
     # ── Prima/descuento vs histórico 52W ─────────────────────────────────
     mid_52  = (week52_high + week52_low) / 2 if week52_high and week52_low else None
@@ -586,6 +646,8 @@ def _evaluate(y: dict) -> dict:
         "pe_high":         pe_high,
         "peg_ok":          profile["peg_ok"],
         "ev_ebitda_fair":  profile["ev_ebitda_fair"],
+        "is_hyper_growth": is_hyper_growth,
+        "health_missing":  health_missing,
     }
 
 
@@ -916,16 +978,29 @@ def render_report(ticker, company_name, y: dict,
     render_trend(trend)
 
     # ════════════════════════════════════════════════════════════════════
-    # ANÁLISIS DE ÚLTIMOS RESULTADOS
+    # CONSULTA DE RESULTADOS
     # ════════════════════════════════════════════════════════════════════
-    render_earnings_analysis(ea)
-
-    # ════════════════════════════════════════════════════════════════════
-    # HISTÓRICO DE RESULTADOS
-    # ════════════════════════════════════════════════════════════════════
-    with st.spinner("Cargando histórico de resultados…"):
-        earnings_hist = fetch_earnings_history(ticker)
-    render_earnings_history(earnings_hist)
+    _section("CONSULTA DE RESULTADOS")
+    seeking_alpha_url = f"https://seekingalpha.com/symbol/{ticker}/earnings"
+    st.markdown(
+        '<div class="metric-card">'
+        '<div style="font-size:0.85rem;color:#cbd5e1;line-height:1.7;margin-bottom:0.8rem;">'
+        f'Los datos de EPS estimado/reportado y el histórico de sorpresas de resultados '
+        f'requieren una fuente de consenso de analistas en tiempo real que no podemos '
+        f'garantizar al 100% de fiabilidad desde esta app. Para consultar los últimos '
+        f'resultados presentados, los próximos programados y el histórico completo de '
+        f'<b style="color:#f1f5f9;">{ticker}</b>, usa el enlace directo a Seeking Alpha:</div>'
+        f'<a href="{seeking_alpha_url}" target="_blank" style="display:inline-block;'
+        f'background:#1d4ed8;color:#fff;padding:0.6rem 1.4rem;border-radius:6px;'
+        f'text-decoration:none;font-family:\'IBM Plex Mono\',monospace;font-size:0.85rem;'
+        f'font-weight:600;letter-spacing:0.03em;">📊 Ver resultados de {ticker} en Seeking Alpha →</a>'
+        '<div style="font-size:0.7rem;color:#475569;margin-top:0.7rem;">'
+        'Seeking Alpha agrega consenso de múltiples proveedores (Refinitiv, FactSet) '
+        'con actualización en tiempo real y mayor cobertura histórica que las fuentes '
+        'gratuitas disponibles vía API.</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
     # ════════════════════════════════════════════════════════════════════
     # ANÁLISIS TÉCNICO
@@ -1042,6 +1117,54 @@ def render_report(ticker, company_name, y: dict,
         '</div></div>',
         unsafe_allow_html=True
     )
+
+    # ── Aviso de fiabilidad del cálculo de valor objetivo ───────────────────
+    n_methods       = len(ev.get("methods_used", []))
+    is_hyper_growth = ev.get("is_hyper_growth", False)
+    fund_fresh      = meta_y.get("fund_freshness", {}) or {}
+    fund_stale      = fund_fresh.get("ok") is False
+
+    reliability_notes = []
+    if fair is None:
+        reliability_notes.append((
+            "#fca5a5",
+            "⚠ VALOR OBJETIVO NO CALCULABLE: no hay datos suficientes (EPS, EV/EBITDA, "
+            "consenso de analistas) para aplicar ningún método de valoración a esta empresa. "
+            "El diagnóstico general no está disponible."
+        ))
+    elif is_hyper_growth:
+        rev_yoy_val = y.get("revenue_yoy")
+        rev_yoy_str = f"{rev_yoy_val:.1f}%" if rev_yoy_val is not None else "N/D"
+        reliability_notes.append((
+            "#38bdf8",
+            f"ℹ️ VALORACIÓN HYPER-GROWTH: esta empresa tiene EPS negativo o nulo, por lo que "
+            f"PER/PEG no son aplicables. Se usó el método EV/Sales al detectar crecimiento de "
+            f"ingresos superior al 25% YoY (actual: {rev_yoy_str}). Este método es menos preciso "
+            f"que un DCF completo — trátalo como una referencia de orden de magnitud, no como "
+            f"un precio exacto."
+        ))
+    elif n_methods <= 1:
+        reliability_notes.append((
+            "#fbbf24",
+            f"⚠ FIABILIDAD LIMITADA: el valor objetivo se calculó con un único método "
+            f"disponible ({ev['methods_used'][0].split(' →')[0] if ev.get('methods_used') else 'desconocido'}). "
+            f"Con más de un método el resultado sería más robusto. Interpreta el upside con cautela."
+        ))
+
+    if fund_stale:
+        reliability_notes.append((
+            "#fbbf24",
+            f"⚠ DATOS FUNDAMENTALES DESACTUALIZADOS: {fund_fresh.get('label','')}. "
+            f"Los ratios de valoración pueden no reflejar los resultados más recientes de la empresa."
+        ))
+
+    for note_color, note_text in reliability_notes:
+        st.markdown(
+            f'<div style="background:#0f172a;border:1px solid {note_color};border-left:4px solid {note_color};'
+            f'border-radius:6px;padding:0.6rem 0.9rem;margin-bottom:0.6rem;font-size:0.78rem;'
+            f'color:{note_color};line-height:1.6;">{note_text}</div>',
+            unsafe_allow_html=True
+        )
 
     # Salud fundamental
     bar_col_h = "#6ee7b7" if health_score>=70 else "#fbbf24" if health_score>=45 else "#fca5a5"
