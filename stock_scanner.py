@@ -268,6 +268,8 @@ def _score_ticker(info: dict, hist: pd.DataFrame) -> dict:
         "roe":         roe * 100,
         "sector":      info.get("sector", "N/A"),
         "name":        info.get("longName") or info.get("shortName", ""),
+        "recommendation": info.get("recommendationKey", "none"),
+        "analyst_count":  info.get("numberOfAnalystOpinions") or 0,
     }
 
 
@@ -280,10 +282,13 @@ def scan_universe(
     min_score: int = 50,
     top_n: int = 20,
     progress_cb=None,
+    only_strong_buy: bool = False,
 ) -> list[dict]:
     """
     Escanea una lista de tickers y devuelve los mejores resultados ordenados por score.
     progress_cb: función que recibe (i, total, ticker) para actualizar barra.
+    only_strong_buy: si True, descarta cualquier ticker cuyo consenso de analistas
+    (recommendationKey de Yahoo) no sea exactamente "strong_buy".
     """
     results = []
     total   = len(tickers)
@@ -295,6 +300,8 @@ def scan_universe(
             t    = yf.Ticker(ticker)
             info = t.info
             if not info or (not info.get("currentPrice") and not info.get("regularMarketPrice")):
+                continue
+            if only_strong_buy and (info.get("recommendationKey") or "").lower() != "strong_buy":
                 continue
             # Histórico 1 año
             hist = t.history(period="1y", interval="1d")
@@ -367,6 +374,14 @@ def render_scanner(fx_rate: float | None = None):
             "Filtrar por sector (opcional)",
             placeholder="Technology, Healthcare, Energy...",
         )
+        only_strong_buy = st.checkbox(
+            "Solo consenso analistas = Strong Buy",
+            value=False,
+            help="Descarta cualquier empresa cuyo consenso de recomendación de analistas "
+                 "(dato de Yahoo Finance) no sea exactamente 'Strong Buy'. Reduce mucho el "
+                 "número de resultados — combínalo con una puntuación mínima más baja si "
+                 "no encuentras coincidencias."
+        )
 
     iniciar = st.button("🔍  INICIAR RASTREO", use_container_width=True)
 
@@ -399,7 +414,8 @@ def render_scanner(fx_rate: float | None = None):
             unsafe_allow_html=True,
         )
 
-    results = scan_universe(tickers, min_score=min_score, top_n=top_n, progress_cb=progress_cb)
+    results = scan_universe(tickers, min_score=min_score, top_n=top_n, progress_cb=progress_cb,
+                             only_strong_buy=only_strong_buy)
     prog_bar.empty()
     prog_text.empty()
 
@@ -437,6 +453,23 @@ def render_scanner(fx_rate: float | None = None):
         rsi_v       = r["rsi"]
         dist_max    = r["dist_max"]
         corr_3m     = r["corr_3m"]
+        rec         = r.get("recommendation", "none")
+        analyst_n   = r.get("analyst_count", 0)
+
+        # Insignia de consenso de analistas
+        rec_labels = {
+            "strong_buy": ("STRONG BUY", "#059669", "#d1fae5"),
+            "buy":        ("BUY",        "#16a34a", "#dcfce7"),
+            "hold":       ("HOLD",       "#d97706", "#fef3c7"),
+            "sell":       ("SELL",       "#dc2626", "#fee2e2"),
+            "strong_sell":("STRONG SELL","#dc2626", "#fee2e2"),
+        }
+        rec_label, rec_color, rec_bg = rec_labels.get(rec, ("SIN CONSENSO", "#94a3b8", "#f4f6f9"))
+        rec_badge_html = (
+            f'<span style="background:{rec_bg};color:{rec_color};padding:2px 9px;'
+            f'border-radius:4px;font-size:0.72rem;font-weight:700;margin-left:0.6rem;">'
+            f'{rec_label}{f" ({analyst_n})" if analyst_n else ""}</span>'
+        )
 
         # Precio en EUR
         price_eur_str = ""
@@ -486,6 +519,7 @@ def render_scanner(fx_rate: float | None = None):
                            font-weight:600;color:#0f172a;">${price:,.2f}</span>
               {price_eur_str}
               <span style="font-size:0.78rem;color:#64748b;margin-left:0.6rem;">{sector}</span>
+              {rec_badge_html}
               <div style="margin-top:0.4rem;">
                 <span style="font-family:'IBM Plex Mono',monospace;font-size:0.85rem;
                              font-weight:700;color:{gcolor};">{grade} {stars}</span>
