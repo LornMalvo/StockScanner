@@ -760,6 +760,63 @@ def fetch_earnings_analysis(ticker: str, y: dict) -> dict:
 # SEÑAL DE CONFLUENCIA DE ENTRADA
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# MOMENTUM DE REVISIONES DE ANALISTAS
+# ─────────────────────────────────────────────────────────────────────────────
+# Cuando los analistas revisan al alza sus estimaciones de EPS para el
+# trimestre en curso, suele preceder a subidas de precio (es uno de los
+# factores con mejor track record histórico en estudios de factor investing —
+# incorpora información no capturada por los múltiplos estáticos: guidance
+# reciente de la empresa, cambios de expectativas sectoriales, etc.).
+# Fuente: módulo earningsTrend de Yahoo Finance (quoteSummary).
+
+_YAHOO_HEADERS_REV = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+}
+
+
+def fetch_analyst_revisions(ticker: str) -> dict | None:
+    """
+    Obtiene el número de revisiones de EPS al alza vs a la baja en los
+    últimos 30 días para el trimestre fiscal actual. Devuelve None si el
+    dato no está disponible (no se penaliza al ticker por ello — el check
+    correspondiente en la señal de entrada simplemente se omite).
+    """
+    cache_key = f"_analyst_revisions_cache_{ticker.upper()}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    result = None
+    try:
+        url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker.upper()}"
+        r = requests.get(url, params={"modules": "earningsTrend"},
+                          headers=_YAHOO_HEADERS_REV, timeout=10)
+        if r.status_code == 200:
+            data      = r.json()
+            qs_result = data.get("quoteSummary", {}).get("result", [])
+            if qs_result:
+                trends = qs_result[0].get("earningsTrend", {}).get("trend", [])
+                # period "0q" = trimestre fiscal actual en curso
+                current_q = next((t for t in trends if t.get("period") == "0q"), None)
+                if current_q:
+                    revisions = current_q.get("epsRevisions", {})
+                    up_30   = (revisions.get("upLast30days")   or {}).get("raw")
+                    down_30 = (revisions.get("downLast30days") or {}).get("raw")
+                    if up_30 is not None or down_30 is not None:
+                        result = {
+                            "up_30d":   up_30 or 0,
+                            "down_30d": down_30 or 0,
+                        }
+        else:
+            print(f"[AnalystRevisions] {ticker}: HTTP {r.status_code}")
+    except Exception as e:
+        print(f"[AnalystRevisions] {ticker}: {e}")
+
+    st.session_state[cache_key] = result
+    return result
+
+
 def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
     price       = y.get("price") or 0
     week52_high = y.get("52w_high") or price
@@ -810,6 +867,16 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
         checks.append(("Corrección reciente (precio < MM50)", ok,
             f"Precio {'bajo' if ok else 'sobre'} MM50 ({mm50:,.2f})", 1))
 
+    # Momentum de revisiones de analistas (30 días)
+    revisions = y.get("analyst_revisions")
+    if revisions:
+        up   = revisions.get("up_30d", 0)
+        down = revisions.get("down_30d", 0)
+        if (up + down) > 0:
+            ok = up > down
+            checks.append(("Momentum revisiones analistas (30d)", ok,
+                f"{up} al alza / {down} a la baja (EPS trimestre actual)", 2))
+
     total_w    = sum(c[3] for c in checks)
     achieved_w = sum(c[3] for c in checks if c[1])
     n_ok       = sum(1 for c in checks if c[1])
@@ -831,7 +898,7 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
         level, color, icon = "NO ES MOMENTO",   "#dc2626", "🔴"
         desc = "Pocos factores alineados. Esperar mejor precio, menor RSI o mejores fundamentales."
 
-    MAX_POSSIBLE_CHECKS = 8   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección (8 reales max)
+    MAX_POSSIBLE_CHECKS = 9   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección, revisiones (9 max)
     missing_checks = MAX_POSSIBLE_CHECKS - len(checks)
     reliability_ok = missing_checks <= 1   # tolerable perder 1 check (p.ej. PEG no aplicable)
 
@@ -1571,7 +1638,7 @@ def render_entry_signal(signal: dict):
             f'<div style="background:#f4f6f9;border:1px solid #d97706;border-left:4px solid #d97706;'
             f'border-radius:6px;padding:0.6rem 0.9rem;margin-bottom:0.6rem;font-size:0.78rem;'
             f'color:#d97706;line-height:1.6;">'
-            f'⚠ FIABILIDAD REDUCIDA: solo se pudieron evaluar {n_total} de 8 criterios posibles '
+            f'⚠ FIABILIDAD REDUCIDA: solo se pudieron evaluar {n_total} de 9 criterios posibles '
             f'por falta de datos (técnico, valoración o fundamentales). El score puede no ser '
             f'representativo — interpreta esta señal con cautela adicional.</div>',
             unsafe_allow_html=True
