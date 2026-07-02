@@ -18,7 +18,7 @@ st.markdown("""
   html, body, [class*="css"] { font-family:'Inter',sans-serif; background-color:#f8fafc; color:#1e293b; }
   .stApp { background-color:#f8fafc; }
   .hero { padding:2rem 0 1rem 0; border-bottom:1px solid #e2e8f0; margin-bottom:1.5rem; }
-  .hero h1 { font-family:'Sora',sans-serif; font-size:2rem; font-weight:700; color:#0284c7; letter-spacing:-0.02em; margin:0; }
+  .hero h1 { font-family:'Sora',sans-serif; font-size:2.6rem; font-weight:700; color:#0284c7; letter-spacing:-0.02em; margin:0; }
   .hero p  { font-size:0.83rem; color:#64748b; margin:0.25rem 0 0 0; }
   .metric-card { background:#ffffff; border:1px solid #e2e8f0; border-radius:8px; padding:1rem 1.2rem; margin-bottom:0.8rem; }
   .metric-label { font-size:0.72rem; color:#64748b; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:0.2rem; }
@@ -59,22 +59,27 @@ st.markdown("""
   .compare-divider { border:none; border-left:1px solid #e2e8f0; margin:0 0.5rem; }
 
   /* Icono de estrella de favoritos — junto al ticker analizado.
-     Streamlit asigna el texto visible del botón como aria-label,
-     lo usamos para aplicar el estilo solo a estos dos botones. */
-  button[aria-label="★"], button[aria-label="☆"] {
+     Se aplica vía st.container(key=...), que Streamlit expone como
+     clase real .st-key-<key> en el HTML (forma oficial y estable de
+     dirigir CSS a un elemento concreto, ≥ Streamlit 1.37). */
+  .st-key-fav_star_filled button, .st-key-fav_star_empty button {
     background: transparent !important;
     border: none !important;
     box-shadow: none !important;
-    font-size: 2.3rem !important;
+    font-size: 3rem !important;
     line-height: 1 !important;
     padding: 0 0.3rem !important;
     min-height: unset !important;
     width: auto !important;
   }
-  button[aria-label="★"] p, button[aria-label="☆"] p { font-size: 2.3rem !important; line-height: 1 !important; }
-  button[aria-label="★"] { color: #eab308 !important; }
-  button[aria-label="☆"] { color: #cbd5e1 !important; }
-  button[aria-label="★"]:hover, button[aria-label="☆"]:hover { color: #eab308 !important; transform: scale(1.12); }
+  .st-key-fav_star_filled button p, .st-key-fav_star_empty button p {
+    font-size: 3rem !important; line-height: 1 !important;
+  }
+  .st-key-fav_star_filled button { color: #eab308 !important; }
+  .st-key-fav_star_empty button  { color: #cbd5e1 !important; }
+  .st-key-fav_star_filled button:hover, .st-key-fav_star_empty button:hover {
+    color: #eab308 !important; transform: scale(1.1);
+  }
 
   /* Estrella dorada en la pestaña FAVORITOS (5º tab, la estrella es
      el primer carácter de la etiqueta) */
@@ -86,9 +91,9 @@ st.markdown("""
 
 st.markdown("""
 <div class="hero">
-  <div style="display:flex; align-items:center; gap:0.7rem;">
+  <div style="display:flex; align-items:center; gap:0.15rem;">
     <h1>▸ STOCK SCANNER</h1>
-    <svg width="34" height="34" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg width="46" height="46" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M3 3V19.5C3 20.3284 3.67157 21 4.5 21H21" stroke="#0284c7" stroke-width="2" stroke-linecap="round"/>
       <path d="M4.5 18L9.5 13L13.5 16L19.5 8.5" stroke="#0284c7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
       <path d="M15.5 8H19.5V12" stroke="#0284c7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>

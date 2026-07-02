@@ -66,18 +66,25 @@ def render_favorite_star(ticker: str, company_name: str, sector: str):
     favorita. Se rellena en amarillo cuando está marcada. Se coloca junto
     al ticker/nombre en la cabecera del análisis.
 
-    El estilo (tamaño, color, sin fondo de botón) se aplica globalmente
-    en app.py mediante selectores CSS `button[aria-label="★"]` /
-    `button[aria-label="☆"]`, ya que Streamlit asigna el texto visible
-    del botón como aria-label — mucho más fiable que intentar aislar un
-    botón concreto con trucos de posición en el DOM.
+    El estilo se aplica mediante st.container(key=...), la forma
+    OFICIALMENTE soportada por Streamlit (≥1.37) para aplicar CSS a un
+    contenedor concreto de forma garantizada — genera la clase real
+    `.st-key-<key>` en el HTML, a diferencia de trucos basados en
+    aria-label o posición en el DOM, que dependen de detalles internos
+    no garantizados y pueden dejar de funcionar entre versiones.
     """
     ticker = ticker.upper().strip()
     fav = is_favorite(ticker)
     star_char = "★" if fav else "☆"
+    container_key = "fav_star_filled" if fav else "fav_star_empty"
 
-    if st.button(star_char, key=f"fav_btn_{ticker}",
-                 help="Quitar de favoritos" if fav else "Añadir a favoritos"):
+    with st.container(key=container_key):
+        clicked = st.button(
+            star_char, key=f"fav_btn_{ticker}",
+            help="Quitar de favoritos" if fav else "Añadir a favoritos"
+        )
+
+    if clicked:
         if fav:
             remove_favorite(ticker)
             st.toast(f"{ticker} eliminado de favoritos", icon="⭐")
