@@ -316,8 +316,8 @@ def fetch_recent_news(ticker: str, max_items: int = 8) -> list:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _MESES_ES = {
-    1: "enero", 2: "febrero", 3: "marzo", 4: "abril", 5: "mayo", 6: "junio",
-    7: "julio", 8: "agosto", 9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre",
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+    7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
 }
 
 
@@ -993,9 +993,9 @@ def fetch_last_cross_date(ticker: str) -> dict:
         diff   = mm50 - mm200
         for i in range(len(diff)-1, 0, -1):
             if diff.iloc[i] > 0 and diff.iloc[i-1] <= 0:
-                return {"date": hist.index[i].strftime("%Y-%m-%d"), "type": "GOLDEN CROSS"}
+                return {"date": _fmt_fecha_es(hist.index[i]), "type": "GOLDEN CROSS"}
             elif diff.iloc[i] < 0 and diff.iloc[i-1] >= 0:
-                return {"date": hist.index[i].strftime("%Y-%m-%d"), "type": "DEATH CROSS"}
+                return {"date": _fmt_fecha_es(hist.index[i]), "type": "DEATH CROSS"}
         return {}
     except Exception:
         return {}
