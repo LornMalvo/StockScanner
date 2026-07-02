@@ -14,11 +14,11 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@300;400;600&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@300;400;600&family=Sora:wght@600;700&display=swap');
   html, body, [class*="css"] { font-family:'Inter',sans-serif; background-color:#f8fafc; color:#1e293b; }
   .stApp { background-color:#f8fafc; }
   .hero { padding:2rem 0 1rem 0; border-bottom:1px solid #e2e8f0; margin-bottom:1.5rem; }
-  .hero h1 { font-family:'IBM Plex Mono',monospace; font-size:1.5rem; font-weight:600; color:#0284c7; letter-spacing:-0.02em; margin:0; }
+  .hero h1 { font-family:'Sora',sans-serif; font-size:2rem; font-weight:700; color:#0284c7; letter-spacing:-0.02em; margin:0; }
   .hero p  { font-size:0.83rem; color:#64748b; margin:0.25rem 0 0 0; }
   .metric-card { background:#ffffff; border:1px solid #e2e8f0; border-radius:8px; padding:1rem 1.2rem; margin-bottom:0.8rem; }
   .metric-label { font-size:0.72rem; color:#64748b; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:0.2rem; }
@@ -57,12 +57,43 @@ st.markdown("""
   .stTabs [aria-selected="true"] { color:#0284c7 !important; border-bottom:2px solid #0284c7 !important; background:transparent !important; }
   /* Comparación lado a lado */
   .compare-divider { border:none; border-left:1px solid #e2e8f0; margin:0 0.5rem; }
+
+  /* Icono de estrella de favoritos — junto al ticker analizado.
+     Streamlit asigna el texto visible del botón como aria-label,
+     lo usamos para aplicar el estilo solo a estos dos botones. */
+  button[aria-label="★"], button[aria-label="☆"] {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    font-size: 2.3rem !important;
+    line-height: 1 !important;
+    padding: 0 0.3rem !important;
+    min-height: unset !important;
+    width: auto !important;
+  }
+  button[aria-label="★"] p, button[aria-label="☆"] p { font-size: 2.3rem !important; line-height: 1 !important; }
+  button[aria-label="★"] { color: #eab308 !important; }
+  button[aria-label="☆"] { color: #cbd5e1 !important; }
+  button[aria-label="★"]:hover, button[aria-label="☆"]:hover { color: #eab308 !important; transform: scale(1.12); }
+
+  /* Estrella dorada en la pestaña FAVORITOS (5º tab, la estrella es
+     el primer carácter de la etiqueta) */
+  .stTabs [data-baseweb="tab-list"] button:nth-child(5) p::first-letter {
+    color: #eab308 !important;
+  }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="hero">
-  <h1>▸ STOCK SCANNER</h1>
+  <div style="display:flex; align-items:center; gap:0.7rem;">
+    <h1>▸ STOCK SCANNER</h1>
+    <svg width="34" height="34" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M3 3V19.5C3 20.3284 3.67157 21 4.5 21H21" stroke="#0284c7" stroke-width="2" stroke-linecap="round"/>
+      <path d="M4.5 18L9.5 13L13.5 16L19.5 8.5" stroke="#0284c7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M15.5 8H19.5V12" stroke="#0284c7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </div>
   <p>Yahoo Finance · Análisis técnico · Portfolio Tracker · Comparador</p>
 </div>
 """, unsafe_allow_html=True)

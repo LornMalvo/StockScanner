@@ -65,42 +65,19 @@ def render_favorite_star(ticker: str, company_name: str, sector: str):
     Icono de estrella (sin texto) para marcar/desmarcar una empresa como
     favorita. Se rellena en amarillo cuando está marcada. Se coloca junto
     al ticker/nombre en la cabecera del análisis.
+
+    El estilo (tamaño, color, sin fondo de botón) se aplica globalmente
+    en app.py mediante selectores CSS `button[aria-label="★"]` /
+    `button[aria-label="☆"]`, ya que Streamlit asigna el texto visible
+    del botón como aria-label — mucho más fiable que intentar aislar un
+    botón concreto con trucos de posición en el DOM.
     """
     ticker = ticker.upper().strip()
     fav = is_favorite(ticker)
     star_char = "★" if fav else "☆"
-    star_color = "#eab308" if fav else "#cbd5e1"
 
-    # Marcador único para poder aplicar CSS solo a ESTE botón (truco de
-    # hermano adyacente: el <span> marcador y el botón de Streamlit quedan
-    # como elementos hermanos en el DOM, permitiendo estilizar solo este).
-    marker_id = f"fav-marker-{ticker}"
-    st.markdown(f'<span id="{marker_id}"></span>', unsafe_allow_html=True)
-    st.markdown(f"""
-    <style>
-    span#{marker_id} + div .stButton {{ width: fit-content !important; }}
-    span#{marker_id} + div .stButton button {{
-        background: transparent !important;
-        border: none !important;
-        box-shadow: none !important;
-        font-size: 1.8rem !important;
-        line-height: 1 !important;
-        padding: 0 0.2rem !important;
-        color: {star_color} !important;
-        min-height: unset !important;
-    }}
-    span#{marker_id} + div .stButton button:hover {{
-        color: #eab308 !important;
-        transform: scale(1.12);
-    }}
-    span#{marker_id} + div .stButton button p {{
-        font-size: 1.8rem !important;
-        color: inherit !important;
-    }}
-    </style>
-    """, unsafe_allow_html=True)
-
-    if st.button(star_char, key=f"fav_btn_{ticker}", help="Añadir a favoritos" if not fav else "Quitar de favoritos"):
+    if st.button(star_char, key=f"fav_btn_{ticker}",
+                 help="Quitar de favoritos" if fav else "Añadir a favoritos"):
         if fav:
             remove_favorite(ticker)
             st.toast(f"{ticker} eliminado de favoritos", icon="⭐")
@@ -156,7 +133,6 @@ def render_favorites_tab():
             )
         with col2:
             if st.button(f"📊 Analizar {ticker}", key=f"fav_analyze_{ticker}", use_container_width=True):
-                st.session_state["ticker_input"] = ticker
                 st.session_state["_jump_to_analysis"] = ticker
                 st.rerun()
         with col3:
