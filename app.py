@@ -130,7 +130,7 @@ with tab_analisis:
         company_name = yahoo_data.get("company_name", ticker)
         sector_name  = yahoo_data.get("sector", "")
 
-        col_hdr1, col_hdr2 = st.columns([5, 1])
+        col_hdr1, col_hdr2 = st.columns([6, 0.6])
         with col_hdr1:
             st.markdown(f"""
             <div style="margin:1rem 0 0.5rem 0;">
@@ -140,7 +140,7 @@ with tab_analisis:
             </div>
             """, unsafe_allow_html=True)
         with col_hdr2:
-            st.markdown('<div style="margin-top:1.3rem;"></div>', unsafe_allow_html=True)
+            st.markdown('<div style="margin-top:1.1rem;"></div>', unsafe_allow_html=True)
             render_favorite_star(ticker, company_name, sector_name)
 
         render_report(ticker, company_name, yahoo_data, fx_rate, tech_data, fx_meta)

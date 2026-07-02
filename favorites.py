@@ -62,20 +62,51 @@ def get_all_favorites() -> dict:
 
 def render_favorite_star(ticker: str, company_name: str, sector: str):
     """
-    Botón tipo estrella para marcar/desmarcar una empresa como favorita.
-    Se coloca junto al ticker/nombre en la cabecera del análisis.
+    Icono de estrella (sin texto) para marcar/desmarcar una empresa como
+    favorita. Se rellena en amarillo cuando está marcada. Se coloca junto
+    al ticker/nombre en la cabecera del análisis.
     """
     ticker = ticker.upper().strip()
     fav = is_favorite(ticker)
-    label = "★ En favoritos" if fav else "☆ Añadir a favoritos"
+    star_char = "★" if fav else "☆"
+    star_color = "#eab308" if fav else "#cbd5e1"
 
-    if st.button(label, key=f"fav_btn_{ticker}"):
+    # Marcador único para poder aplicar CSS solo a ESTE botón (truco de
+    # hermano adyacente: el <span> marcador y el botón de Streamlit quedan
+    # como elementos hermanos en el DOM, permitiendo estilizar solo este).
+    marker_id = f"fav-marker-{ticker}"
+    st.markdown(f'<span id="{marker_id}"></span>', unsafe_allow_html=True)
+    st.markdown(f"""
+    <style>
+    span#{marker_id} + div .stButton {{ width: fit-content !important; }}
+    span#{marker_id} + div .stButton button {{
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        font-size: 1.8rem !important;
+        line-height: 1 !important;
+        padding: 0 0.2rem !important;
+        color: {star_color} !important;
+        min-height: unset !important;
+    }}
+    span#{marker_id} + div .stButton button:hover {{
+        color: #eab308 !important;
+        transform: scale(1.12);
+    }}
+    span#{marker_id} + div .stButton button p {{
+        font-size: 1.8rem !important;
+        color: inherit !important;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
+    if st.button(star_char, key=f"fav_btn_{ticker}", help="Añadir a favoritos" if not fav else "Quitar de favoritos"):
         if fav:
             remove_favorite(ticker)
-            st.toast(f"{ticker} eliminado de favoritos", icon="☆")
+            st.toast(f"{ticker} eliminado de favoritos", icon="⭐")
         else:
             add_favorite(ticker, company_name, sector)
-            st.toast(f"{ticker} añadido a favoritos", icon="★")
+            st.toast(f"{ticker} añadido a favoritos", icon="⭐")
         st.rerun()
 
 
@@ -116,7 +147,7 @@ def render_favorites_tab():
             st.markdown(
                 f'<div style="padding:0.6rem 0;">'
                 f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:700;'
-                f'color:#0284c7;font-size:1rem;">★ {ticker}</span>'
+                f'color:#0284c7;font-size:1rem;"><span style="color:#eab308;">★</span> {ticker}</span>'
                 f'<span style="color:#1e293b;margin-left:0.6rem;">{name}</span>'
                 f'<div style="font-size:0.72rem;color:#94a3b8;margin-top:0.1rem;">'
                 f'{sector} · Añadido: {added}</div>'

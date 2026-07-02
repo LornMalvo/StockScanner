@@ -5,12 +5,13 @@ Renderiza el informe completo en Streamlit con el diseño claro.
 
 import streamlit as st
 import plotly.graph_objects as go
+import yfinance as yf
 from analysis import (
     calc_entry_signal, calc_trend, fetch_peer_data, get_manual_competitors,
     render_entry_signal, render_trend, render_peers,
     fetch_company_description, fetch_recent_news, fetch_earnings_analysis,
     fetch_last_cross_date, render_company_description, render_news,
-    get_sector_benchmarks,
+    get_sector_benchmarks, fetch_analyst_revisions,
     calc_short_squeeze, render_short_squeeze,
 )
 from dcf import (
@@ -262,77 +263,77 @@ def _section(title):
 
 SECTOR_PROFILES = {
     "Technology": {
-        "pe_fair": 28, "pe_high": 50,
+        "pe_fair": 28, "pe_high": 50, "g": 0.040,
         "peg_ok": 1.5, "margin_ok": 0.12, "roe_ok": 0.15,
         "ev_ebitda_fair": 22, "ev_sales_fair": 8,
         "methods": ["peg", "per", "ev_ebitda"],
         "nota": "Tecnología cotiza con prima estructural por crecimiento. PEG < 1.5 y márgenes > 12% son señales positivas.",
     },
     "Communication Services": {
-        "pe_fair": 22, "pe_high": 40,
+        "pe_fair": 22, "pe_high": 40, "g": 0.035,
         "peg_ok": 1.3, "margin_ok": 0.10, "roe_ok": 0.12,
         "ev_ebitda_fair": 18, "ev_sales_fair": 5,
         "methods": ["peg", "ev_ebitda", "per"],
         "nota": "Servicios de comunicación valora el crecimiento de usuarios y EBITDA. Los múltiplos varían mucho entre plataformas y telecos.",
     },
     "Consumer Cyclical": {
-        "pe_fair": 20, "pe_high": 35,
+        "pe_fair": 20, "pe_high": 35, "g": 0.030,
         "peg_ok": 1.2, "margin_ok": 0.06, "roe_ok": 0.12,
         "ev_ebitda_fair": 14, "ev_sales_fair": 2.5,
         "methods": ["per", "ev_ebitda", "peg"],
         "nota": "Cíclico al consumo: los márgenes caen en recesión. PER < 20 con ROE > 12% es señal sólida.",
     },
     "Consumer Defensive": {
-        "pe_fair": 22, "pe_high": 32,
+        "pe_fair": 22, "pe_high": 32, "g": 0.025,
         "peg_ok": 2.0, "margin_ok": 0.07, "roe_ok": 0.15,
         "ev_ebitda_fair": 16, "ev_sales_fair": 2,
         "methods": ["per", "ev_ebitda", "peg"],
         "nota": "Defensivo al consumo: se valora por estabilidad y dividendos. PER hasta 22 es razonable.",
     },
     "Healthcare": {
-        "pe_fair": 24, "pe_high": 45,
+        "pe_fair": 24, "pe_high": 45, "g": 0.035,
         "peg_ok": 1.8, "margin_ok": 0.10, "roe_ok": 0.12,
         "ev_ebitda_fair": 18, "ev_sales_fair": 6,
         "methods": ["peg", "per", "ev_ebitda"],
         "nota": "Salud tiene prima por pipeline y patentes. Farmacéuticas puras pueden tener PER alto justificado.",
     },
     "Financials": {
-        "pe_fair": 14, "pe_high": 22,
+        "pe_fair": 14, "pe_high": 22, "g": 0.030,
         "peg_ok": 1.0, "margin_ok": 0.15, "roe_ok": 0.10,
         "ev_ebitda_fair": 10, "ev_sales_fair": 3,
         "methods": ["nav", "per", "peg"],
         "nota": "Financieras se valoran por Price/Book y ROE. EV/EBITDA menos relevante; se prefiere P/B < 1.5 + ROE > 10%.",
     },
     "Industrials": {
-        "pe_fair": 20, "pe_high": 32,
+        "pe_fair": 20, "pe_high": 32, "g": 0.028,
         "peg_ok": 1.5, "margin_ok": 0.07, "roe_ok": 0.12,
         "ev_ebitda_fair": 14, "ev_sales_fair": 2,
         "methods": ["per", "ev_ebitda", "peg"],
         "nota": "Industriales valoran flujo de caja operativo y márgenes estables. PER < 20 y D/E < 1 son buenas señales.",
     },
     "Energy": {
-        "pe_fair": 14, "pe_high": 22,
+        "pe_fair": 14, "pe_high": 22, "g": 0.015,
         "peg_ok": 1.0, "margin_ok": 0.08, "roe_ok": 0.10,
         "ev_ebitda_fair": 6, "ev_sales_fair": 1.5,
         "methods": ["ev_ebitda", "per", "dcf_lite"],
         "nota": "Energía se valora principalmente por EV/EBITDA (ciclo de commodity). EV/EBITDA < 6 es barato para el sector.",
     },
     "Basic Materials": {
-        "pe_fair": 16, "pe_high": 26,
+        "pe_fair": 16, "pe_high": 26, "g": 0.020,
         "peg_ok": 1.2, "margin_ok": 0.06, "roe_ok": 0.10,
         "ev_ebitda_fair": 8, "ev_sales_fair": 1.5,
         "methods": ["ev_ebitda", "per", "peg"],
         "nota": "Materiales básicos depende del ciclo. EV/EBITDA es la métrica principal; los márgenes fluctúan con el precio del commodity.",
     },
     "Real Estate": {
-        "pe_fair": 30, "pe_high": 55,
+        "pe_fair": 30, "pe_high": 55, "g": 0.025,
         "peg_ok": 2.5, "margin_ok": 0.20, "roe_ok": 0.08,
         "ev_ebitda_fair": 20, "ev_sales_fair": 8,
         "methods": ["ev_ebitda", "dcf_lite", "per"],
         "nota": "REITs y real estate se valoran por FFO/AFFO y EV/EBITDA. El PER convencional puede ser engañoso por la depreciación.",
     },
     "Utilities": {
-        "pe_fair": 18, "pe_high": 28,
+        "pe_fair": 18, "pe_high": 28, "g": 0.020,
         "peg_ok": 2.0, "margin_ok": 0.10, "roe_ok": 0.08,
         "ev_ebitda_fair": 12, "ev_sales_fair": 3,
         "methods": ["per", "ev_ebitda", "dcf_lite"],
@@ -340,7 +341,7 @@ SECTOR_PROFILES = {
     },
     # Fallback genérico
     "_default": {
-        "pe_fair": 20, "pe_high": 35,
+        "pe_fair": 20, "pe_high": 35, "g": 0.030,
         "peg_ok": 1.5, "margin_ok": 0.08, "roe_ok": 0.10,
         "ev_ebitda_fair": 14, "ev_sales_fair": 3,
         "methods": ["per", "peg", "ev_ebitda"],
@@ -356,12 +357,99 @@ def _get_sector_profile(sector: str) -> dict:
     return SECTOR_PROFILES["_default"], sector or "Desconocido"
 
 
+# ─── Ajuste dinámico de benchmarks por tipos de interés ──────────────────────
+# Los múltiplos "justos" (PER, EV/EBITDA) derivan implícitamente de un coste
+# de capital exigido. Cuando los tipos de interés suben, ese coste de capital
+# sube, y matemáticamente el múltiplo "justo" debe bajar para una misma tasa
+# de crecimiento esperada (modelo de Gordon: PER justo ≈ 1/(r-g), con
+# r = Rf + β×ERP vía CAPM). Aquí aplicamos esa lógica de forma simplificada
+# y acotada a los benchmarks estáticos por sector.
+
+_RF_BASELINE = 0.040   # tipo libre de riesgo de referencia (media histórica ~20 años)
+_ERP         = 0.055   # prima de riesgo de mercado (media histórica S&P 500, Damodaran)
+_ADJ_MIN     = 0.75    # cota inferior del factor de ajuste (máx -25%)
+_ADJ_MAX     = 1.25    # cota superior del factor de ajuste (máx +25%)
+
+
+def fetch_risk_free_rate() -> float | None:
+    """
+    Rendimiento del bono del Tesoro USA a 10 años en tiempo real (^TNX).
+    Devuelve None si no se puede obtener — en ese caso no se ajustan los
+    benchmarks y se usan los valores estáticos originales.
+    """
+    try:
+        t    = yf.Ticker("^TNX")
+        info = t.info
+        rate = info.get("regularMarketPrice") or info.get("previousClose")
+        if rate and 0 < rate < 20:
+            return rate / 100
+    except Exception as e:
+        print(f"[RiskFreeRate] Error: {e}")
+    return None
+
+
+def _adjust_sector_profile(profile: dict, rf_current: float | None) -> tuple[dict, dict | None]:
+    """
+    Ajusta pe_fair, pe_high y ev_ebitda_fair según el tipo libre de riesgo
+    actual vs el de referencia, usando el modelo de Gordon simplificado.
+    peg_ok NO se ajusta (ya normaliza por crecimiento, evita doble contar
+    el efecto de tipos).
+
+    Devuelve (profile_ajustado, info_ajuste). info_ajuste es None si no
+    se pudo aplicar el ajuste (sin dato de Rf o beta), para que la UI
+    pueda mostrar honestamente que se están usando benchmarks estáticos.
+    """
+    if rf_current is None:
+        return profile, None
+
+    g = profile.get("g", 0.030)
+    r_baseline = _RF_BASELINE + _ERP
+    r_current  = rf_current   + _ERP
+
+    # Evitar división por cero o valores degenerados si Rf muy cercano a g
+    if (r_baseline - g) <= 0.001 or (r_current - g) <= 0.001:
+        return profile, None
+
+    factor_raw = (r_baseline - g) / (r_current - g)
+    factor     = max(_ADJ_MIN, min(_ADJ_MAX, factor_raw))
+
+    adjusted = dict(profile)
+    adjusted["pe_fair"]        = round(profile["pe_fair"] * factor, 1)
+    adjusted["pe_high"]        = round(profile["pe_high"] * factor, 1)
+    adjusted["ev_ebitda_fair"] = round(profile["ev_ebitda_fair"] * factor, 1)
+    # peg_ok se mantiene sin cambios deliberadamente
+
+    info = {
+        "rf_current":  rf_current,
+        "rf_baseline": _RF_BASELINE,
+        "g":           g,
+        "factor":      factor,
+        "factor_raw":  factor_raw,
+        "capped":      abs(factor - factor_raw) > 0.001,
+        "pe_fair_original": profile["pe_fair"],
+        "ev_ebitda_fair_original": profile["ev_ebitda_fair"],
+    }
+    return adjusted, info
+
+
 # ─── Motor de valoración por sector ──────────────────────────────────────────
 
-def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str]]:
+def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str], tuple[float, float] | None]:
     """
     Calcula el valor objetivo usando los métodos relevantes para el sector.
-    Devuelve (fair_value, lista_de_métodos_usados).
+    Devuelve (fair_value, lista_de_métodos_usados, rango_min_max).
+
+    PONDERACIÓN DEL CONSENSO DE ANALISTAS: si ≥10 analistas cubren el valor,
+    el consenso se cuenta DOS VECES en el promedio (en vez de una) porque
+    incorpora información (guidance de la empresa, modelos propios de cada
+    analista, conversaciones con el management) que los múltiplos estáticos
+    no capturan. Con <10 analistas el consenso es menos fiable estadísticamente
+    y se mantiene con peso normal (1×).
+
+    RANGO DE CONFIANZA: además de la media, se devuelve (min, max) de los
+    métodos individuales sin ponderar, para mostrar la dispersión real entre
+    métodos — un rango estrecho indica más consenso entre metodologías, uno
+    amplio indica más incertidumbre real en la valoración.
 
     FALLBACK HYPER-GROWTH: si la empresa tiene EPS negativo o nulo (PER/PEG
     no aplicables) y el crecimiento de ingresos YoY supera el 25%, se sustituye
@@ -387,9 +475,29 @@ def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str]]:
     target_mean = y.get("target_mean")
     ev_revenue  = y.get("ev_revenue")
     rev_yoy     = y.get("revenue_yoy")
+    analyst_n   = y.get("analyst_count") or 0
 
     methods_used = []
-    targets      = []
+    targets      = []   # cada método individual, sin ponderar (para el rango)
+    weighted     = []   # valores efectivamente promediados (con ponderación)
+
+    def _add_consensus():
+        """Añade el consenso de analistas con ponderación según cobertura."""
+        if target_mean and target_mean > 0:
+            targets.append(target_mean)
+            if analyst_n >= 10:
+                weighted.append(target_mean)
+                weighted.append(target_mean)   # peso doble
+                methods_used.append(
+                    f"Consenso analistas ×2 peso — {analyst_n} analistas ⩾10 "
+                    f"(precio objetivo medio) → {target_mean:,.2f}"
+                )
+            else:
+                weighted.append(target_mean)
+                methods_used.append(
+                    f"Consenso analistas — {analyst_n} analistas "
+                    f"(precio objetivo medio) → {target_mean:,.2f}"
+                )
 
     # ── FALLBACK HYPER-GROWTH: EV/Sales cuando PER/PEG no aplican ──────────
     is_eps_negative = (eps_fwd is None or eps_fwd <= 0) and (eps_ttm is None or eps_ttm <= 0)
@@ -401,40 +509,51 @@ def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str]]:
         val   = price * ratio
         if val > 0:
             targets.append(val)
+            weighted.append(val)
             methods_used.append(
-                f"EV/Sales hyper-growth ({ev_sales_fair}× sector vs {ev_revenue:.1f}× actual, "
-                f"Rev YoY {rev_yoy:.0f}%) → {val:,.2f}"
+                f"EV/Sales hyper-growth ( {price:,.2f} (Precio) × [ {ev_sales_fair:.1f} (EV/Sales sector) "
+                f"÷ {ev_revenue:.1f} (EV/Sales actual) ] , Rev YoY {rev_yoy:.0f}% > 25% ) → {val:,.2f}"
             )
         # En modo hyper-growth NO se usan PER/PEG aunque el sector los liste,
         # porque el EPS negativo los invalida por definición.
-        if target_mean and target_mean > 0:
-            targets.append(target_mean)
-            methods_used.append(f"Consenso analistas → {target_mean:,.2f}")
-        if not targets:
-            return None, []
-        fair_value = sum(targets) / len(targets)
-        return fair_value, methods_used
+        _add_consensus()
+        if not weighted:
+            return None, [], None
+        fair_value = sum(weighted) / len(weighted)
+        rng = (min(targets), max(targets)) if len(targets) >= 2 else None
+        return fair_value, methods_used, rng
 
     for method in profile["methods"]:
 
         # PER × EPS con PE justo del sector
         if method == "per" and eps_fwd and eps_fwd > 0:
             fair_pe = profile["pe_fair"]
+            prima_txt = ""
             # Si la empresa crece más que la media del sector, le damos un 10% de prima
             if earn_growth > 0.20:
+                fair_pe_base = fair_pe
                 fair_pe *= 1.10
+                prima_txt = f" [{fair_pe_base:.0f}×1.10 prima por crecimiento >20%]"
             val = fair_pe * eps_fwd
             if val > 0:
                 targets.append(val)
-                methods_used.append(f"PER sectorial ({fair_pe:.0f}×EPS) → {val:,.2f}")
+                weighted.append(val)
+                methods_used.append(
+                    f"PER sectorial ( {fair_pe:.1f}{prima_txt} × {eps_fwd:,.2f} (EPS Forward) ) → {val:,.2f}"
+                )
 
         # PEG: precio justo = EPS × PEG_sector × tasa_crecimiento × 100
         elif method == "peg" and peg and eps_fwd and eps_fwd > 0 and earn_growth > 0:
             # PEG justo del sector como referencia
-            val = eps_fwd * profile["peg_ok"] * (earn_growth * 100)
+            growth_pct = earn_growth * 100
+            val = eps_fwd * profile["peg_ok"] * growth_pct
             if val > 0:
                 targets.append(val)
-                methods_used.append(f"PEG sectorial ({profile['peg_ok']}×crecimiento) → {val:,.2f}")
+                weighted.append(val)
+                methods_used.append(
+                    f"PEG sectorial ( {eps_fwd:,.2f} (EPS Forward) × {profile['peg_ok']:.1f} (PEG sector) "
+                    f"× {growth_pct:.1f} (Crec. beneficios %) ) → {val:,.2f}"
+                )
 
         # EV/EBITDA sectorial
         elif method == "ev_ebitda" and ev_ebitda and ebitda and ebitda > 0:
@@ -444,7 +563,11 @@ def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str]]:
             val   = price * ratio
             if val > 0:
                 targets.append(val)
-                methods_used.append(f"EV/EBITDA sectorial ({fair_ev_ebitda}×) → {val:,.2f}")
+                weighted.append(val)
+                methods_used.append(
+                    f"EV/EBITDA sectorial ( {price:,.2f} (Precio) × [ {fair_ev_ebitda:.1f} (EV/EBITDA sector) "
+                    f"÷ {ev_ebitda:.1f} (EV/EBITDA actual) ] ) → {val:,.2f}"
+                )
 
         # FCF Yield (DCF simplificado): precio justo = FCF / yield_esperado
         elif method == "dcf_lite" and fcf > 0 and market_cap > 0:
@@ -454,7 +577,11 @@ def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str]]:
             val = fcf_per_share / fcf_yield_target
             if val > 0:
                 targets.append(val)
-                methods_used.append(f"FCF Yield (4%) → {val:,.2f}")
+                weighted.append(val)
+                methods_used.append(
+                    f"FCF Yield ( {fcf_per_share:,.2f} (FCF/acción) ÷ {fcf_yield_target*100:.0f}% "
+                    f"(yield exigido) ) → {val:,.2f}"
+                )
 
         # Price/Book para financieras: P/B justo = ROE / coste_capital
         elif method == "nav" and price_book and roe > 0:
@@ -463,22 +590,62 @@ def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str]]:
             val = price * (fair_pb / price_book) if price_book else price
             if val > 0:
                 targets.append(val)
-                methods_used.append(f"Price/Book justo (ROE/Ke={fair_pb:.2f}×) → {val:,.2f}")
+                weighted.append(val)
+                methods_used.append(
+                    f"Price/Book justo ( {price:,.2f} (Precio) × [ {fair_pb:.2f} (ROE {roe*100:.1f}% ÷ Ke {cost_of_equity*100:.0f}%) "
+                    f"÷ {price_book:.2f} (P/B actual) ] ) → {val:,.2f}"
+                )
 
-    # El precio objetivo de consenso de analistas tiene siempre peso en el promedio
-    if target_mean and target_mean > 0:
-        targets.append(target_mean)
-        methods_used.append(f"Consenso analistas → {target_mean:,.2f}")
+    _add_consensus()
 
-    if not targets:
-        return None, []
+    if not weighted:
+        return None, [], None
 
-    # Media ponderada: consenso pesa 1, cada método pesa 1 (igual peso)
-    fair_value = sum(targets) / len(targets)
-    return fair_value, methods_used
+    fair_value = sum(weighted) / len(weighted)
+    rng = (min(targets), max(targets)) if len(targets) >= 2 else None
+    return fair_value, methods_used, rng
 
 
 # ─── Salud fundamental ajustada al sector ────────────────────────────────────
+
+def _calc_growth_stability(quarters: list) -> tuple[float, str]:
+    """
+    Calcula un multiplicador de estabilidad (0.65-1.0) basado en la varianza
+    de las tasas de crecimiento QoQ de los últimos trimestres disponibles.
+    Un crecimiento estable (baja dispersión) mantiene el multiplicador en 1.0;
+    un crecimiento errático (alta dispersión) lo reduce, porque es menos
+    predecible y más arriesgado aunque el promedio sea igual de bueno que
+    el de una empresa con crecimiento constante.
+    Devuelve (multiplicador, descripción_corta).
+    """
+    if not quarters or len(quarters) < 3:
+        return 1.0, "datos insuficientes"
+
+    sorted_q = sorted(quarters, key=lambda q: q.get("date", ""))
+    values = [q.get("value") for q in sorted_q if q.get("value") is not None]
+    if len(values) < 3:
+        return 1.0, "datos insuficientes"
+
+    growth_rates = []
+    for i in range(1, len(values)):
+        prev, curr = values[i-1], values[i]
+        if prev and prev != 0:
+            growth_rates.append((curr - prev) / abs(prev) * 100)
+
+    if len(growth_rates) < 2:
+        return 1.0, "datos insuficientes"
+
+    mean_g   = sum(growth_rates) / len(growth_rates)
+    variance = sum((g - mean_g) ** 2 for g in growth_rates) / len(growth_rates)
+    stddev   = variance ** 0.5
+
+    if stddev <= 10:
+        return 1.0, f"estable (σ={stddev:.0f}pp)"
+    elif stddev <= 25:
+        return 0.85, f"algo variable (σ={stddev:.0f}pp)"
+    else:
+        return 0.65, f"errático (σ={stddev:.0f}pp)"
+
 
 def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[str], list[str]]:
     """
@@ -500,6 +667,7 @@ def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[str], list[str
     debt_eq_raw    = y.get("debt_equity")
     curr_ratio_raw = y.get("current_ratio")
     fcf_raw        = y.get("free_cash_flow")
+    ni_recent      = y.get("ni_year_cur")   # beneficio neto anual más reciente
 
     if profit_m_raw is None:   missing_fields.append("Margen neto")
     if roe_raw is None:        missing_fields.append("ROE")
@@ -539,24 +707,38 @@ def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[str], list[str
     score += pts
     breakdown.append(f"ROE {roe*100:.1f}% (ref. sector >{roe_ok*100:.0f}%): +{pts}/15")
 
-    # Crecimiento ingresos (0-20 pts) — sector cíclico/defensivo tiene baremo distinto
-    if rev_yoy >= 30:    pts = 20
-    elif rev_yoy >= 15:  pts = 15
-    elif rev_yoy >= 8:   pts = 10
-    elif rev_yoy >= 3:   pts = 5
-    elif rev_yoy >= 0:   pts = 2
-    else:                pts = 0
+    # Crecimiento ingresos ponderado por estabilidad (0-15 pts, antes 0-20)
+    # Una empresa con crecimiento errático es más arriesgada que una con
+    # crecimiento constante, aunque el promedio YoY sea idéntico.
+    rev_quarters = y.get("ttm_quarters", [])
+    rev_stab_mult, rev_stab_desc = _calc_growth_stability(rev_quarters)
+    if rev_yoy >= 30:    pts_base = 15
+    elif rev_yoy >= 15:  pts_base = 11
+    elif rev_yoy >= 8:   pts_base = 7
+    elif rev_yoy >= 3:   pts_base = 4
+    elif rev_yoy >= 0:   pts_base = 1
+    else:                pts_base = 0
+    pts = round(pts_base * rev_stab_mult)
     score += pts
-    breakdown.append(f"Crec. ingresos {rev_yoy:.1f}%: +{pts}/20")
+    breakdown.append(
+        f"Crec. ingresos {rev_yoy:.1f}% × estabilidad {rev_stab_desc} "
+        f"(×{rev_stab_mult:.2f}): +{pts}/15"
+    )
 
-    # Crecimiento beneficios (0-20 pts)
-    if earn_yoy >= 40:   pts = 20
-    elif earn_yoy >= 20: pts = 15
-    elif earn_yoy >= 10: pts = 10
-    elif earn_yoy >= 0:  pts = 5
-    else:                pts = 0
+    # Crecimiento beneficios ponderado por estabilidad (0-15 pts, antes 0-20)
+    ni_quarters = y.get("net_income_q", [])
+    earn_stab_mult, earn_stab_desc = _calc_growth_stability(ni_quarters)
+    if earn_yoy >= 40:   pts_base = 15
+    elif earn_yoy >= 20: pts_base = 11
+    elif earn_yoy >= 10: pts_base = 7
+    elif earn_yoy >= 0:  pts_base = 4
+    else:                pts_base = 0
+    pts = round(pts_base * earn_stab_mult)
     score += pts
-    breakdown.append(f"Crec. beneficios {earn_yoy:.1f}%: +{pts}/20")
+    breakdown.append(
+        f"Crec. beneficios {earn_yoy:.1f}% × estabilidad {earn_stab_desc} "
+        f"(×{earn_stab_mult:.2f}): +{pts}/15"
+    )
 
     # PEG vs benchmark sector (0-15 pts)
     if peg:
@@ -578,6 +760,23 @@ def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[str], list[str
     score += b_pts
     breakdown.append(f"Balance (FCF/Liquidez/Deuda): +{b_pts}/10")
 
+    # Calidad del beneficio: FCF / Beneficio neto anual (0-10 pts, NUEVO)
+    # Un ratio alto indica que el beneficio contable se traduce en caja real;
+    # un ratio bajo o negativo sugiere ajustes contables que inflan el
+    # beneficio sin respaldo de generación de caja efectiva.
+    fcf_quality = None
+    if fcf_raw is not None and ni_recent and ni_recent > 0:
+        fcf_quality = fcf_raw / ni_recent
+        if fcf_quality >= 1.0:    q_pts = 10
+        elif fcf_quality >= 0.9:  q_pts = 8
+        elif fcf_quality >= 0.5:  q_pts = 5
+        elif fcf_quality >= 0:    q_pts = 2
+        else:                     q_pts = 0
+        score += q_pts
+        breakdown.append(f"Calidad beneficio FCF/NI {fcf_quality:.2f}×: +{q_pts}/10")
+    else:
+        missing_fields.append("Calidad del beneficio (FCF/NI)")
+
     score = min(100, score)
     if missing_fields:
         breakdown.append(f"⚠ Datos no disponibles (excluidos del cálculo, no penalizados): {', '.join(missing_fields)}")
@@ -587,11 +786,18 @@ def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[str], list[str
 # ─── Evaluación final ─────────────────────────────────────────────────────────
 
 def _evaluate(y: dict) -> dict:
-    """Diagnóstico completo ajustado al sector."""
+    """Diagnóstico completo ajustado al sector y a los tipos de interés actuales."""
 
     price       = y.get("price") or 0
     sector_raw  = y.get("sector", "")
-    profile, sector_label = _get_sector_profile(sector_raw)
+    profile_static, sector_label = _get_sector_profile(sector_raw)
+
+    # Ajuste dinámico de benchmarks por tipos de interés actuales (cacheado
+    # en sesión para no consultar ^TNX en cada re-render de la página)
+    if "_rf_current_cache" not in st.session_state:
+        st.session_state["_rf_current_cache"] = fetch_risk_free_rate()
+    rf_current = st.session_state["_rf_current_cache"]
+    profile, rate_adjustment = _adjust_sector_profile(profile_static, rf_current)
 
     short_ratio = y.get("short_ratio") or 0
     week52_high = y.get("52w_high") or price
@@ -604,7 +810,7 @@ def _evaluate(y: dict) -> dict:
     health_score, health_breakdown, health_missing = _calc_health_score(y, profile)
 
     # ── Valor objetivo ───────────────────────────────────────────────────
-    fair_value, methods_used = _calc_fair_value(y, profile)
+    fair_value, methods_used, targets_range = _calc_fair_value(y, profile)
 
     # Flag informativo: ¿se usó el fallback hyper-growth (EV/Sales)?
     is_hyper_growth = any("hyper-growth" in m for m in methods_used)
@@ -727,6 +933,8 @@ def _evaluate(y: dict) -> dict:
         "ev_ebitda_fair":  profile["ev_ebitda_fair"],
         "is_hyper_growth": is_hyper_growth,
         "health_missing":  health_missing,
+        "targets_range":   targets_range,
+        "rate_adjustment": rate_adjustment,
     }
 
 
@@ -1199,6 +1407,29 @@ def render_report(ticker, company_name, y: dict,
     diag_icon    = ev.get("diag_icon","")
 
     # Contexto sectorial
+    rate_adj = ev.get("rate_adjustment")
+    rate_adj_html = ""
+    if rate_adj:
+        rf_cur   = rate_adj["rf_current"] * 100
+        rf_base  = rate_adj["rf_baseline"] * 100
+        factor   = rate_adj["factor"]
+        pe_orig  = rate_adj["pe_fair_original"]
+        capped_note = " (acotado al ±25% máximo)" if rate_adj["capped"] else ""
+        direction = "reducidos" if factor < 1 else "aumentados" if factor > 1 else "sin cambios"
+        rate_adj_html = (
+            f'<div style="margin-top:0.6rem;padding:0.5rem 0.7rem;background:#eff6ff;'
+            f'border-left:3px solid #0284c7;border-radius:4px;font-size:0.72rem;color:#334155;line-height:1.6;">'
+            f'ℹ️ <b>Benchmarks {direction} por tipos actuales{capped_note}:</b> bono 10Y USA = {rf_cur:.2f}% '
+            f'(referencia histórica: {rf_base:.1f}%). PER justo base {pe_orig}× → ajustado a {ev["pe_ref"]}× '
+            f'(factor ×{factor:.2f}). Modelo de Gordon simplificado: coste de capital = Rf + prima riesgo 5.5%, '
+            f'g={rate_adj["g"]*100:.1f}% para este sector. Aproximación, no sustituye un DCF completo.</div>'
+        )
+    else:
+        rate_adj_html = (
+            '<div style="margin-top:0.6rem;font-size:0.7rem;color:#94a3b8;">'
+            'ℹ️ Benchmarks estáticos (sin ajuste por tipos — no se pudo obtener el bono 10Y USA en este momento).</div>'
+        )
+
     st.markdown(
         '<div class="metric-card" style="border-left:3px solid #0284c7;">'
         '<div class="metric-label">CONTEXTO SECTORIAL</div>'
@@ -1214,7 +1445,9 @@ def render_report(ticker, company_name, y: dict,
         '<div style="background:#f4f6f9;border-radius:6px;padding:0.4rem 0.6rem;">'
         f'<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">EV/EBITDA justo</div>'
         f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#0284c7;font-weight:600;">{ev["ev_ebitda_fair"]}×</div></div>'
-        '</div></div>',
+        '</div>'
+        f'{rate_adj_html}'
+        '</div>',
         unsafe_allow_html=True
     )
 
@@ -1286,9 +1519,24 @@ def render_report(ticker, company_name, y: dict,
         )
 
     # Metodología de valoración
-    mh = "".join(f'<div style="font-size:0.76rem;color:#64748b;padding:0.18rem 0;">▸ {m}</div>'
+    mh = "".join(f'<div style="font-size:0.76rem;color:#64748b;padding:0.3rem 0;border-bottom:1px solid #eef1f5;">▸ {m}</div>'
                  for m in ev.get("methods_used",[])
     ) or '<div style="font-size:0.76rem;color:#64748b;">Sin datos suficientes para calcular valor objetivo.</div>'
+
+    fair_final_html = ""
+    if fair:
+        fair_eur_final = f' <span style="color:#94a3b8;font-size:0.85em;">(€{fair*fx_rate:,.2f})</span>' if fx_rate and currency_y == "USD" else ""
+        n_methods_final = len(ev.get("methods_used", []))
+        fair_final_html = (
+            '<div style="margin-top:0.8rem;padding-top:0.7rem;border-top:2px solid #dbeafe;'
+            'display:flex;justify-content:space-between;align-items:baseline;">'
+            f'<span style="font-size:0.78rem;color:#0284c7;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">'
+            f'Valor objetivo (media de {n_methods_final} método{"s" if n_methods_final != 1 else ""})</span>'
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:1.1rem;font-weight:700;color:#0f172a;">'
+            f'{currency_y} {fair:,.2f}{fair_eur_final}</span>'
+            '</div>'
+        )
+
     with st.expander("METODOLOGÍA DE VALORACIÓN — ver cálculo del valor objetivo", expanded=True):
         st.markdown(
             '<div style="background:#ffffff;border-radius:8px;padding:0.8rem 1rem;">'
@@ -1297,6 +1545,7 @@ def render_report(ticker, company_name, y: dict,
             f'{mh}'
             '<div style="margin-top:0.6rem;font-size:0.72rem;color:#64748b;">'
             'El valor objetivo es la media aritmética de los métodos disponibles más el consenso de analistas.</div>'
+            f'{fair_final_html}'
             '</div>',
             unsafe_allow_html=True
         )
@@ -1354,6 +1603,28 @@ def render_report(ticker, company_name, y: dict,
         "Ambos factores se suman: máximo posible = 11%, redondeado al 15% como techo."
     )
 
+    # Banda de confianza: dispersión entre los métodos individuales (sin ponderar)
+    targets_range = ev.get("targets_range")
+    range_html = ""
+    if targets_range:
+        rmin, rmax = targets_range
+        rmin_eur = f' <span style="color:#94a3b8;font-size:0.85em;">(€{rmin*fx_rate:,.2f})</span>' if fx_rate and currency_y=="USD" else ""
+        rmax_eur = f' <span style="color:#94a3b8;font-size:0.85em;">(€{rmax*fx_rate:,.2f})</span>' if fx_rate and currency_y=="USD" else ""
+        spread_pct = (rmax - rmin) / rmin * 100 if rmin else 0
+        spread_note = (
+            "consenso alto entre métodos" if spread_pct < 15
+            else "dispersión moderada" if spread_pct < 35
+            else "alta dispersión — mayor incertidumbre real"
+        )
+        range_html = (
+            '<div class="verdict-sub" style="margin-top:0.3rem;">'
+            f'<span style="color:#64748b;">Rango entre métodos:</span> '
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#64748b;">'
+            f'{currency_y} {rmin:,.2f}{rmin_eur} — {rmax:,.2f}{rmax_eur}</span> '
+            f'<span style="font-size:0.78rem;color:#94a3b8;">({spread_note}, {spread_pct:.0f}% de rango)</span>'
+            '</div>'
+        )
+
     st.markdown(
         f'<div class="verdict-box" style="border-left-color:{diag_color};">'
         '<div class="verdict-title">DIAGNÓSTICO GENERAL</div>'
@@ -1368,6 +1639,7 @@ def render_report(ticker, company_name, y: dict,
         f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#0f172a;"> {fair_str}</span>'
         f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:700;color:{up_color};"> ({upside_str})</span>'
         '</div>'
+        f'{range_html}'
         f'<div class="verdict-sub"><span style="color:#64748b;">Vs. media 52W:</span>'
         f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#d97706;"> {hist_str}</span></div>'
         f'<div class="verdict-sub" style="margin-top:0.4rem;">'
@@ -1387,6 +1659,8 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     # SEÑAL DE ENTRADA
     # ════════════════════════════════════════════════════════════════════
+    with st.spinner("Consultando momentum de revisiones de analistas…"):
+        y["analyst_revisions"] = fetch_analyst_revisions(ticker)
     signal = calc_entry_signal(y, tech, ev)
     render_entry_signal(signal)
 
