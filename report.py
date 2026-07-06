@@ -19,6 +19,7 @@ from dcf import (
     render_historical_multiples,
 )
 from pdf_export import render_pdf_download_button
+from gemini_valuation import render_ai_valuation
 
 
 # ─── Gráfico de cotización con MM50/MM200 ────────────────────────────────────
@@ -1648,6 +1649,11 @@ def render_report(ticker, company_name, y: dict,
         '</div>',
         unsafe_allow_html=True
     )
+
+    # ════════════════════════════════════════════════════════════════════
+    # VALORACIÓN POR IA — GEMINI PRO
+    # ════════════════════════════════════════════════════════════════════
+    render_ai_valuation(ticker, y.get("price"), currency_y)
 
     # ════════════════════════════════════════════════════════════════════
     # HISTÓRICO DE MÚLTIPLOS PROPIOS
