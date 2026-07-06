@@ -133,6 +133,15 @@ with tab_analisis:
     with col2:
         buscar = st.button("ANALIZAR →", key="btn_analizar")
 
+    st.markdown(
+        '<div style="font-size:0.72rem;color:#94a3b8;margin-top:-0.6rem;margin-bottom:0.8rem;">'
+        '🌍 También puedes analizar valores fuera del S&amp;P 500 con el sufijo de mercado de Yahoo Finance: '
+        '<b>.MC</b> IBEX 35 (ej. SAN.MC) · <b>.PA</b> Euronext París (ej. MC.PA) · '
+        '<b>.DE</b> Xetra Fráncfort (ej. SAP.DE) · <b>.L</b> Londres (ej. HSBA.L) · '
+        '<b>.MI</b> Milán (ej. ENI.MI) · <b>.AS</b> Ámsterdam (ej. ASML.AS)</div>',
+        unsafe_allow_html=True
+    )
+
     # Si venimos de "Analizar" desde la pestaña Favoritos, forzar búsqueda automática
     jump_ticker = st.session_state.pop("_jump_to_analysis", None)
     if jump_ticker and not buscar:

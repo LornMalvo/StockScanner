@@ -774,7 +774,17 @@ def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[str], list[str
         elif fcf_quality >= 0:    q_pts = 2
         else:                     q_pts = 0
         score += q_pts
-        breakdown.append(f"Calidad beneficio FCF/NI {fcf_quality:.2f}×: +{q_pts}/10")
+        tip_fcf_health = (
+            "FCF / Beneficio neto anual. Mide si el beneficio contable se traduce en caja real. "
+            "≥1.0× = excelente (10 pts) · 0.9-1.0× = muy buena (8 pts) · 0.5-0.9× = moderada (5 pts) · "
+            "0-0.5× = baja, posibles ajustes contables (2 pts) · negativo = alerta, consume caja (0 pts)."
+        )
+        tip_fcf_html = (
+            f'<span title="{tip_fcf_health}" style="margin-left:0.3rem;cursor:help;'
+            f'font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
+            f'border-radius:50%;padding:0 3px;font-family:monospace;">?</span>'
+        )
+        breakdown.append(f"Calidad beneficio FCF/NI {fcf_quality:.2f}×{tip_fcf_html}: +{q_pts}/10")
     else:
         missing_fields.append("Calidad del beneficio (FCF/NI)")
 
@@ -1376,6 +1386,58 @@ def render_report(ticker, company_name, y: dict,
                     f'{last_cross["type"]} — {last_cross["date"]}', f"row-val {lc_color}")
 
             st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
+
+        # ── Nuevos indicadores: MACD, ADX, OBV, Fibonacci ────────────────
+        macd_d = tech.get("macd")
+        adx_v  = tech.get("adx")
+        obv_d  = tech.get("obv")
+        fib_d  = tech.get("fibonacci")
+
+        def _tip(text):
+            safe = text.replace('"', '&quot;')
+            return (f'<span title="{safe}" style="margin-left:0.3rem;cursor:help;font-size:0.6rem;'
+                    f'color:#94a3b8;border:1px solid #cbd5e1;border-radius:50%;padding:0 3px;'
+                    f'font-family:monospace;">?</span>')
+
+        col_t3, col_t4 = st.columns(2)
+        with col_t3:
+            html2 = ""
+            if macd_d:
+                macd_sig = ("Cruce alcista" if macd_d["bullish_cross"] else
+                            "Divergencia alcista" if macd_d["bullish_divergence"] else
+                            "Cruce bajista" if macd_d["bearish_cross"] else "Sin señal de giro")
+                macd_col = "green" if (macd_d["bullish_cross"] or macd_d["bullish_divergence"]) else \
+                           "red" if macd_d["bearish_cross"] else ""
+                html2 += _kv(f"MACD{_tip('EMA(12)-EMA(26). El histograma mide la distancia entre el MACD y su línea de señal EMA(9). Un cruce alcista o una divergencia (precio cae, histograma sube) sugiere que el impulso bajista se agota.')}",
+                    f'{macd_d["macd"]:.3f}', "row-val")
+                html2 += _kv("Histograma", f'{macd_d["histogram"]:+.3f}',
+                    "row-val green" if macd_d["histogram"] >= 0 else "row-val red")
+                html2 += _kv("Señal MACD", macd_sig, f"row-val {macd_col}")
+            if adx_v is not None:
+                adx_lbl = "Tendencia fuerte" if adx_v > 25 else "Tendencia débil / lateral"
+                html2 += _kv(f"ADX (14){_tip('Average Directional Index: mide la FUERZA de la tendencia, no su dirección. >25 = tendencia fuerte (alcista o bajista). <20 = mercado sin tendencia clara. Se usa para bloquear Entrada Ideal si hay tendencia bajista fuerte confirmada.')}",
+                    f'{adx_v:.1f} ({adx_lbl})', "row-val")
+            if html2:
+                st.markdown(f'<div class="metric-card">{html2}</div>', unsafe_allow_html=True)
+
+        with col_t4:
+            html3 = ""
+            if obv_d:
+                obv_lbl = ("Posible acumulación" if obv_d["accumulation"] else
+                           "Posible distribución" if obv_d["distribution"] else
+                           "Alcista" if obv_d["obv_trend_up"] else "Bajista")
+                obv_col = "green" if (obv_d["accumulation"] or obv_d["obv_trend_up"]) else "red"
+                html3 += _kv(f"OBV (volumen){_tip('On-Balance Volume: acumula el volumen en días de subida y lo resta en días de bajada. Si el precio cae pero el OBV sube, sugiere que hay compras de manos fuertes pese al precio débil (acumulación). Si el precio sube pero el OBV cae, la subida no está respaldada por volumen real (distribución).')}",
+                    obv_lbl, f"row-val {obv_col}")
+                html3 += _kv("Precio 20 días", f'{obv_d["price_pct_20d"]:+.1f}%',
+                    "row-val green" if obv_d["price_pct_20d"] >= 0 else "row-val red")
+            if fib_d:
+                near = fib_d.get("near_support")
+                fib_lbl = f"En soporte {near}" if near else "Sin soporte Fibonacci cercano"
+                html3 += _kv(f"Fibonacci 52W{_tip('Niveles de retroceso entre el máximo y mínimo de 52 semanas — estructura ESTÁTICA de mercado, a diferencia de las medias móviles (dinámicas). Se marca en soporte si el precio está a menos del 3% de los niveles 61.8% o 78.6%, las zonas de rebote técnico más vigiladas tras una corrección.')}",
+                    fib_lbl, "row-val green" if near else "row-val")
+            if html3:
+                st.markdown(f'<div class="metric-card">{html3}</div>', unsafe_allow_html=True)
 
     elif tech and tech.get("error"):
         st.markdown(

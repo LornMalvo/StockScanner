@@ -877,6 +877,45 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
             checks.append(("Momentum revisiones analistas (30d)", ok,
                 f"{up} al alza / {down} a la baja (EPS trimestre actual)", 2))
 
+    # ── MACD: confirmación de momentum ──────────────────────────────────
+    macd_data = tech.get("macd") if tech and not tech.get("error") else None
+    if macd_data:
+        macd_ok = macd_data.get("bullish_cross") or macd_data.get("bullish_divergence")
+        if macd_data.get("bullish_cross"):
+            macd_detail = "Cruce alcista MACD/señal en la última sesión"
+        elif macd_data.get("bullish_divergence"):
+            macd_detail = "Divergencia alcista: precio cae pero el histograma MACD sube"
+        elif macd_data.get("bearish_cross"):
+            macd_detail = "Cruce bajista MACD/señal reciente"
+            macd_ok = False
+        else:
+            macd_detail = f"Histograma {macd_data.get('histogram',0):+.3f}, sin señal de giro reciente"
+        checks.append(("Confirmación MACD (momentum)", macd_ok, macd_detail, 2))
+
+    # ── OBV: análisis de volumen / acumulación ──────────────────────────
+    obv_data = tech.get("obv") if tech and not tech.get("error") else None
+    if obv_data:
+        obv_ok = obv_data.get("accumulation") or obv_data.get("obv_trend_up")
+        if obv_data.get("accumulation"):
+            obv_detail = f"Posible acumulación: precio {obv_data['price_pct_20d']:+.1f}% pero volumen entrando"
+        elif obv_data.get("distribution"):
+            obv_detail = f"Posible distribución: precio {obv_data['price_pct_20d']:+.1f}% pero volumen saliendo"
+            obv_ok = False
+        elif obv_data.get("obv_trend_up"):
+            obv_detail = "OBV en tendencia alcista (volumen respalda el precio)"
+        else:
+            obv_detail = "OBV en tendencia bajista (volumen no respalda subidas)"
+        checks.append(("Volumen (OBV) respalda el precio", obv_ok, obv_detail, 2))
+
+    # ── Fibonacci: estructura estática de mercado ────────────────────────
+    fib_data = tech.get("fibonacci") if tech and not tech.get("error") else None
+    if fib_data:
+        near = fib_data.get("near_support")
+        fib_ok = near is not None
+        fib_detail = (f"Precio en zona de soporte Fibonacci {near} (52 semanas)" if near
+                      else "Precio fuera de zonas de soporte Fibonacci clave (61.8%/78.6%)")
+        checks.append(("Cerca de soporte estructural (Fibonacci)", fib_ok, fib_detail, 2))
+
     total_w    = sum(c[3] for c in checks)
     achieved_w = sum(c[3] for c in checks if c[1])
     n_ok       = sum(1 for c in checks if c[1])
@@ -898,9 +937,30 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
         level, color, icon = "NO ES MOMENTO",   "#dc2626", "🔴"
         desc = "Pocos factores alineados. Esperar mejor precio, menor RSI o mejores fundamentales."
 
-    MAX_POSSIBLE_CHECKS = 9   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección, revisiones (9 max)
+    # ── VETO ADX: tendencia bajista fuerte confirmada ────────────────────
+    # Un ADX > 25 mide fuerza de tendencia (no dirección). Si además el
+    # precio cotiza bajo la MM200, esa fuerza es CLARAMENTE bajista —
+    # bloqueamos "ENTRADA IDEAL" para evitar recomendar comprar en plena
+    # caída estructural ("cuchillo cayendo"), aunque el resto de checks
+    # puntúen bien. Se degrada como máximo a "ENTRADA POSIBLE".
+    adx_veto_applied = False
+    adx_veto_detail  = ""
+    adx_val = tech.get("adx") if tech and not tech.get("error") else None
+    if adx_val is not None and mm200 is not None and price:
+        if adx_val > 25 and price < mm200 and level == "ENTRADA IDEAL":
+            level, color, icon = "ENTRADA POSIBLE", "#16a34a", "🟡"
+            adx_veto_detail = (
+                f"Bloqueado de 'Entrada Ideal' por ADX={adx_val:.1f} (>25) con precio bajo MM200: "
+                f"tendencia bajista estructuralmente fuerte, no un simple retroceso. "
+                f"Los demás factores son positivos, pero el momentum de fondo sigue siendo negativo."
+            )
+            desc = "Factores positivos, pero con veto técnico activo — ver aviso arriba."
+            adx_veto_applied = True
+
+    MAX_POSSIBLE_CHECKS = 12   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección,
+                               # revisiones, MACD, OBV, Fibonacci (12 max; ADX es veto, no check puntuado)
     missing_checks = MAX_POSSIBLE_CHECKS - len(checks)
-    reliability_ok = missing_checks <= 1   # tolerable perder 1 check (p.ej. PEG no aplicable)
+    reliability_ok = missing_checks <= 2   # tolerable perder hasta 2 checks (datos no siempre disponibles)
 
     return {
         "level": level, "color": color, "icon": icon, "desc": desc,
@@ -908,6 +968,9 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
         "n_total": len(checks), "checks": checks,
         "missing_checks": missing_checks,
         "reliability_ok": reliability_ok,
+        "adx_veto_applied": adx_veto_applied,
+        "adx_veto_detail": adx_veto_detail,
+        "adx_value": adx_val,
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1632,13 +1695,24 @@ def render_entry_signal(signal: dict):
     checks  = signal["checks"]
     missing = signal.get("missing_checks", 0)
     rel_ok  = signal.get("reliability_ok", True)
+    adx_veto = signal.get("adx_veto_applied", False)
+    adx_veto_detail = signal.get("adx_veto_detail", "")
+
+    if adx_veto:
+        st.markdown(
+            '<div style="background:#fffbeb;border:1px solid #d97706;border-left:4px solid #dc2626;'
+            'border-radius:6px;padding:0.7rem 0.9rem;margin-bottom:0.6rem;font-size:0.8rem;'
+            'color:#92400e;line-height:1.65;">'
+            f'🛑 <b>VETO POR TENDENCIA BAJISTA FUERTE (ADX):</b> {adx_veto_detail}</div>',
+            unsafe_allow_html=True
+        )
 
     if not rel_ok:
         st.markdown(
             f'<div style="background:#f4f6f9;border:1px solid #d97706;border-left:4px solid #d97706;'
             f'border-radius:6px;padding:0.6rem 0.9rem;margin-bottom:0.6rem;font-size:0.78rem;'
             f'color:#d97706;line-height:1.6;">'
-            f'⚠ FIABILIDAD REDUCIDA: solo se pudieron evaluar {n_total} de 9 criterios posibles '
+            f'⚠ FIABILIDAD REDUCIDA: solo se pudieron evaluar {n_total} de 12 criterios posibles '
             f'por falta de datos (técnico, valoración o fundamentales). El score puede no ser '
             f'representativo — interpreta esta señal con cautela adicional.</div>',
             unsafe_allow_html=True

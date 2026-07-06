@@ -135,20 +135,173 @@ def _rsi_label(rsi: float | None) -> tuple[str, str]:
     return "NEUTRAL", ""
 
 
+def _calc_macd(closes: pd.Series) -> dict | None:
+    """
+    MACD estándar: EMA(12) - EMA(26), línea de señal = EMA(9) del MACD.
+    Detecta además una divergencia alcista simplificada: si el precio marca
+    un mínimo más bajo que el mínimo anterior reciente, pero el histograma
+    MACD en ese punto es más alto que en el mínimo anterior, el impulso
+    bajista se está debilitando aunque el precio siga cayendo — señal de
+    posible agotamiento de la tendencia bajista.
+    """
+    try:
+        ema12  = closes.ewm(span=12, adjust=False).mean()
+        ema26  = closes.ewm(span=26, adjust=False).mean()
+        macd   = ema12 - ema26
+        signal = macd.ewm(span=9, adjust=False).mean()
+        hist   = macd - signal
+
+        macd_now, signal_now, hist_now = float(macd.iloc[-1]), float(signal.iloc[-1]), float(hist.iloc[-1])
+        macd_prev, signal_prev = float(macd.iloc[-2]), float(signal.iloc[-2])
+
+        # Cruce alcista: MACD cruza por encima de la señal en la última sesión
+        bullish_cross = (macd_prev <= signal_prev) and (macd_now > signal_now)
+        bearish_cross = (macd_prev >= signal_prev) and (macd_now < signal_now)
+
+        # Divergencia alcista simplificada sobre los últimos 60 días:
+        # localizar los dos mínimos de precio más recientes (ventana ±5 días)
+        # y comparar el histograma MACD en esos dos puntos.
+        divergence = False
+        window = min(60, len(closes) - 1)
+        recent_closes = closes.tail(window)
+        recent_hist   = hist.tail(window)
+        local_min_idx = []
+        vals = recent_closes.values
+        for i in range(5, len(vals) - 5):
+            seg = vals[i-5:i+6]
+            if vals[i] == seg.min():
+                local_min_idx.append(i)
+        if len(local_min_idx) >= 2:
+            i1, i2 = local_min_idx[-2], local_min_idx[-1]
+            price_lower_low = vals[i2] < vals[i1]
+            hist_higher_low = recent_hist.iloc[i2] > recent_hist.iloc[i1]
+            divergence = price_lower_low and hist_higher_low
+
+        return {
+            "macd": round(macd_now, 4), "signal": round(signal_now, 4),
+            "histogram": round(hist_now, 4),
+            "bullish_cross": bullish_cross, "bearish_cross": bearish_cross,
+            "bullish_divergence": divergence,
+        }
+    except Exception:
+        return None
+
+
+def _calc_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> float | None:
+    """
+    ADX (Average Directional Index) de 14 periodos — mide la FUERZA de la
+    tendencia, no su dirección. Un ADX > 25 indica tendencia fuerte
+    (alcista o bajista); < 20 indica mercado sin tendencia clara/lateral.
+    Se usa como filtro de seguridad: una tendencia bajista fuerte (ADX>25
+    con precio bajo MM200) bloquea la calificación "Entrada Ideal", evitando
+    recomendar comprar en plena caída estructural ("cuchillo cayendo").
+    """
+    try:
+        up_move   = high.diff()
+        down_move = -low.diff()
+        plus_dm   = ((up_move > down_move) & (up_move > 0)) * up_move
+        minus_dm  = ((down_move > up_move) & (down_move > 0)) * down_move
+
+        tr1 = high - low
+        tr2 = (high - close.shift()).abs()
+        tr3 = (low  - close.shift()).abs()
+        tr  = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+        atr       = tr.ewm(alpha=1/period, adjust=False).mean()
+        plus_di   = 100 * (plus_dm.ewm(alpha=1/period, adjust=False).mean() / atr)
+        minus_di  = 100 * (minus_dm.ewm(alpha=1/period, adjust=False).mean() / atr)
+        dx        = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+        adx       = dx.ewm(alpha=1/period, adjust=False).mean()
+
+        val = float(adx.iloc[-1])
+        return round(val, 2) if val == val else None   # descarta NaN
+    except Exception:
+        return None
+
+
+def _calc_obv_signal(close: pd.Series, volume: pd.Series) -> dict | None:
+    """
+    On-Balance Volume — acumula volumen en días de subida, lo resta en días
+    de bajada. Compara la tendencia del OBV contra la tendencia del precio
+    en los últimos 20 días: si el precio cae o está plano pero el OBV sube,
+    sugiere ACUMULACIÓN silenciosa (entradas de dinero fuerte pese al precio
+    débil); si el precio sube pero el OBV cae, sugiere DISTRIBUCIÓN (el
+    volumen no respalda la subida — posible rally débil).
+    """
+    try:
+        direction = close.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+        obv = (direction * volume).fillna(0).cumsum()
+
+        window = min(20, len(close) - 1)
+        price_change = float(close.iloc[-1] - close.iloc[-window])
+        obv_change   = float(obv.iloc[-1] - obv.iloc[-window])
+
+        price_pct = price_change / float(close.iloc[-window]) * 100 if close.iloc[-window] else 0
+
+        accumulation = price_pct <= 1 and obv_change > 0     # precio plano/bajista + OBV subiendo
+        distribution = price_pct > 1 and obv_change < 0      # precio subiendo + OBV cayendo
+
+        return {
+            "obv_trend_up": obv_change > 0,
+            "price_pct_20d": round(price_pct, 1),
+            "accumulation": accumulation,
+            "distribution": distribution,
+        }
+    except Exception:
+        return None
+
+
+def _calc_fibonacci_zone(price: float, week52_high: float | None, week52_low: float | None) -> dict | None:
+    """
+    Niveles de retroceso de Fibonacci entre el máximo y mínimo de 52 semanas
+    (estructura estática de mercado — a diferencia de las medias móviles,
+    que son soportes dinámicos, estos niveles no se mueven con el tiempo).
+    Se considera "zona de soporte" si el precio está dentro de una banda de
+    ±3% alrededor del retroceso del 61.8% o 78.6% — las zonas de rebote más
+    vigiladas técnicamente tras una corrección.
+    """
+    if not price or not week52_high or not week52_low or week52_high <= week52_low:
+        return None
+    try:
+        rango = week52_high - week52_low
+        levels = {
+            "23.6%": week52_high - rango * 0.236,
+            "38.2%": week52_high - rango * 0.382,
+            "50.0%": week52_high - rango * 0.500,
+            "61.8%": week52_high - rango * 0.618,
+            "78.6%": week52_high - rango * 0.786,
+        }
+        near_support = None
+        for label, level in levels.items():
+            if label in ("61.8%", "78.6%") and level > 0:
+                if abs(price - level) / level <= 0.03:
+                    near_support = label
+                    break
+        return {"levels": levels, "near_support": near_support}
+    except Exception:
+        return None
+
+
 def fetch_technical_data(ticker: str) -> dict:
     """RSI(14), MM50, MM200 con metadatos de frescura."""
     try:
-        t    = yf.Ticker(ticker)
-        hist = t.history(period="1y", interval="1d")
+        t = yf.Ticker(ticker)
+        # Se piden 2 años para tener margen suficiente: la media móvil de 200
+        # sesiones necesita 200 días PREVIOS a cada punto del gráfico. Si solo
+        # pidiéramos 1 año, la MM200 del gráfico solo tendría datos válidos en
+        # los últimos ~50 días del periodo (el resto sería NaN por falta de
+        # histórico previo dentro de la ventana pedida) — por eso se veía
+        # "demasiado corta" respecto a la MM50.
+        hist_full = t.history(period="2y", interval="1d")
 
-        if hist.empty or len(hist) < 50:
+        if hist_full.empty or len(hist_full) < 50:
             return {"error": "Histórico insuficiente"}
 
-        closes = hist["Close"]
-        price  = float(closes.iloc[-1])
+        closes_full = hist_full["Close"]
+        price       = float(closes_full.iloc[-1])
 
         # Fecha del último dato
-        last_date = hist.index[-1]
+        last_date = hist_full.index[-1]
         if hasattr(last_date, "strftime"):
             last_date_str = last_date.strftime("%Y-%m-%d")
         else:
@@ -156,9 +309,9 @@ def fetch_technical_data(ticker: str) -> dict:
         days_old  = _days_since(last_date_str)
         freshness = _freshness_status(days_old, STALE_PRICE)
 
-        rsi   = _calc_rsi(closes)
-        mm50  = round(float(closes.tail(50).mean()), 4)
-        mm200 = round(float(closes.tail(200).mean()), 4) if len(closes) >= 200 else None
+        rsi   = _calc_rsi(closes_full)
+        mm50  = round(float(closes_full.tail(50).mean()), 4)
+        mm200 = round(float(closes_full.tail(200).mean()), 4) if len(closes_full) >= 200 else None
 
         rsi_lbl, rsi_cls = _rsi_label(rsi)
 
@@ -177,16 +330,31 @@ def fetch_technical_data(ticker: str) -> dict:
         dist_mm50  = round((price - mm50)  / mm50  * 100, 2)
         dist_mm200 = round((price - mm200) / mm200 * 100, 2) if mm200 else None
 
-        # ── Serie histórica para gráfico (1 año) con MM50/MM200 día a día ──
-        mm50_series  = closes.rolling(window=50).mean()
-        mm200_series = closes.rolling(window=200).mean() if len(closes) >= 200 else None
+        # ── Nuevos indicadores: MACD, ADX, OBV, Fibonacci ────────────────
+        macd_data = _calc_macd(closes_full)
+        adx_val   = _calc_adx(hist_full["High"], hist_full["Low"], closes_full)
+        obv_data  = _calc_obv_signal(closes_full, hist_full["Volume"])
+        week52_h  = float(closes_full.tail(252).max())
+        week52_l  = float(closes_full.tail(252).min())
+        fib_data  = _calc_fibonacci_zone(price, week52_h, week52_l)
+
+        # ── Serie histórica para gráfico ─────────────────────────────────
+        # Las medias móviles se calculan sobre los 2 años completos (para que
+        # la MM200 tenga suficiente margen previo en TODO el tramo mostrado),
+        # y luego se recorta la serie final al último año para el gráfico.
+        mm50_series  = closes_full.rolling(window=50).mean()
+        mm200_series = closes_full.rolling(window=200).mean() if len(closes_full) >= 200 else None
+
+        # Recorte a ~1 año de sesiones (252 aprox.) para el gráfico
+        display_start = max(0, len(closes_full) - 252)
+
         price_history = []
-        for i in range(len(closes)):
-            d = hist.index[i]
+        for i in range(display_start, len(closes_full)):
+            d = hist_full.index[i]
             date_str = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
             price_history.append({
                 "date":  date_str,
-                "close": round(float(closes.iloc[i]), 4),
+                "close": round(float(closes_full.iloc[i]), 4),
                 "mm50":  round(float(mm50_series.iloc[i]), 4) if not mm50_series.isna().iloc[i] else None,
                 "mm200": (round(float(mm200_series.iloc[i]), 4)
                           if mm200_series is not None and not mm200_series.isna().iloc[i] else None),
@@ -207,6 +375,12 @@ def fetch_technical_data(ticker: str) -> dict:
             "dist_mm200":   dist_mm200,
             "cross_signal": cross_signal,
             "price_history":price_history,
+            "macd":         macd_data,
+            "adx":          adx_val,
+            "obv":          obv_data,
+            "fibonacci":    fib_data,
+            "week52_high_calc": week52_h,
+            "week52_low_calc":  week52_l,
             # Metadatos
             "last_date":    last_date_str,
             "days_old":     days_old,

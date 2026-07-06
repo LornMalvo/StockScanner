@@ -14,7 +14,8 @@ import os
 
 GEMINI_MODEL = "gemini-3.5-flash"
 GEMINI_URL   = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-TIMEOUT      = 40
+TIMEOUT      = 60
+MAX_OUTPUT_TOKENS = 4096
 
 
 def _get_gemini_key() -> str:
@@ -34,16 +35,7 @@ def is_available() -> bool:
 # {ticker} y {price} se sustituyen automáticamente por los datos reales.
 # ─────────────────────────────────────────────────────────────────────────────
 
-PROMPT_TEMPLATE = """Actúa como un analista financiero senior. Analiza la empresa con ticker {ticker}, que cotiza actualmente a {price}.
-
-Con base en tu conocimiento general de esta empresa (modelo de negocio, posición competitiva, situación financiera aproximada y perspectivas del sector), ofrece una valoración cualitativa breve que responda a:
-
-1. ¿Cuál es tu opinión general sobre la empresa a este precio?
-2. ¿Cuáles son sus principales fortalezas?
-3. ¿Cuáles son sus principales riesgos o debilidades?
-4. ¿Qué deberían vigilar los inversores en los próximos trimestres?
-
-Responde en español, en un máximo de 5 párrafos cortos, en prosa (sin listas ni encabezados). Sé directo y evita generalidades vacías."""
+PROMPT_TEMPLATE = """Haz un análisis y estudio de inversión de {ticker} según su cotización actual de {price}. Detalla a qué se dedica, líneas de negocio, estado de sus fundamentales, niveles de deuda, márgenes brutos, últimas noticias y anuncios más importantes, últimos resultados presentados (con fecha) y si han cumplido o no las expectativas del mercado, próxima presentación de resultados y puntos fuertes y débiles frente a la competencia de su sector."""
 
 
 def fetch_ai_valuation(ticker: str, price: float, currency: str = "USD") -> str | None:
@@ -63,7 +55,7 @@ def fetch_ai_valuation(ticker: str, price: float, currency: str = "USD") -> str 
             f"{GEMINI_URL}?key={key}",
             json={
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1200},
+                "generationConfig": {"temperature": 0.4, "maxOutputTokens": MAX_OUTPUT_TOKENS},
             },
             timeout=TIMEOUT,
         )
@@ -78,8 +70,16 @@ def fetch_ai_valuation(ticker: str, price: float, currency: str = "USD") -> str 
             st.warning("Gemini no devolvió respuesta (posible bloqueo de seguridad o prompt vacío).")
             return None
 
+        finish_reason = candidates[0].get("finishReason", "")
         parts = candidates[0].get("content", {}).get("parts", [])
         text  = parts[0].get("text", "").strip() if parts else ""
+
+        if finish_reason == "MAX_TOKENS":
+            st.warning(
+                f"⚠ La respuesta de Gemini se cortó por límite de longitud "
+                f"({MAX_OUTPUT_TOKENS} tokens). Se muestra el texto parcial recibido."
+            )
+
         return text or None
 
     except Exception as e:
