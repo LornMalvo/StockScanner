@@ -648,12 +648,26 @@ def _calc_growth_stability(quarters: list) -> tuple[float, str]:
         return 0.65, f"errático (σ={stddev:.0f}pp)"
 
 
-def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[str], list[str]]:
+def _pts_color(pts: float, max_pts: float) -> str:
+    """Devuelve rojo/amarillo/verde según el % de puntos logrados sobre el máximo posible."""
+    if max_pts <= 0:
+        return "#64748b"
+    pct = pts / max_pts
+    if pct >= 0.7:  return "#059669"   # verde — bueno/destacable
+    if pct >= 0.35: return "#d97706"   # amarillo — normal
+    return "#dc2626"                    # rojo — malo
+
+
+def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[tuple[str, str]], list[str]]:
     """
     Calcula la salud fundamental (0-100) con umbrales del sector.
-    Devuelve (score, breakdown, missing_fields) — missing_fields lista los
-    campos que no tenían dato real (None) y se excluyeron del cálculo, para
-    no penalizar falsamente una métrica desconocida como si fuera "0" o "mala".
+    Devuelve (score, breakdown, missing_fields). breakdown es ahora una
+    lista de tuplas (texto, color) — rojo/amarillo/verde según lo buena
+    que sea cada métrica concreta, para que el desglose se pueda colorear
+    visualmente en vez de mostrarse todo en gris plano.
+    missing_fields lista los campos que no tenían dato real (None) y se
+    excluyeron del cálculo, para no penalizar falsamente una métrica
+    desconocida como si fuera "0" o "mala".
     """
     score    = 0
     breakdown = []
@@ -667,8 +681,12 @@ def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[str], list[str
     short_r        = y.get("short_ratio") or 0
     debt_eq_raw    = y.get("debt_equity")
     curr_ratio_raw = y.get("current_ratio")
+    quick_ratio_raw= y.get("quick_ratio")
     fcf_raw        = y.get("free_cash_flow")
     ni_recent      = y.get("ni_year_cur")   # beneficio neto anual más reciente
+    total_debt     = y.get("total_debt")
+    total_cash     = y.get("total_cash")
+    ebitda         = y.get("ebitda")
 
     if profit_m_raw is None:   missing_fields.append("Margen neto")
     if roe_raw is None:        missing_fields.append("ROE")
@@ -676,121 +694,165 @@ def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[str], list[str
     if earn_yoy_raw is None:   missing_fields.append("Crecimiento beneficios")
     if debt_eq_raw is None:    missing_fields.append("Deuda/Equity")
     if curr_ratio_raw is None: missing_fields.append("Current Ratio")
+    if quick_ratio_raw is None:missing_fields.append("Quick Ratio")
     if fcf_raw is None:        missing_fields.append("Free Cash Flow")
 
-    profit_m   = profit_m_raw   if profit_m_raw   is not None else 0
-    roe        = roe_raw        if roe_raw        is not None else 0
-    rev_yoy    = rev_yoy_raw    if rev_yoy_raw    is not None else 0
-    earn_yoy   = earn_yoy_raw   if earn_yoy_raw   is not None else 0
-    debt_eq    = debt_eq_raw    if debt_eq_raw    is not None else 0
-    curr_ratio = curr_ratio_raw if curr_ratio_raw is not None else 0
-    fcf        = fcf_raw        if fcf_raw        is not None else 0
+    profit_m    = profit_m_raw    if profit_m_raw    is not None else 0
+    roe         = roe_raw         if roe_raw         is not None else 0
+    rev_yoy     = rev_yoy_raw     if rev_yoy_raw     is not None else 0
+    earn_yoy    = earn_yoy_raw    if earn_yoy_raw    is not None else 0
+    debt_eq     = debt_eq_raw     if debt_eq_raw     is not None else 0
+    curr_ratio  = curr_ratio_raw  if curr_ratio_raw  is not None else 0
+    quick_ratio = quick_ratio_raw if quick_ratio_raw is not None else 0
+    fcf         = fcf_raw         if fcf_raw         is not None else 0
 
     margin_ok = profile["margin_ok"]
     roe_ok    = profile["roe_ok"]
     peg_ok    = profile["peg_ok"]
 
-    # Margen neto vs benchmark sector (0-20 pts)
-    if profit_m >= margin_ok * 2:    pts = 20
-    elif profit_m >= margin_ok:      pts = 14
-    elif profit_m >= margin_ok * 0.5: pts = 7
+    # Margen neto vs benchmark sector (0-18 pts)
+    if profit_m >= margin_ok * 2:    pts = 18
+    elif profit_m >= margin_ok:      pts = 13
+    elif profit_m >= margin_ok * 0.5: pts = 6
     elif profit_m > 0:               pts = 3
     else:                            pts = 0
     score += pts
-    breakdown.append(f"Margen neto {profit_m*100:.1f}% (ref. sector >{margin_ok*100:.0f}%): +{pts}/20")
+    breakdown.append((f"Margen neto {profit_m*100:.1f}% (ref. sector >{margin_ok*100:.0f}%): +{pts}/18",
+                       _pts_color(pts, 18)))
 
-    # ROE vs benchmark sector (0-15 pts)
-    if roe >= roe_ok * 2:    pts = 15
-    elif roe >= roe_ok:      pts = 11
-    elif roe >= roe_ok * 0.5: pts = 5
+    # ROE vs benchmark sector (0-13 pts)
+    if roe >= roe_ok * 2:    pts = 13
+    elif roe >= roe_ok:      pts = 9
+    elif roe >= roe_ok * 0.5: pts = 4
     elif roe > 0:             pts = 2
     else:                     pts = 0
     score += pts
-    breakdown.append(f"ROE {roe*100:.1f}% (ref. sector >{roe_ok*100:.0f}%): +{pts}/15")
+    breakdown.append((f"ROE {roe*100:.1f}% (ref. sector >{roe_ok*100:.0f}%): +{pts}/13",
+                       _pts_color(pts, 13)))
 
-    # Crecimiento ingresos ponderado por estabilidad (0-15 pts, antes 0-20)
-    # Una empresa con crecimiento errático es más arriesgada que una con
-    # crecimiento constante, aunque el promedio YoY sea idéntico.
+    # Crecimiento ingresos ponderado por estabilidad (0-14 pts)
     rev_quarters = y.get("ttm_quarters", [])
     rev_stab_mult, rev_stab_desc = _calc_growth_stability(rev_quarters)
-    if rev_yoy >= 30:    pts_base = 15
-    elif rev_yoy >= 15:  pts_base = 11
+    if rev_yoy >= 30:    pts_base = 14
+    elif rev_yoy >= 15:  pts_base = 10
     elif rev_yoy >= 8:   pts_base = 7
     elif rev_yoy >= 3:   pts_base = 4
     elif rev_yoy >= 0:   pts_base = 1
     else:                pts_base = 0
     pts = round(pts_base * rev_stab_mult)
     score += pts
-    breakdown.append(
-        f"Crec. ingresos {rev_yoy:.1f}% × estabilidad {rev_stab_desc} "
-        f"(×{rev_stab_mult:.2f}): +{pts}/15"
-    )
+    breakdown.append((
+        f"Crec. ingresos {rev_yoy:.1f}% × estabilidad {rev_stab_desc} (×{rev_stab_mult:.2f}): +{pts}/14",
+        _pts_color(pts, 14)
+    ))
 
-    # Crecimiento beneficios ponderado por estabilidad (0-15 pts, antes 0-20)
+    # Crecimiento beneficios ponderado por estabilidad (0-14 pts)
     ni_quarters = y.get("net_income_q", [])
     earn_stab_mult, earn_stab_desc = _calc_growth_stability(ni_quarters)
-    if earn_yoy >= 40:   pts_base = 15
-    elif earn_yoy >= 20: pts_base = 11
+    if earn_yoy >= 40:   pts_base = 14
+    elif earn_yoy >= 20: pts_base = 10
     elif earn_yoy >= 10: pts_base = 7
     elif earn_yoy >= 0:  pts_base = 4
     else:                pts_base = 0
     pts = round(pts_base * earn_stab_mult)
     score += pts
-    breakdown.append(
-        f"Crec. beneficios {earn_yoy:.1f}% × estabilidad {earn_stab_desc} "
-        f"(×{earn_stab_mult:.2f}): +{pts}/15"
-    )
+    breakdown.append((
+        f"Crec. beneficios {earn_yoy:.1f}% × estabilidad {earn_stab_desc} (×{earn_stab_mult:.2f}): +{pts}/14",
+        _pts_color(pts, 14)
+    ))
 
-    # PEG vs benchmark sector (0-15 pts)
+    # PEG vs benchmark sector (0-13 pts)
     if peg:
-        if peg <= peg_ok * 0.5:   pts = 15
-        elif peg <= peg_ok * 0.75: pts = 11
-        elif peg <= peg_ok:        pts = 7
-        elif peg <= peg_ok * 1.5:  pts = 3
+        if peg <= peg_ok * 0.5:   pts = 13
+        elif peg <= peg_ok * 0.75: pts = 9
+        elif peg <= peg_ok:        pts = 6
+        elif peg <= peg_ok * 1.5:  pts = 2
         else:                      pts = 0
         score += pts
-        breakdown.append(f"PEG {peg:.2f} (ref. sector <{peg_ok}): +{pts}/15")
+        breakdown.append((f"PEG {peg:.2f} (ref. sector <{peg_ok}): +{pts}/13", _pts_color(pts, 13)))
 
-    # Balance sano (0-10 pts)
+    # ── Balance y Liquidez ampliado (0-20 pts) ───────────────────────────
+    # Incluye ahora 5 sub-métricas de solvencia/liquidez en vez de 3:
+    # FCF positivo, Current Ratio, Quick Ratio (NUEVO), Debt/Equity,
+    # y Net Debt/EBITDA (NUEVO) — el ratio de apalancamiento que de verdad
+    # usan los analistas de crédito, porque mide la deuda contra la
+    # capacidad real de generar beneficio operativo para pagarla, sin la
+    # distorsión que sufre Debt/Equity por recompras de acciones o
+    # depreciaciones de goodwill.
     b_pts = 0
-    if fcf > 0:           b_pts += 4
-    if curr_ratio >= 1.5: b_pts += 3
-    elif curr_ratio >= 1: b_pts += 1
-    if debt_eq < 50:      b_pts += 3
-    elif debt_eq < 100:   b_pts += 1
-    score += b_pts
-    breakdown.append(f"Balance (FCF/Liquidez/Deuda): +{b_pts}/10")
 
-    # Calidad del beneficio: FCF / Beneficio neto anual (0-10 pts, NUEVO)
+    # FCF positivo (0-4)
+    fcf_pts = 4 if fcf > 0 else 0
+    b_pts += fcf_pts
+    breakdown.append((f"Free Cash Flow {'positivo' if fcf>0 else 'negativo'}: +{fcf_pts}/4",
+                       _pts_color(fcf_pts, 4)))
+
+    # Current Ratio (0-3)
+    if curr_ratio >= 1.5:   cr_pts = 3
+    elif curr_ratio >= 1:   cr_pts = 1.5
+    else:                   cr_pts = 0
+    b_pts += cr_pts
+    breakdown.append((f"Current Ratio {curr_ratio:.2f}×: +{cr_pts:.1f}/3", _pts_color(cr_pts, 3)))
+
+    # Quick Ratio (0-4, NUEVO) — más estricto que Current Ratio porque
+    # excluye inventario, que no siempre es líquido de forma inmediata
+    if quick_ratio_raw is not None:
+        if quick_ratio >= 1.2:   qr_pts = 4
+        elif quick_ratio >= 0.8: qr_pts = 2.5
+        elif quick_ratio >= 0.5: qr_pts = 1
+        else:                    qr_pts = 0
+        b_pts += qr_pts
+        breakdown.append((f"Quick Ratio {quick_ratio:.2f}×: +{qr_pts:.1f}/4", _pts_color(qr_pts, 4)))
+
+    # Debt/Equity (0-3)
+    if debt_eq < 50:      de_pts = 3
+    elif debt_eq < 100:   de_pts = 1.5
+    else:                 de_pts = 0
+    b_pts += de_pts
+    breakdown.append((f"Debt/Equity {debt_eq:.0f}%: +{de_pts:.1f}/3", _pts_color(de_pts, 3)))
+
+    # Net Debt / EBITDA (0-6, NUEVO)
+    net_debt_ebitda = None
+    if total_debt is not None and ebitda and ebitda > 0:
+        net_debt = total_debt - (total_cash or 0)
+        net_debt_ebitda = net_debt / ebitda
+        if net_debt_ebitda <= 1:      nde_pts = 6
+        elif net_debt_ebitda <= 2:    nde_pts = 4.5
+        elif net_debt_ebitda <= 4:    nde_pts = 2
+        else:                          nde_pts = 0
+        b_pts += nde_pts
+        breakdown.append((
+            f"Net Debt/EBITDA {net_debt_ebitda:.2f}×: +{nde_pts:.1f}/6",
+            _pts_color(nde_pts, 6)
+        ))
+    else:
+        missing_fields.append("Net Debt/EBITDA")
+
+    score += b_pts
+
+    # Calidad del beneficio: FCF / Beneficio neto anual (0-8 pts)
     # Un ratio alto indica que el beneficio contable se traduce en caja real;
     # un ratio bajo o negativo sugiere ajustes contables que inflan el
-    # beneficio sin respaldo de generación de caja efectiva.
+    # beneficio sin respaldo de generación de caja efectiva. Ver párrafo
+    # explicativo siempre visible debajo del desglose.
     fcf_quality = None
     if fcf_raw is not None and ni_recent and ni_recent > 0:
         fcf_quality = fcf_raw / ni_recent
-        if fcf_quality >= 1.0:    q_pts = 10
-        elif fcf_quality >= 0.9:  q_pts = 8
-        elif fcf_quality >= 0.5:  q_pts = 5
-        elif fcf_quality >= 0:    q_pts = 2
+        if fcf_quality >= 1.0:    q_pts = 8
+        elif fcf_quality >= 0.9:  q_pts = 6.5
+        elif fcf_quality >= 0.5:  q_pts = 4
+        elif fcf_quality >= 0:    q_pts = 1.5
         else:                     q_pts = 0
         score += q_pts
-        tip_fcf_health = (
-            "FCF / Beneficio neto anual. Mide si el beneficio contable se traduce en caja real. "
-            "≥1.0× = excelente (10 pts) · 0.9-1.0× = muy buena (8 pts) · 0.5-0.9× = moderada (5 pts) · "
-            "0-0.5× = baja, posibles ajustes contables (2 pts) · negativo = alerta, consume caja (0 pts)."
-        )
-        tip_fcf_html = (
-            f'<span title="{tip_fcf_health}" style="margin-left:0.3rem;cursor:help;'
-            f'font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
-            f'border-radius:50%;padding:0 3px;font-family:monospace;">?</span>'
-        )
-        breakdown.append(f"Calidad beneficio FCF/NI {fcf_quality:.2f}×{tip_fcf_html}: +{q_pts}/10")
+        breakdown.append((f"Calidad beneficio FCF/NI {fcf_quality:.2f}×: +{q_pts:.1f}/8",
+                           _pts_color(q_pts, 8)))
     else:
         missing_fields.append("Calidad del beneficio (FCF/NI)")
 
-    score = min(100, score)
+    score = min(100, round(score))
     if missing_fields:
-        breakdown.append(f"⚠ Datos no disponibles (excluidos del cálculo, no penalizados): {', '.join(missing_fields)}")
+        breakdown.append((f"⚠ Datos no disponibles (excluidos del cálculo, no penalizados): {', '.join(missing_fields)}",
+                           "#64748b"))
     return score, breakdown, missing_fields
 
 
@@ -833,43 +895,89 @@ def _evaluate(y: dict) -> dict:
     # ── Upside ───────────────────────────────────────────────────────────
     upside = ((fair_value - price) / price * 100) if fair_value else None
 
-    # ── Diagnóstico — 7 niveles ───────────────────────────────────────────
-    # Los umbrales se suavizan/endurecen según el perfil de valoración del sector
+    # ── Diagnóstico — 7 niveles, con umbrales ajustados por sector ─────────
+    # ANTES: los umbrales (30/12/3/-3/-15/-30) eran fijos para todas las
+    # empresas pese a que el comentario original afirmaba que se ajustaban
+    # por sector — pe_ref/pe_high se calculaban pero nunca se usaban en esta
+    # clasificación (código muerto). AHORA sí se ajustan de verdad: sectores
+    # con más amplitud de valoración histórica (ratio pe_high/pe_fair alto,
+    # p.ej. Technology) requieren un upside/downside MAYOR para considerarse
+    # "muy infra/sobrevalorados", porque sus múltiplos oscilan más de forma
+    # normal. Sectores estables (p.ej. Utilities) usan bandas más estrechas.
     pe_ref  = profile["pe_fair"]
     pe_high = profile["pe_high"]
+
+    sector_vol_ratio    = pe_high / pe_ref if pe_ref else 1.65
+    _BASELINE_VOL_RATIO = 1.65   # media aproximada entre todos los sectores
+    threshold_factor    = max(0.85, min(1.20, sector_vol_ratio / _BASELINE_VOL_RATIO))
+
+    t_muy_infra  = 30 * threshold_factor
+    t_infra      = 12 * threshold_factor
+    t_lig_infra  = 3  * threshold_factor
+    t_justo      = 3  * threshold_factor   # banda simétrica alrededor de 0
+    t_observ     = 15 * threshold_factor
+    t_sobreval   = 30 * threshold_factor
 
     if upside is None:
         diag       = "SIN DATOS SUFICIENTES"
         diag_color = "#64748b"
         diag_icon  = "—"
-    elif upside >= 30:
+        diag_base  = diag
+    elif upside >= t_muy_infra:
+        diag_base  = "MUY INFRAVALORADA"
         diag       = "MUY INFRAVALORADA — Oportunidad excepcional"
         diag_color = "#059669"
         diag_icon  = "▲▲"
-    elif upside >= 12:
+    elif upside >= t_infra:
+        diag_base  = "INFRAVALORADA"
         diag       = "INFRAVALORADA — Potencial alcista significativo"
         diag_color = "#16a34a"
         diag_icon  = "▲"
-    elif upside >= 3:
+    elif upside >= t_lig_infra:
+        diag_base  = "LIGERAMENTE INFRAVALORADA"
         diag       = "LIGERAMENTE INFRAVALORADA — Entrada atractiva"
         diag_color = "#65a30d"
         diag_icon  = "↑"
-    elif upside >= -3:
+    elif upside >= -t_justo:
+        diag_base  = "PRECIO JUSTO"
         diag       = "PRECIO JUSTO — En rango de valor razonable"
         diag_color = "#d97706"
         diag_icon  = "="
-    elif upside >= -15:
+    elif upside >= -t_observ:
+        diag_base  = "EN OBSERVACIÓN"
         diag       = "EN OBSERVACIÓN — Precio por encima del valor objetivo"
         diag_color = "#ea580c"
         diag_icon  = "↓"
-    elif upside >= -30:
+    elif upside >= -t_sobreval:
+        diag_base  = "SOBREVALORADA"
         diag       = "SOBREVALORADA — Riesgo de corrección moderada"
         diag_color = "#dc2626"
         diag_icon  = "▼"
     else:
+        diag_base  = "MUY SOBREVALORADA"
         diag       = "MUY SOBREVALORADA — Riesgo de corrección severa"
         diag_color = "#dc2626"
         diag_icon  = "▼▼"
+
+    # ── Modificador de Salud Fundamental sobre el diagnóstico ──────────────
+    # El diagnóstico basado solo en upside puede ser engañoso: una empresa
+    # "MUY INFRAVALORADA" con fundamentales muy débiles no es una oportunidad
+    # clara, es un riesgo de "value trap". Igual que el veto de ADX en la
+    # Señal de Entrada, aquí degradamos visiblemente la conclusión cuando
+    # los fundamentales no la respaldan, en vez de mostrar solo el upside
+    # sin matices. Simétricamente, una "MUY SOBREVALORADA" con fundamentales
+    # excelentes se marca como menos arriesgada de lo que sugeriría el precio.
+    health_modifier_applied = False
+    if diag_base in ("MUY INFRAVALORADA", "INFRAVALORADA") and health_score < 40:
+        diag = f"{diag_base} CON RIESGO — fundamentales débiles (salud {health_score}/100)"
+        diag_color = "#d97706"
+        diag_icon  = "⚠"
+        health_modifier_applied = True
+    elif diag_base in ("MUY SOBREVALORADA", "SOBREVALORADA") and health_score >= 75:
+        diag = f"{diag_base}, PERO CON FUNDAMENTALES SÓLIDOS (salud {health_score}/100)"
+        diag_color = "#d97706"
+        diag_icon  = "⚠"
+        health_modifier_applied = True
 
     # ── Valoración relativa al sector ─────────────────────────────────────
     # Compara los múltiplos actuales contra los benchmarks del sector
@@ -946,6 +1054,9 @@ def _evaluate(y: dict) -> dict:
         "health_missing":  health_missing,
         "targets_range":   targets_range,
         "rate_adjustment": rate_adjustment,
+        "health_modifier_applied": health_modifier_applied,
+        "threshold_factor": threshold_factor,
+        "diag_base":       diag_base,
     }
 
 
@@ -1168,32 +1279,6 @@ def render_report(ticker, company_name, y: dict,
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
     # ════════════════════════════════════════════════════════════════════
-    # D · DESGLOSE TTM — Yahoo Finance
-    # ════════════════════════════════════════════════════════════════════
-    yahoo_quarters = y.get("ttm_quarters", []) or []
-    if yahoo_quarters:
-        _section("DESGLOSE TTM &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
-        def ttm_fmt(v):
-            return _fmt_big(v, "") if v is not None else "—"
-        # Ordenar del trimestre más antiguo al más reciente por fecha real
-        quarters_sorted = sorted(yahoo_quarters[:4], key=lambda q: q.get("date",""))
-        rows_t = ""
-        ytot   = 0
-        for i, q in enumerate(quarters_sorted):
-            val   = q.get("value") or 0
-            ytot += val
-            rows_t += (
-                f'<div class="ttm-row">'
-                f'<span>Q{i+1} ({q.get("date","")[:10]})</span>'
-                f'<span class="ttm-val">{ttm_fmt(val)}</span></div>'
-            )
-        rows_t += (
-            f'<div class="ttm-row"><span>TOTAL TTM</span>'
-            f'<span style="color:#d97706;">{ttm_fmt(ytot)}</span></div>'
-        )
-        st.markdown(f'<div class="metric-card">{rows_t}</div>', unsafe_allow_html=True)
-
-    # ════════════════════════════════════════════════════════════════════
     # I · CRECIMIENTO YoY
     # ════════════════════════════════════════════════════════════════════
     tip_yoy = (
@@ -1280,6 +1365,32 @@ def render_report(ticker, company_name, y: dict,
         'Fuente: estados financieros anuales de Yahoo Finance</div>',
         unsafe_allow_html=True
     )
+
+    # ════════════════════════════════════════════════════════════════════
+    # DESGLOSE TRIMESTRAL TTM — Yahoo Finance
+    # ════════════════════════════════════════════════════════════════════
+    yahoo_quarters = y.get("ttm_quarters", []) or []
+    if yahoo_quarters:
+        _section("DESGLOSE TRIMESTRAL TTM &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
+        def ttm_fmt(v):
+            return _fmt_big(v, "") if v is not None else "—"
+        # Ordenar del trimestre más antiguo al más reciente por fecha real
+        quarters_sorted = sorted(yahoo_quarters[:4], key=lambda q: q.get("date",""))
+        rows_t = ""
+        ytot   = 0
+        for i, q in enumerate(quarters_sorted):
+            val   = q.get("value") or 0
+            ytot += val
+            rows_t += (
+                f'<div class="ttm-row">'
+                f'<span>Q{i+1} ({q.get("date","")[:10]})</span>'
+                f'<span class="ttm-val">{ttm_fmt(val)}</span></div>'
+            )
+        rows_t += (
+            f'<div class="ttm-row"><span>TOTAL TTM</span>'
+            f'<span style="color:#d97706;">{ttm_fmt(ytot)}</span></div>'
+        )
+        st.markdown(f'<div class="metric-card">{rows_t}</div>', unsafe_allow_html=True)
 
     # ════════════════════════════════════════════════════════════════════
     # TENDENCIA Y EVOLUCIÓN TRIMESTRAL
@@ -1392,6 +1503,7 @@ def render_report(ticker, company_name, y: dict,
         adx_v  = tech.get("adx")
         obv_d  = tech.get("obv")
         fib_d  = tech.get("fibonacci")
+        support_d = tech.get("historical_support")
 
         def _tip(text):
             safe = text.replace('"', '&quot;')
@@ -1436,6 +1548,16 @@ def render_report(ticker, company_name, y: dict,
                 fib_lbl = f"En soporte {near}" if near else "Sin soporte Fibonacci cercano"
                 html3 += _kv(f"Fibonacci 52W{_tip('Niveles de retroceso entre el máximo y mínimo de 52 semanas — estructura ESTÁTICA de mercado, a diferencia de las medias móviles (dinámicas). Se marca en soporte si el precio está a menos del 3% de los niveles 61.8% o 78.6%, las zonas de rebote técnico más vigiladas tras una corrección.')}",
                     fib_lbl, "row-val green" if near else "row-val")
+            if support_d:
+                sup_currency = currency_y
+                sup_price_str = _fmt_price(support_d["level"], sup_currency, fx_rate)
+                html3 += _kv(f"Soporte histórico{_tip('Nivel de precio donde la acción ha rebotado repetidamente en los últimos 2 años (mínimo 2 toques), agrupando mínimos locales dentro de un margen del 2.5%. A diferencia de las medias móviles o Fibonacci, es un nivel REAL donde el mercado ya ha demostrado interés comprador, no un cálculo proporcional o dinámico.')}",
+                    sup_price_str, "row-val")
+                html3 += _kv("Distancia al soporte", f'-{support_d["distance_pct"]:.1f}%', "row-val red")
+                html3 += _kv("Nº de rebotes / último toque",
+                    f'{support_d["touches"]}× · {support_d.get("last_touch_date","N/A")}', "row-val")
+            elif tech and not tech.get("error"):
+                html3 += _kv("Soporte histórico", "Sin soporte estructural claro detectado", "row-val")
             if html3:
                 st.markdown(f'<div class="metric-card">{html3}</div>', unsafe_allow_html=True)
 
@@ -1493,6 +1615,19 @@ def render_report(ticker, company_name, y: dict,
             'ℹ️ Benchmarks estáticos (sin ajuste por tipos — no se pudo obtener el bono 10Y USA en este momento).</div>'
         )
 
+    threshold_factor = ev.get("threshold_factor", 1.0)
+    thresh_html = ""
+    if abs(threshold_factor - 1.0) > 0.01:
+        wider_narrower = "más amplios" if threshold_factor > 1 else "más estrechos"
+        thresh_html = (
+            f'<div style="margin-top:0.5rem;padding:0.5rem 0.7rem;background:#f4f6f9;'
+            f'border-left:3px solid #94a3b8;border-radius:4px;font-size:0.72rem;color:#475569;line-height:1.6;">'
+            f'ℹ️ <b>Umbrales de diagnóstico {wider_narrower} para este sector</b> (factor ×{threshold_factor:.2f}): '
+            f'los sectores con mayor amplitud histórica de valoración (ratio PER techo/PER justo alto) necesitan '
+            f'un upside o downside mayor para clasificarse como "muy infra/sobrevalorados", porque sus múltiplos '
+            f'oscilan más de forma normal sin que eso implique una anomalía real.</div>'
+        )
+
     st.markdown(
         '<div class="metric-card" style="border-left:3px solid #0284c7;">'
         '<div class="metric-label">CONTEXTO SECTORIAL</div>'
@@ -1510,6 +1645,7 @@ def render_report(ticker, company_name, y: dict,
         f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#0284c7;font-weight:600;">{ev["ev_ebitda_fair"]}×</div></div>'
         '</div>'
         f'{rate_adj_html}'
+        f'{thresh_html}'
         '</div>',
         unsafe_allow_html=True
     )
@@ -1565,8 +1701,22 @@ def render_report(ticker, company_name, y: dict,
     # Salud fundamental
     bar_col_h = "#059669" if health_score>=70 else "#d97706" if health_score>=45 else "#dc2626"
     bd_html = "".join(
-        f'<div style="font-size:0.75rem;color:#64748b;padding:0.2rem 0;border-bottom:1px solid #eef1f5;">▸ {b}</div>'
-        for b in ev["health_breakdown"]
+        f'<div style="font-size:0.75rem;color:{b_color};padding:0.25rem 0;border-bottom:1px solid #eef1f5;">▸ {b_text}</div>'
+        for b_text, b_color in ev["health_breakdown"]
+    )
+    fcf_quality_note = (
+        '<div style="margin-top:0.8rem;padding:0.6rem 0.8rem;background:#f4f6f9;border-left:3px solid #94a3b8;'
+        'border-radius:4px;font-size:0.72rem;color:#475569;line-height:1.65;">'
+        '<b style="color:#334155;">Calidad del beneficio (FCF/Beneficio neto):</b> mide si el beneficio contable '
+        'declarado se traduce realmente en caja generada por el negocio, o si es en parte producto de ajustes '
+        'contables (amortizaciones, provisiones, partidas no monetarias) que inflan el resultado sin respaldo '
+        'de flujo de caja real. Se calcula como Free Cash Flow ÷ Beneficio Neto anual. '
+        '<b style="color:#059669;">≥1.0×</b> = excelente, todo el beneficio (o más) se convierte en caja · '
+        '<b style="color:#059669;">0.9-1.0×</b> = muy buena · '
+        '<b style="color:#d97706;">0.5-0.9×</b> = moderada, vigilar tendencia · '
+        '<b style="color:#dc2626;">0-0.5×</b> = baja, posibles ajustes contables agresivos · '
+        '<b style="color:#dc2626;">negativo</b> = alerta, la empresa consume caja pese a declarar beneficio.'
+        '</div>'
     )
     with st.expander(f"SALUD FUNDAMENTAL: {health_score}/100 — ver desglose", expanded=True):
         st.markdown(
@@ -1577,7 +1727,11 @@ def render_report(ticker, company_name, y: dict,
             '</div>'
             f'<div style="background:#334155;border-radius:4px;height:8px;margin-bottom:1rem;">'
             f'<div style="height:8px;border-radius:4px;background:{bar_col_h};width:{health_score}%;"></div></div>'
-            f'{bd_html}</div>',
+            f'{bd_html}'
+            f'<div style="font-size:0.68rem;color:#94a3b8;margin-top:0.5rem;">'
+            '🔴 Rojo = dato débil &nbsp;·&nbsp; 🟡 Ámbar = normal &nbsp;·&nbsp; 🟢 Verde = bueno/destacable</div>'
+            f'{fcf_quality_note}'
+            '</div>',
             unsafe_allow_html=True
         )
 
@@ -1688,6 +1842,38 @@ def render_report(ticker, company_name, y: dict,
             '</div>'
         )
 
+    # Precio objetivo de analistas + upside/downside (punto 8: visible aquí
+    # directamente sin tener que hacer scroll hasta Mercado y Consenso)
+    target_mean = y.get("target_mean")
+    analyst_n   = y.get("analyst_count")
+    analyst_html = ""
+    if target_mean:
+        analyst_upside = (target_mean - price_now) / price_now * 100 if price_now else None
+        analyst_color  = "#059669" if (analyst_upside or 0) >= 0 else "#dc2626"
+        target_eur = f' <span style="color:#94a3b8;font-size:0.85em;">(€{target_mean*fx_rate:,.2f})</span>' if fx_rate and currency_y=="USD" else ""
+        n_note = f" ({analyst_n} analistas)" if analyst_n else ""
+        analyst_html = (
+            '<div class="verdict-sub" style="margin-top:0.3rem;">'
+            f'<span style="color:#64748b;">Objetivo analistas{n_note}:</span>'
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#0f172a;"> '
+            f'{currency_y} {target_mean:,.2f}{target_eur}</span>'
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:700;color:{analyst_color};"> '
+            f'({analyst_upside:+.2f}%)</span></div>'
+        ) if analyst_upside is not None else ""
+
+    # Aviso de modificador por salud fundamental (value trap / infravalorada con riesgo)
+    health_mod_html = ""
+    if ev.get("health_modifier_applied"):
+        health_mod_html = (
+            '<div style="margin-top:0.6rem;padding:0.5rem 0.7rem;background:#fffbeb;'
+            'border-left:3px solid #d97706;border-radius:4px;font-size:0.75rem;color:#92400e;line-height:1.6;">'
+            f'⚠ <b>Diagnóstico matizado por Salud Fundamental ({ev["health_score"]}/100):</b> '
+            f'el upside/downside por sí solo sugeriría "{ev.get("diag_base","")}", pero los fundamentales '
+            f'{"débiles" if ev["health_score"] < 40 else "sólidos"} de la empresa '
+            f'{"añaden riesgo de value trap (barata por una buena razón)" if ev["health_score"] < 40 else "reducen el riesgo real de la aparente sobrevaloración"}.'
+            '</div>'
+        )
+
     st.markdown(
         f'<div class="verdict-box" style="border-left-color:{diag_color};">'
         '<div class="verdict-title">DIAGNÓSTICO GENERAL</div>'
@@ -1703,11 +1889,13 @@ def render_report(ticker, company_name, y: dict,
         f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:700;color:{up_color};"> ({upside_str})</span>'
         '</div>'
         f'{range_html}'
+        f'{analyst_html}'
         f'<div class="verdict-sub"><span style="color:#64748b;">Vs. media 52W:</span>'
         f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:600;color:#d97706;"> {hist_str}</span></div>'
         f'<div class="verdict-sub" style="margin-top:0.4rem;">'
         f'<span style="color:#64748b;">Riesgo técnico (short){tip_risk}:</span>'
         f'<span style="color:#1e293b;"> {ev["risk"]}%</span></div>'
+        f'{health_mod_html}'
         '</div>',
         unsafe_allow_html=True
     )
@@ -1757,7 +1945,7 @@ def render_report(ticker, company_name, y: dict,
     render_pdf_download_button(
         ticker, company_name, y, ev, tech,
         sq_data, signal, trend, mult_data, ea,
-        fx_rate
+        fx_rate, peers_data
     )
 
     st.caption(
