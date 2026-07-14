@@ -916,6 +916,78 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
                       else "Precio fuera de zonas de soporte Fibonacci clave (61.8%/78.6%)")
         checks.append(("Cerca de soporte estructural (Fibonacci)", fib_ok, fib_detail, 2))
 
+    # ── Transacciones de insiders (compras/ventas de directivos) ─────────
+    # Dato con buen track record académico: los insiders compran cuando
+    # creen que el mercado infravalora su propia empresa. Se evalúan las
+    # transacciones más recientes disponibles (hasta 12, ya vienen
+    # ordenadas por fecha desde fetch_company_description).
+    insiders_data = y.get("insiders_data")
+    if insiders_data:
+        buys  = sum(1 for i in insiders_data if i.get("is_buy"))
+        sells = sum(1 for i in insiders_data if i.get("is_sell"))
+        if (buys + sells) > 0:
+            ins_ok = buys > sells
+            checks.append(("Insiders — más compras que ventas", ins_ok,
+                f"{buys} compras / {sells} ventas recientes de directivos", 2))
+
+    # ── Fuerza relativa vs mercado (SPY) ──────────────────────────────────
+    # Una acción que cae un 15% mientras el mercado cae un 20% muestra
+    # fuerza relativa, no debilidad — el resto de indicadores técnicos
+    # evalúan la acción aislada sin este contexto.
+    rel_data = tech.get("relative_strength") if tech and not tech.get("error") else None
+    if rel_data:
+        rs_ok = rel_data.get("outperforming", False)
+        checks.append(("Fuerza relativa vs mercado (SPY)", rs_ok,
+            f"Acción {rel_data['stock_return_pct']:+.1f}% vs SPY {rel_data['spy_return_pct']:+.1f}% "
+            f"({rel_data['period_days']}d) → relativa {rel_data['relative_strength_pct']:+.1f}%", 2))
+
+    # ── Proximidad a la fecha de resultados ──────────────────────────────
+    # Comprar justo antes de una presentación es un riesgo de gap overnight
+    # que ningún indicador técnico puede prever. Empresas que acaban de
+    # presentar (<7 días) puntúan mejor que las que están a punto de
+    # hacerlo (<7 días para la próxima) — menos incertidumbre inmediata.
+    next_q_date = y.get("next_q_date")
+    last_q_date = y.get("last_q_date")
+    try:
+        from datetime import datetime, timezone as _tz
+        now = datetime.now(_tz.utc)
+        days_to_next = None
+        days_since_last = None
+        if next_q_date and next_q_date not in ("N/A", None):
+            days_to_next = (datetime.strptime(next_q_date, "%Y-%m-%d").replace(tzinfo=_tz.utc) - now).days
+        if last_q_date and last_q_date not in ("N/A", None):
+            days_since_last = (now - datetime.strptime(last_q_date, "%Y-%m-%d").replace(tzinfo=_tz.utc)).days
+
+        if days_to_next is not None:
+            if days_to_next <= 7:
+                checks.append(("Sin resultados inminentes", False,
+                    f"Próxima presentación en {days_to_next} días — riesgo de gap overnight", 1))
+            elif days_since_last is not None and days_since_last <= 7:
+                checks.append(("Sin resultados inminentes", True,
+                    f"Resultados presentados hace {days_since_last} días — incertidumbre ya despejada", 1))
+            else:
+                checks.append(("Sin resultados inminentes", True,
+                    f"Próxima presentación en {days_to_next} días — margen suficiente", 1))
+    except Exception:
+        pass
+
+    # ── Filtro de liquidez / negociabilidad ───────────────────────────────
+    # Una empresa puede sacar puntuación perfecta y ser en la práctica
+    # difícil de comprar/vender sin mover el precio si el volumen medio
+    # o la capitalización son muy bajos.
+    avg_vol = y.get("average_volume")
+    mcap    = y.get("market_cap")
+    if avg_vol is not None or mcap is not None:
+        liq_ok = True
+        liq_notes = []
+        if avg_vol is not None:
+            liq_ok = liq_ok and avg_vol >= 300_000
+            liq_notes.append(f"Volumen medio: {avg_vol:,.0f}")
+        if mcap is not None:
+            liq_ok = liq_ok and mcap >= 300_000_000
+            liq_notes.append(f"Market Cap: ${mcap/1e6:,.0f}M")
+        checks.append(("Liquidez suficiente", liq_ok, " · ".join(liq_notes), 1))
+
     total_w    = sum(c[3] for c in checks)
     achieved_w = sum(c[3] for c in checks if c[1])
     n_ok       = sum(1 for c in checks if c[1])
@@ -957,10 +1029,11 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
             desc = "Factores positivos, pero con veto técnico activo — ver aviso arriba."
             adx_veto_applied = True
 
-    MAX_POSSIBLE_CHECKS = 12   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección,
-                               # revisiones, MACD, OBV, Fibonacci (12 max; ADX es veto, no check puntuado)
+    MAX_POSSIBLE_CHECKS = 16   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección,
+                               # revisiones, MACD, OBV, Fibonacci, insiders, fuerza relativa,
+                               # resultados, liquidez (16 max; ADX es veto, no check puntuado)
     missing_checks = MAX_POSSIBLE_CHECKS - len(checks)
-    reliability_ok = missing_checks <= 2   # tolerable perder hasta 2 checks (datos no siempre disponibles)
+    reliability_ok = missing_checks <= 3   # tolerable perder hasta 3 checks (datos no siempre disponibles)
 
     return {
         "level": level, "color": color, "icon": icon, "desc": desc,
@@ -1712,7 +1785,7 @@ def render_entry_signal(signal: dict):
             f'<div style="background:#f4f6f9;border:1px solid #d97706;border-left:4px solid #d97706;'
             f'border-radius:6px;padding:0.6rem 0.9rem;margin-bottom:0.6rem;font-size:0.78rem;'
             f'color:#d97706;line-height:1.6;">'
-            f'⚠ FIABILIDAD REDUCIDA: solo se pudieron evaluar {n_total} de 12 criterios posibles '
+            f'⚠ FIABILIDAD REDUCIDA: solo se pudieron evaluar {n_total} de 16 criterios posibles '
             f'por falta de datos (técnico, valoración o fundamentales). El score puede no ser '
             f'representativo — interpreta esta señal con cautela adicional.</div>',
             unsafe_allow_html=True

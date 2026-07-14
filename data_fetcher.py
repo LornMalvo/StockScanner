@@ -138,11 +138,22 @@ def _rsi_label(rsi: float | None) -> tuple[str, str]:
 def _calc_macd(closes: pd.Series) -> dict | None:
     """
     MACD estándar: EMA(12) - EMA(26), línea de señal = EMA(9) del MACD.
-    Detecta además una divergencia alcista simplificada: si el precio marca
-    un mínimo más bajo que el mínimo anterior reciente, pero el histograma
-    MACD en ese punto es más alto que en el mínimo anterior, el impulso
-    bajista se está debilitando aunque el precio siga cayendo — señal de
-    posible agotamiento de la tendencia bajista.
+
+    Detecta además una divergencia alcista: si el precio marca un mínimo
+    más bajo que el mínimo anterior, pero el histograma MACD en ese punto
+    es más alto que en el mínimo anterior, el impulso bajista se está
+    debilitando aunque el precio siga cayendo.
+
+    MEJORA vs versión anterior: la detección original solo exigía que un
+    punto fuese el más bajo en una ventana de ±5 sesiones, lo que en
+    mercados de alta volatilidad podía marcar como "mínimo local" simple
+    ruido de 1-2 días y disparar divergencias falsas que activaban
+    prematuramente la Señal de Entrada. Ahora se exige además:
+      1. Separación mínima de 10 sesiones entre los dos mínimos comparados
+         (evita comparar dos dientes de sierra del mismo movimiento).
+      2. Profundidad mínima: cada mínimo debe estar al menos un 3% por
+         debajo de los máximos que lo rodean (±10 sesiones), para que
+         cuente como un swing low real y no ruido intradía.
     """
     try:
         ema12  = closes.ewm(span=12, adjust=False).mean()
@@ -154,28 +165,43 @@ def _calc_macd(closes: pd.Series) -> dict | None:
         macd_now, signal_now, hist_now = float(macd.iloc[-1]), float(signal.iloc[-1]), float(hist.iloc[-1])
         macd_prev, signal_prev = float(macd.iloc[-2]), float(signal.iloc[-2])
 
-        # Cruce alcista: MACD cruza por encima de la señal en la última sesión
         bullish_cross = (macd_prev <= signal_prev) and (macd_now > signal_now)
         bearish_cross = (macd_prev >= signal_prev) and (macd_now < signal_now)
 
-        # Divergencia alcista simplificada sobre los últimos 60 días:
-        # localizar los dos mínimos de precio más recientes (ventana ±5 días)
-        # y comparar el histograma MACD en esos dos puntos.
+        MIN_SEPARATION = 10    # sesiones mínimas entre los dos mínimos comparados
+        MIN_DEPTH_PCT  = 0.03  # profundidad mínima (3%) respecto a los máximos circundantes
+
         divergence = False
-        window = min(60, len(closes) - 1)
+        window = min(90, len(closes) - 1)   # ventana algo más amplia para dar margen a la separación mínima
         recent_closes = closes.tail(window)
         recent_hist   = hist.tail(window)
-        local_min_idx = []
         vals = recent_closes.values
+
+        def _is_real_swing_low(i, vals, min_depth_pct):
+            """Exige que el mínimo esté MIN_DEPTH_PCT por debajo de los máximos ±10 sesiones."""
+            lo = max(0, i - 10)
+            hi = min(len(vals), i + 11)
+            surrounding_max = vals[lo:hi].max()
+            if surrounding_max <= 0:
+                return False
+            depth = (surrounding_max - vals[i]) / surrounding_max
+            return depth >= min_depth_pct
+
+        local_min_idx = []
         for i in range(5, len(vals) - 5):
             seg = vals[i-5:i+6]
-            if vals[i] == seg.min():
+            if vals[i] == seg.min() and _is_real_swing_low(i, vals, MIN_DEPTH_PCT):
                 local_min_idx.append(i)
+
         if len(local_min_idx) >= 2:
-            i1, i2 = local_min_idx[-2], local_min_idx[-1]
-            price_lower_low = vals[i2] < vals[i1]
-            hist_higher_low = recent_hist.iloc[i2] > recent_hist.iloc[i1]
-            divergence = price_lower_low and hist_higher_low
+            i2 = local_min_idx[-1]
+            # Buscar el mínimo anterior más reciente que cumpla la separación mínima
+            i1_candidates = [idx for idx in local_min_idx[:-1] if (i2 - idx) >= MIN_SEPARATION]
+            if i1_candidates:
+                i1 = i1_candidates[-1]
+                price_lower_low = vals[i2] < vals[i1]
+                hist_higher_low = recent_hist.iloc[i2] > recent_hist.iloc[i1]
+                divergence = price_lower_low and hist_higher_low
 
         return {
             "macd": round(macd_now, 4), "signal": round(signal_now, 4),
@@ -354,6 +380,160 @@ def _calc_historical_support(closes: pd.Series, dates: list, price: float) -> di
         return None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# BALANCE HISTÓRICO (2 años) — para Piotroski F-Score, ROIC y Dilución
+# ─────────────────────────────────────────────────────────────────────────────
+# Yahoo cambia los nombres de fila del balance/income statement entre tickers
+# sin previo aviso (ya nos ha pasado con EPS y Dividend Yield). Por eso cada
+# campo se busca probando varios nombres candidatos y se descarta con None
+# si ninguno aparece, en vez de asumir un valor — así cada criterio que
+# dependa de este dato puede marcarse como "no evaluable" en vez de dar un
+# resultado silenciosamente incorrecto.
+
+def _find_row(df: pd.DataFrame, candidates: list):
+    """Devuelve la primera fila (Serie) cuyo nombre coincide con algún candidato."""
+    if df is None or df.empty:
+        return None
+    for name in candidates:
+        if name in df.index:
+            return df.loc[name]
+    return None
+
+
+def fetch_balance_sheet_history(ticker: str) -> dict:
+    """
+    Extrae del balance e income statement ANUAL (2 últimos años disponibles)
+    todos los campos necesarios para Piotroski F-Score, ROIC y el chequeo de
+    dilución. Cada campo puede venir como None si Yahoo no lo expone para
+    ese ticker concreto — los consumidores de este dict deben tratarlo así,
+    nunca asumir 0.
+    """
+    result = {
+        "total_assets_cur": None, "total_assets_prior": None,
+        "current_assets_cur": None, "current_liab_cur": None,
+        "current_ratio_prior": None,
+        "long_term_debt_cur": None, "long_term_debt_prior": None,
+        "gross_margin_cur": None, "gross_margin_prior": None,
+        "shares_out_cur": None, "shares_out_prior": None,
+        "total_equity_cur": None,
+        "operating_income_cur": None,
+        "net_income_prior": None,
+        "revenue_prior_for_turnover": None,
+    }
+    try:
+        t  = yf.Ticker(ticker)
+        bs = t.balance_sheet     # anual, columnas = años, más reciente primero
+        inc = t.income_stmt
+
+        if bs is not None and not bs.empty and len(bs.columns) >= 1:
+            ta_row = _find_row(bs, ["Total Assets"])
+            if ta_row is not None:
+                vals = ta_row.dropna()
+                if len(vals) >= 1: result["total_assets_cur"]   = float(vals.iloc[0])
+                if len(vals) >= 2: result["total_assets_prior"] = float(vals.iloc[1])
+
+            ca_row = _find_row(bs, ["Current Assets"])
+            cl_row = _find_row(bs, ["Current Liabilities"])
+            if ca_row is not None and cl_row is not None:
+                ca_vals, cl_vals = ca_row.dropna(), cl_row.dropna()
+                if len(ca_vals) >= 1 and len(cl_vals) >= 1:
+                    result["current_assets_cur"] = float(ca_vals.iloc[0])
+                    result["current_liab_cur"]   = float(cl_vals.iloc[0])
+                if len(ca_vals) >= 2 and len(cl_vals) >= 2 and cl_vals.iloc[1]:
+                    result["current_ratio_prior"] = float(ca_vals.iloc[1]) / float(cl_vals.iloc[1])
+
+            ltd_row = _find_row(bs, ["Long Term Debt", "Long Term Debt And Capital Lease Obligation"])
+            if ltd_row is not None:
+                vals = ltd_row.dropna()
+                if len(vals) >= 1: result["long_term_debt_cur"]   = float(vals.iloc[0])
+                if len(vals) >= 2: result["long_term_debt_prior"] = float(vals.iloc[1])
+
+            shares_row = _find_row(bs, ["Ordinary Shares Number", "Share Issued"])
+            if shares_row is not None:
+                vals = shares_row.dropna()
+                if len(vals) >= 1: result["shares_out_cur"]   = float(vals.iloc[0])
+                if len(vals) >= 2: result["shares_out_prior"] = float(vals.iloc[1])
+
+            eq_row = _find_row(bs, ["Common Stock Equity", "Stockholders Equity",
+                                     "Total Equity Gross Minority Interest"])
+            if eq_row is not None:
+                vals = eq_row.dropna()
+                if len(vals) >= 1: result["total_equity_cur"] = float(vals.iloc[0])
+
+        if inc is not None and not inc.empty and len(inc.columns) >= 1:
+            rev_row  = _find_row(inc, ["Total Revenue"])
+            cogs_row = _find_row(inc, ["Cost Of Revenue", "Reconciled Cost Of Revenue"])
+            gp_row   = _find_row(inc, ["Gross Profit"])
+            if rev_row is not None:
+                rev_vals = rev_row.dropna()
+                if len(rev_vals) >= 2:
+                    result["revenue_prior_for_turnover"] = float(rev_vals.iloc[1])
+                if gp_row is not None:
+                    gp_vals = gp_row.dropna()
+                    if len(rev_vals) >= 1 and len(gp_vals) >= 1 and rev_vals.iloc[0]:
+                        result["gross_margin_cur"] = float(gp_vals.iloc[0]) / float(rev_vals.iloc[0])
+                    if len(rev_vals) >= 2 and len(gp_vals) >= 2 and rev_vals.iloc[1]:
+                        result["gross_margin_prior"] = float(gp_vals.iloc[1]) / float(rev_vals.iloc[1])
+                elif cogs_row is not None:
+                    cogs_vals = cogs_row.dropna()
+                    if len(rev_vals) >= 1 and len(cogs_vals) >= 1 and rev_vals.iloc[0]:
+                        result["gross_margin_cur"] = (float(rev_vals.iloc[0]) - float(cogs_vals.iloc[0])) / float(rev_vals.iloc[0])
+                    if len(rev_vals) >= 2 and len(cogs_vals) >= 2 and rev_vals.iloc[1]:
+                        result["gross_margin_prior"] = (float(rev_vals.iloc[1]) - float(cogs_vals.iloc[1])) / float(rev_vals.iloc[1])
+
+            op_row = _find_row(inc, ["Operating Income", "EBIT"])
+            if op_row is not None:
+                vals = op_row.dropna()
+                if len(vals) >= 1: result["operating_income_cur"] = float(vals.iloc[0])
+
+            ni_row = _find_row(inc, ["Net Income", "Net Income Common Stockholders"])
+            if ni_row is not None:
+                vals = ni_row.dropna()
+                if len(vals) >= 2: result["net_income_prior"] = float(vals.iloc[1])
+
+    except Exception as e:
+        print(f"[BalanceHistory] {ticker}: {e}")
+
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FUERZA RELATIVA VS MERCADO (SPY) Y LIQUIDEZ
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fetch_relative_strength(closes: pd.Series, period_days: int = 63) -> dict | None:
+    """
+    Compara el rendimiento de la acción contra el S&P 500 (SPY) en la misma
+    ventana temporal (~63 sesiones = 3 meses). Una caída del 15% en un mes en
+    que el mercado cae un 20% es en realidad fuerza relativa, no debilidad —
+    el sistema técnico actual evalúa la acción aislada sin este contexto.
+    """
+    try:
+        if len(closes) < period_days + 1:
+            period_days = len(closes) - 1
+        if period_days < 10:
+            return None
+
+        stock_ret = float(closes.iloc[-1] / closes.iloc[-period_days-1] - 1) * 100
+
+        spy = yf.Ticker("SPY").history(period="6mo", interval="1d")["Close"]
+        if spy.empty or len(spy) < period_days + 1:
+            return None
+        spy_ret = float(spy.iloc[-1] / spy.iloc[-period_days-1] - 1) * 100
+
+        rel_strength = stock_ret - spy_ret
+        return {
+            "stock_return_pct": round(stock_ret, 1),
+            "spy_return_pct":   round(spy_ret, 1),
+            "relative_strength_pct": round(rel_strength, 1),
+            "period_days": period_days,
+            "outperforming": rel_strength > 0,
+        }
+    except Exception as e:
+        print(f"[RelativeStrength] Error: {e}")
+        return None
+
+
 def fetch_technical_data(ticker: str) -> dict:
     """RSI(14), MM50, MM200 con metadatos de frescura."""
     try:
@@ -415,6 +595,7 @@ def fetch_technical_data(ticker: str) -> dict:
             for d in hist_full.index
         ]
         support_data = _calc_historical_support(closes_full, dates_str_full, price)
+        rel_strength_data = fetch_relative_strength(closes_full)
 
         # ── Serie histórica para gráfico ─────────────────────────────────
         # Las medias móviles se calculan sobre los 2 años completos (para que
@@ -458,6 +639,7 @@ def fetch_technical_data(ticker: str) -> dict:
             "obv":          obv_data,
             "fibonacci":    fib_data,
             "historical_support": support_data,
+            "relative_strength": rel_strength_data,
             "week52_high_calc": week52_h,
             "week52_low_calc":  week52_l,
             # Metadatos
@@ -680,6 +862,7 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
             "short_percent_of_float": info.get("shortPercentOfFloat"),
             "float_shares":           info.get("floatShares"),
             "shares_outstanding":     info.get("sharesOutstanding"),
+            "average_volume":         info.get("averageVolume") or info.get("averageDailyVolume10Day"),
             "date_short_interest":    info.get("dateShortInterest"),
             "eps_ttm":          info.get("trailingEps"),
             "eps_forward":      info.get("forwardEps"),

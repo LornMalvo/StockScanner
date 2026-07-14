@@ -16,8 +16,12 @@ from reportlab.lib.units import cm
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image
 )
+import matplotlib
+matplotlib.use("Agg")   # backend sin GUI, necesario en servidor
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 from reportlab.lib.enums import TA_LEFT, TA_CENTER
 
 
@@ -113,6 +117,60 @@ def _table(data, col_widths=None, header=True, row_colors=None):
 # ---------------------------------------------------------------------------
 # GENERACION DEL PDF
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# GRAFICO DE COTIZACION (imagen estatica para el PDF)
+# ---------------------------------------------------------------------------
+
+def _generate_price_chart_image(tech: dict, ticker: str, currency: str = "USD") -> io.BytesIO | None:
+    """
+    Genera el grafico de cotizacion a 1 ano con MM50/MM200 como imagen PNG
+    (via matplotlib) para insertar en el PDF. La version interactiva de la
+    app usa Plotly, pero Plotly requiere el paquete kaleido (no siempre
+    disponible/instalable de forma fiable) para exportar a imagen estatica;
+    matplotlib es la opcion mas ligera y sin dependencias extra para este caso.
+    Devuelve None si no hay datos de historico de precios disponibles.
+    """
+    history = tech.get("price_history") if tech else None
+    if not history:
+        return None
+
+    try:
+        dates  = [datetime.strptime(h["date"], "%Y-%m-%d") for h in history]
+        closes = [h["close"] for h in history]
+        mm50s  = [h["mm50"]  for h in history]
+        mm200s = [h["mm200"] for h in history]
+
+        fig, ax = plt.subplots(figsize=(9.2, 3.6), dpi=150)
+
+        ax.plot(dates, closes, color="#0284c7", linewidth=1.4, label="Precio")
+        ax.plot(dates, mm50s,  color="#d97706", linewidth=1.0, label="MM50")
+        if any(v is not None for v in mm200s):
+            ax.plot(dates, mm200s, color="#dc2626", linewidth=1.0, label="MM200")
+
+        ax.set_facecolor("#ffffff")
+        fig.patch.set_facecolor("#ffffff")
+        ax.grid(True, color="#f1f5f9", linewidth=0.6)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color("#e2e8f0")
+        ax.spines["bottom"].set_color("#e2e8f0")
+        ax.tick_params(colors="#64748b", labelsize=8)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+        ax.set_ylabel(f"Precio ({currency})", fontsize=8, color="#475569")
+        ax.legend(loc="upper left", fontsize=8, frameon=False)
+        fig.tight_layout()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", facecolor="#ffffff", bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        return buf
+    except Exception as e:
+        print(f"[PDF Chart] Error generando gráfico para {ticker}: {e}")
+        return None
+
 
 def generate_analysis_pdf(
     ticker: str, company_name: str,
@@ -215,6 +273,16 @@ def generate_analysis_pdf(
         story.append(Paragraph("METODOLOGIA DE VALORACION", styles["SectionHeader"]))
         for m in methods_used:
             story.append(Paragraph(f"&#8226; {m}", styles["BodyTiny"]))
+
+        rule40 = ev.get("rule_of_40")
+        if rule40:
+            r40_verdict = "CUMPLE" if rule40["passes"] else "NO CUMPLE"
+            story.append(Paragraph(
+                f"<b>Regla del 40</b> (auditoria de crecimiento hyper-growth): "
+                f"Crec. ingresos {rule40['rev_growth']:+.1f}% + Margen FCF {rule40['fcf_margin']:+.1f}% "
+                f"= {rule40['total']:+.1f}% (umbral 40%) -- {r40_verdict}",
+                styles["WarnBox"] if not rule40["passes"] else styles["BodySmall"]
+            ))
         story.append(Spacer(1, 10))
 
     # -- Salud fundamental detallada -----------------------------------------
@@ -250,6 +318,49 @@ def generate_analysis_pdf(
         ))
         story.append(Spacer(1, 10))
 
+    # -- Piotroski F-Score (herramienta independiente) -----------------------
+    pio = ev.get("piotroski", {})
+    if pio.get("n_evaluable", 0) > 0:
+        story.append(Paragraph(
+            f"PIOTROSKI F-SCORE -- {pio['score']}/{pio['n_evaluable']} evaluado ({pio['level']})",
+            styles["SectionHeader"]
+        ))
+        story.append(Paragraph(
+            "Sistema de 9 criterios binarios (rentabilidad, apalancamiento/liquidez, eficiencia "
+            "operativa) para detectar deterioro financiero. Herramienta independiente, no se "
+            f"mezcla con el score de Salud Fundamental. {9 - pio['n_evaluable']} criterio(s) no "
+            "evaluable(s) por falta de balance historico para este ticker.",
+            styles["BodySmall"]
+        ))
+        pio_rows = [["Criterio", "Estado", "Detalle"]]
+        pio_colors = []
+        for name, status, detail in pio["criteria"]:
+            if status is None:
+                status_txt, color = "No evaluable", "#94a3b8"
+            elif status:
+                status_txt, color = "Cumple", "#059669"
+            else:
+                status_txt, color = "No cumple", "#dc2626"
+            pio_rows.append([name, status_txt, detail])
+            pio_colors.append(color)
+        pio_table = Table(pio_rows, colWidths=[4.5*cm, 2.3*cm, 8.4*cm])
+        pio_style = [
+            ("FONTSIZE", (0,0), (-1,-1), 7.6),
+            ("FONTNAME", (0,0), (-1,-1), "Helvetica"),
+            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#0284c7")),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+            ("TOPPADDING", (0,0), (-1,-1), 4),
+            ("LINEBELOW", (0,0), (-1,-1), 0.3, colors.HexColor("#e2e8f0")),
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ]
+        for i, c in enumerate(pio_colors):
+            pio_style.append(("TEXTCOLOR", (1, i+1), (1, i+1), colors.HexColor(c)))
+        pio_table.setStyle(TableStyle(pio_style))
+        story.append(pio_table)
+        story.append(Spacer(1, 10))
+
     # -- Metricas fundamentales clave -----------------------------------------
     story.append(Paragraph("METRICAS FUNDAMENTALES", styles["SectionHeader"]))
     net_debt_ebitda = None
@@ -282,6 +393,17 @@ def generate_analysis_pdf(
     # -- Analisis tecnico -----------------------------------------------------
     if tech and not tech.get("error"):
         story.append(Paragraph("ANALISIS TECNICO", styles["SectionHeader"]))
+
+        chart_buf = _generate_price_chart_image(tech, ticker, currency)
+        if chart_buf:
+            img = Image(chart_buf, width=15.5*cm, height=6.07*cm)
+            story.append(img)
+            story.append(Paragraph(
+                "Cotizacion a 1 ano con medias moviles MM50 (naranja) y MM200 (roja).",
+                styles["BodyTiny"]
+            ))
+            story.append(Spacer(1, 6))
+
         tech_data = [
             ["Indicador", "Valor"],
             ["RSI (14)", f"{tech.get('rsi'):.1f}" if tech.get("rsi") is not None else "N/A"],

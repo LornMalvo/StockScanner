@@ -6,6 +6,7 @@ Renderiza el informe completo en Streamlit con el diseño claro.
 import streamlit as st
 import plotly.graph_objects as go
 import yfinance as yf
+from data_fetcher import fetch_balance_sheet_history
 from analysis import (
     calc_entry_signal, calc_trend, fetch_peer_data, get_manual_competitors,
     render_entry_signal, render_trend, render_peers,
@@ -658,17 +659,203 @@ def _pts_color(pts: float, max_pts: float) -> str:
     return "#dc2626"                    # rojo — malo
 
 
-def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[tuple[str, str]], list[str]]:
+def _calc_roic(y: dict, bh: dict) -> tuple[float | None, str]:
+    """
+    ROIC (Return on Invested Capital) = NOPAT / Capital Invertido.
+    A diferencia del ROE (que se infla con apalancamiento), ROIC mide la
+    eficiencia real de asignación de capital de la directiva, independiente
+    de cómo esté financiada la empresa.
+
+    NOPAT = Operating Income x (1 - tipo impositivo ~21%). Se usa el
+    Operating Income real del balance histórico si está disponible; si no,
+    se aproxima con operating_margin x Revenue (menos preciso pero
+    disponible siempre).
+
+    Capital Invertido = Deuda Total + Patrimonio Neto - Caja. El Patrimonio
+    Neto se usa del balance real si está disponible; si no, se aproxima
+    como Market Cap / Price-Book (más ruidoso, pero evita descartar el
+    cálculo quedando sin dato).
+    """
+    tax_rate = 0.21
+    op_income = bh.get("operating_income_cur")
+    if op_income is None:
+        rev = y.get("rev_year_cur")
+        op_margin = y.get("operating_margin")
+        if rev and op_margin is not None:
+            op_income = rev * op_margin
+    if op_income is None:
+        return None, "Sin datos suficientes (Operating Income no disponible)"
+
+    nopat = op_income * (1 - tax_rate)
+
+    equity = bh.get("total_equity_cur")
+    if equity is None:
+        mcap, pb = y.get("market_cap"), y.get("price_book")
+        if mcap and pb and pb > 0:
+            equity = mcap / pb
+    total_debt = y.get("total_debt") or 0
+    total_cash = y.get("total_cash") or 0
+
+    if equity is None:
+        return None, "Sin datos suficientes (Patrimonio Neto no disponible)"
+
+    invested_capital = total_debt + equity - total_cash
+    if invested_capital <= 0:
+        return None, "Capital invertido no positivo (no calculable de forma fiable)"
+
+    roic = nopat / invested_capital
+    return roic, "OK"
+
+
+def _calc_rule_of_40(y: dict) -> dict | None:
+    """
+    Regla del 40: Crecimiento de Ingresos YoY (%) + Margen FCF (%) >= 40.
+    Se usa para auditar la calidad del crecimiento en empresas del fallback
+    hyper-growth (EPS negativo + alto crecimiento): crecer rápido quemando
+    caja de forma insostenible NO es lo mismo que crecer rápido de forma
+    sana. Una empresa que crece al 30% con margen FCF del -20% suma solo 10
+    (destruye valor pese al crecimiento aparente).
+    """
+    rev_yoy = y.get("revenue_yoy")
+    fcf     = y.get("free_cash_flow")
+    rev     = y.get("rev_year_cur")
+    if rev_yoy is None or fcf is None or not rev:
+        return None
+    fcf_margin = fcf / rev * 100
+    total = rev_yoy + fcf_margin
+    return {
+        "rev_growth": round(rev_yoy, 1),
+        "fcf_margin": round(fcf_margin, 1),
+        "total": round(total, 1),
+        "passes": total >= 40,
+    }
+
+
+def calc_piotroski_score(y: dict, bh: dict) -> dict:
+    """
+    Piotroski F-Score (0-9): sistema de 9 criterios binarios sobre
+    rentabilidad, apalancamiento/liquidez y eficiencia operativa, pensado
+    para detectar deterioro financiero incluso en empresas que parecen
+    baratas por otros motivos ("value traps").
+
+    A diferencia del Altman Z-Score (descartado — requiere Beneficios
+    Retenidos y más partidas del balance que Yahoo no siempre expone con
+    fiabilidad), Piotroski usa métricas más básicas y accesibles. Aun así,
+    3 de los 9 criterios necesitan Total Assets de 2 años, un dato que
+    Yahoo no siempre tiene disponible para todos los tickers — por eso el
+    score se muestra siempre como "X/9 evaluado", nunca forzando los 9
+    puntos si falta información: cada criterio no evaluable se excluye
+    limpiamente en vez de asumir un valor.
+    """
+    criteria = []   # (nombre, cumple: bool|None, detalle)
+
+    # 1. ROA positivo
+    roa = y.get("roa")
+    if roa is not None:
+        criteria.append(("ROA positivo", roa > 0, f"ROA: {roa*100:.1f}%"))
+    else:
+        criteria.append(("ROA positivo", None, "Sin dato de ROA"))
+
+    # 2. Cash Flow Operativo positivo
+    cfo = y.get("operating_cf")
+    if cfo is not None:
+        criteria.append(("Cash Flow Operativo positivo", cfo > 0, f"CFO: {cfo/1e6:,.0f}M"))
+    else:
+        criteria.append(("Cash Flow Operativo positivo", None, "Sin dato de CFO"))
+
+    # 3. Delta ROA (mejora vs año anterior)
+    ta_cur, ta_prior = bh.get("total_assets_cur"), bh.get("total_assets_prior")
+    ni_cur, ni_prior = y.get("ni_year_cur"), bh.get("net_income_prior")
+    if ta_cur and ta_prior and ni_cur is not None and ni_prior is not None:
+        roa_cur   = ni_cur / ta_cur
+        roa_prior = ni_prior / ta_prior
+        criteria.append(("ROA mejora vs año anterior", roa_cur > roa_prior,
+                          f"ROA actual {roa_cur*100:.1f}% vs anterior {roa_prior*100:.1f}%"))
+    else:
+        criteria.append(("ROA mejora vs año anterior", None, "Sin Total Assets de 2 años"))
+
+    # 4. Calidad del beneficio: CFO > Beneficio Neto
+    if cfo is not None and ni_cur is not None:
+        criteria.append(("Calidad beneficio (CFO > Beneficio Neto)", cfo > ni_cur,
+                          f"CFO {cfo/1e6:,.0f}M vs Beneficio Neto {ni_cur/1e6:,.0f}M"))
+    else:
+        criteria.append(("Calidad beneficio (CFO > Beneficio Neto)", None, "Datos insuficientes"))
+
+    # 5. Apalancamiento reducido (Deuda LP / Activos, año actual vs anterior)
+    ltd_cur, ltd_prior = bh.get("long_term_debt_cur"), bh.get("long_term_debt_prior")
+    if ltd_cur is not None and ltd_prior is not None and ta_cur and ta_prior:
+        lev_cur, lev_prior = ltd_cur / ta_cur, ltd_prior / ta_prior
+        criteria.append(("Apalancamiento reducido", lev_cur < lev_prior,
+                          f"Deuda LP/Activos actual {lev_cur*100:.1f}% vs anterior {lev_prior*100:.1f}%"))
+    else:
+        criteria.append(("Apalancamiento reducido", None, "Sin Deuda LP/Activos de 2 años"))
+
+    # 6. Current Ratio mejora
+    cr_cur, cr_prior = y.get("current_ratio"), bh.get("current_ratio_prior")
+    if cr_cur is not None and cr_prior is not None:
+        criteria.append(("Liquidez (Current Ratio) mejora", cr_cur > cr_prior,
+                          f"Actual {cr_cur:.2f}x vs anterior {cr_prior:.2f}x"))
+    else:
+        criteria.append(("Liquidez (Current Ratio) mejora", None, "Sin Current Ratio del año anterior"))
+
+    # 7. Sin nuevas emisiones de acciones (dilución)
+    sh_cur, sh_prior = bh.get("shares_out_cur"), bh.get("shares_out_prior")
+    if sh_cur is not None and sh_prior is not None and sh_prior > 0:
+        dilution_pct = (sh_cur - sh_prior) / sh_prior * 100
+        criteria.append(("Sin dilución significativa", dilution_pct <= 2,
+                          f"Variación acciones en circulación: {dilution_pct:+.1f}%"))
+    else:
+        criteria.append(("Sin dilución significativa", None, "Sin histórico de acciones en circulación"))
+
+    # 8. Margen bruto mejora
+    gm_cur, gm_prior = bh.get("gross_margin_cur"), bh.get("gross_margin_prior")
+    if gm_cur is not None and gm_prior is not None:
+        criteria.append(("Margen bruto mejora", gm_cur > gm_prior,
+                          f"Actual {gm_cur*100:.1f}% vs anterior {gm_prior*100:.1f}%"))
+    else:
+        criteria.append(("Margen bruto mejora", None, "Sin margen bruto del año anterior"))
+
+    # 9. Rotación de activos mejora (Revenue / Total Assets)
+    rev_cur = y.get("rev_year_cur")
+    rev_prior = bh.get("revenue_prior_for_turnover")
+    if rev_cur and rev_prior and ta_cur and ta_prior:
+        turn_cur, turn_prior = rev_cur / ta_cur, rev_prior / ta_prior
+        criteria.append(("Rotación de activos mejora", turn_cur > turn_prior,
+                          f"Actual {turn_cur:.2f}x vs anterior {turn_prior:.2f}x"))
+    else:
+        criteria.append(("Rotación de activos mejora", None, "Sin datos suficientes"))
+
+    evaluable = [c for c in criteria if c[1] is not None]
+    score     = sum(1 for c in evaluable if c[1])
+    n_eval    = len(evaluable)
+
+    if n_eval == 0:
+        level, color = "SIN DATOS", "#64748b"
+    else:
+        pct = score / n_eval
+        if pct >= 0.78:   level, color = "FORTALEZA FINANCIERA ALTA", "#059669"
+        elif pct >= 0.44: level, color = "FORTALEZA FINANCIERA MEDIA", "#d97706"
+        else:             level, color = "FORTALEZA FINANCIERA BAJA", "#dc2626"
+
+    return {
+        "score": score, "n_evaluable": n_eval, "criteria": criteria,
+        "level": level, "color": color,
+    }
+
+
+def _calc_health_score(y: dict, profile: dict, bh: dict | None = None) -> tuple[int, list[tuple[str, str]], list[str]]:
     """
     Calcula la salud fundamental (0-100) con umbrales del sector.
-    Devuelve (score, breakdown, missing_fields). breakdown es ahora una
-    lista de tuplas (texto, color) — rojo/amarillo/verde según lo buena
-    que sea cada métrica concreta, para que el desglose se pueda colorear
-    visualmente en vez de mostrarse todo en gris plano.
-    missing_fields lista los campos que no tenían dato real (None) y se
-    excluyeron del cálculo, para no penalizar falsamente una métrica
-    desconocida como si fuera "0" o "mala".
+    Devuelve (score, breakdown, missing_fields). breakdown es una lista de
+    tuplas (texto, color) -- rojo/amarillo/verde según lo buena que sea cada
+    métrica concreta. missing_fields lista los campos sin dato real que se
+    excluyeron del cálculo (no penalizan como "0").
+
+    bh = balance histórico (fetch_balance_sheet_history), usado para ROIC
+    y el chequeo de dilución. Si no se proporciona, ambos criterios se
+    marcan como no evaluables sin romper el resto del cálculo.
     """
+    bh = bh or {}
     score    = 0
     breakdown = []
     missing_fields = []
@@ -678,7 +865,6 @@ def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[tuple[str, str
     rev_yoy_raw    = y.get("revenue_yoy")
     earn_yoy_raw   = y.get("earnings_yoy")
     peg            = y.get("peg_ratio")
-    short_r        = y.get("short_ratio") or 0
     debt_eq_raw    = y.get("debt_equity")
     curr_ratio_raw = y.get("current_ratio")
     quick_ratio_raw= y.get("quick_ratio")
@@ -710,131 +896,155 @@ def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[tuple[str, str
     roe_ok    = profile["roe_ok"]
     peg_ok    = profile["peg_ok"]
 
-    # Margen neto vs benchmark sector (0-18 pts)
-    if profit_m >= margin_ok * 2:    pts = 18
-    elif profit_m >= margin_ok:      pts = 13
-    elif profit_m >= margin_ok * 0.5: pts = 6
-    elif profit_m > 0:               pts = 3
+    # Margen neto vs benchmark sector (0-16 pts)
+    if profit_m >= margin_ok * 2:    pts = 16
+    elif profit_m >= margin_ok:      pts = 11
+    elif profit_m >= margin_ok * 0.5: pts = 5
+    elif profit_m > 0:               pts = 2
     else:                            pts = 0
     score += pts
-    breakdown.append((f"Margen neto {profit_m*100:.1f}% (ref. sector >{margin_ok*100:.0f}%): +{pts}/18",
-                       _pts_color(pts, 18)))
+    breakdown.append((f"Margen neto {profit_m*100:.1f}% (ref. sector >{margin_ok*100:.0f}%): +{pts}/16",
+                       _pts_color(pts, 16)))
 
-    # ROE vs benchmark sector (0-13 pts)
-    if roe >= roe_ok * 2:    pts = 13
-    elif roe >= roe_ok:      pts = 9
-    elif roe >= roe_ok * 0.5: pts = 4
-    elif roe > 0:             pts = 2
+    # ROE vs benchmark sector (0-8 pts, reducido porque ROIC complementa)
+    if roe >= roe_ok * 2:    pts = 8
+    elif roe >= roe_ok:      pts = 5.5
+    elif roe >= roe_ok * 0.5: pts = 2.5
+    elif roe > 0:             pts = 1
     else:                     pts = 0
     score += pts
-    breakdown.append((f"ROE {roe*100:.1f}% (ref. sector >{roe_ok*100:.0f}%): +{pts}/13",
-                       _pts_color(pts, 13)))
+    breakdown.append((f"ROE {roe*100:.1f}% (ref. sector >{roe_ok*100:.0f}%): +{pts:.1f}/8",
+                       _pts_color(pts, 8)))
 
-    # Crecimiento ingresos ponderado por estabilidad (0-14 pts)
+    # ROIC (0-10 pts, NUEVO) -- mide eficiencia de asignación de capital
+    # independiente del apalancamiento, a diferencia del ROE (que se infla
+    # con deuda). Se compara contra el coste de capital tipico (~8-10%).
+    roic_val, roic_status = _calc_roic(y, bh)
+    if roic_val is not None:
+        if roic_val >= 0.20:    r_pts = 10
+        elif roic_val >= 0.12:  r_pts = 7
+        elif roic_val >= 0.08:  r_pts = 4
+        elif roic_val >= 0:     r_pts = 1
+        else:                   r_pts = 0
+        score += r_pts
+        breakdown.append((f"ROIC {roic_val*100:.1f}% (capital invertido vs coste ~9%): +{r_pts:.1f}/10",
+                           _pts_color(r_pts, 10)))
+    else:
+        missing_fields.append("ROIC")
+
+    # Crecimiento ingresos ponderado por estabilidad (0-13 pts)
     rev_quarters = y.get("ttm_quarters", [])
     rev_stab_mult, rev_stab_desc = _calc_growth_stability(rev_quarters)
-    if rev_yoy >= 30:    pts_base = 14
-    elif rev_yoy >= 15:  pts_base = 10
-    elif rev_yoy >= 8:   pts_base = 7
+    if rev_yoy >= 30:    pts_base = 13
+    elif rev_yoy >= 15:  pts_base = 9.5
+    elif rev_yoy >= 8:   pts_base = 6.5
     elif rev_yoy >= 3:   pts_base = 4
     elif rev_yoy >= 0:   pts_base = 1
     else:                pts_base = 0
-    pts = round(pts_base * rev_stab_mult)
+    pts = round(pts_base * rev_stab_mult, 1)
     score += pts
     breakdown.append((
-        f"Crec. ingresos {rev_yoy:.1f}% × estabilidad {rev_stab_desc} (×{rev_stab_mult:.2f}): +{pts}/14",
-        _pts_color(pts, 14)
+        f"Crec. ingresos {rev_yoy:.1f}% × estabilidad {rev_stab_desc} (×{rev_stab_mult:.2f}): +{pts:.1f}/13",
+        _pts_color(pts, 13)
     ))
 
-    # Crecimiento beneficios ponderado por estabilidad (0-14 pts)
+    # Crecimiento beneficios ponderado por estabilidad (0-13 pts)
     ni_quarters = y.get("net_income_q", [])
     earn_stab_mult, earn_stab_desc = _calc_growth_stability(ni_quarters)
-    if earn_yoy >= 40:   pts_base = 14
-    elif earn_yoy >= 20: pts_base = 10
-    elif earn_yoy >= 10: pts_base = 7
+    if earn_yoy >= 40:   pts_base = 13
+    elif earn_yoy >= 20: pts_base = 9.5
+    elif earn_yoy >= 10: pts_base = 6.5
     elif earn_yoy >= 0:  pts_base = 4
     else:                pts_base = 0
-    pts = round(pts_base * earn_stab_mult)
+    pts = round(pts_base * earn_stab_mult, 1)
     score += pts
     breakdown.append((
-        f"Crec. beneficios {earn_yoy:.1f}% × estabilidad {earn_stab_desc} (×{earn_stab_mult:.2f}): +{pts}/14",
-        _pts_color(pts, 14)
+        f"Crec. beneficios {earn_yoy:.1f}% × estabilidad {earn_stab_desc} (×{earn_stab_mult:.2f}): +{pts:.1f}/13",
+        _pts_color(pts, 13)
     ))
 
-    # PEG vs benchmark sector (0-13 pts)
+    # PEG vs benchmark sector (0-12 pts)
     if peg:
-        if peg <= peg_ok * 0.5:   pts = 13
-        elif peg <= peg_ok * 0.75: pts = 9
-        elif peg <= peg_ok:        pts = 6
+        if peg <= peg_ok * 0.5:   pts = 12
+        elif peg <= peg_ok * 0.75: pts = 8.5
+        elif peg <= peg_ok:        pts = 5.5
         elif peg <= peg_ok * 1.5:  pts = 2
         else:                      pts = 0
         score += pts
-        breakdown.append((f"PEG {peg:.2f} (ref. sector <{peg_ok}): +{pts}/13", _pts_color(pts, 13)))
+        breakdown.append((f"PEG {peg:.2f} (ref. sector <{peg_ok}): +{pts:.1f}/12", _pts_color(pts, 12)))
 
-    # ── Balance y Liquidez ampliado (0-20 pts) ───────────────────────────
-    # Incluye ahora 5 sub-métricas de solvencia/liquidez en vez de 3:
-    # FCF positivo, Current Ratio, Quick Ratio (NUEVO), Debt/Equity,
-    # y Net Debt/EBITDA (NUEVO) — el ratio de apalancamiento que de verdad
-    # usan los analistas de crédito, porque mide la deuda contra la
-    # capacidad real de generar beneficio operativo para pagarla, sin la
-    # distorsión que sufre Debt/Equity por recompras de acciones o
-    # depreciaciones de goodwill.
+    # -- Balance y Liquidez ampliado (0-20 pts) --------------------------
+    # 6 sub-métricas: FCF, Current Ratio, Quick Ratio, Debt/Equity,
+    # Net Debt/EBITDA y Dilución (NUEVA).
     b_pts = 0
 
-    # FCF positivo (0-4)
-    fcf_pts = 4 if fcf > 0 else 0
+    # FCF positivo (0-3)
+    fcf_pts = 3 if fcf > 0 else 0
     b_pts += fcf_pts
-    breakdown.append((f"Free Cash Flow {'positivo' if fcf>0 else 'negativo'}: +{fcf_pts}/4",
-                       _pts_color(fcf_pts, 4)))
+    breakdown.append((f"Free Cash Flow {'positivo' if fcf>0 else 'negativo'}: +{fcf_pts}/3",
+                       _pts_color(fcf_pts, 3)))
 
-    # Current Ratio (0-3)
-    if curr_ratio >= 1.5:   cr_pts = 3
-    elif curr_ratio >= 1:   cr_pts = 1.5
+    # Current Ratio (0-2.5)
+    if curr_ratio >= 1.5:   cr_pts = 2.5
+    elif curr_ratio >= 1:   cr_pts = 1.25
     else:                   cr_pts = 0
     b_pts += cr_pts
-    breakdown.append((f"Current Ratio {curr_ratio:.2f}×: +{cr_pts:.1f}/3", _pts_color(cr_pts, 3)))
+    breakdown.append((f"Current Ratio {curr_ratio:.2f}×: +{cr_pts:.1f}/2.5", _pts_color(cr_pts, 2.5)))
 
-    # Quick Ratio (0-4, NUEVO) — más estricto que Current Ratio porque
-    # excluye inventario, que no siempre es líquido de forma inmediata
+    # Quick Ratio (0-3)
     if quick_ratio_raw is not None:
-        if quick_ratio >= 1.2:   qr_pts = 4
-        elif quick_ratio >= 0.8: qr_pts = 2.5
-        elif quick_ratio >= 0.5: qr_pts = 1
+        if quick_ratio >= 1.2:   qr_pts = 3
+        elif quick_ratio >= 0.8: qr_pts = 1.9
+        elif quick_ratio >= 0.5: qr_pts = 0.75
         else:                    qr_pts = 0
         b_pts += qr_pts
-        breakdown.append((f"Quick Ratio {quick_ratio:.2f}×: +{qr_pts:.1f}/4", _pts_color(qr_pts, 4)))
+        breakdown.append((f"Quick Ratio {quick_ratio:.2f}×: +{qr_pts:.1f}/3", _pts_color(qr_pts, 3)))
 
-    # Debt/Equity (0-3)
-    if debt_eq < 50:      de_pts = 3
-    elif debt_eq < 100:   de_pts = 1.5
+    # Debt/Equity (0-2.5)
+    if debt_eq < 50:      de_pts = 2.5
+    elif debt_eq < 100:   de_pts = 1.25
     else:                 de_pts = 0
     b_pts += de_pts
-    breakdown.append((f"Debt/Equity {debt_eq:.0f}%: +{de_pts:.1f}/3", _pts_color(de_pts, 3)))
+    breakdown.append((f"Debt/Equity {debt_eq:.0f}%: +{de_pts:.1f}/2.5", _pts_color(de_pts, 2.5)))
 
-    # Net Debt / EBITDA (0-6, NUEVO)
+    # Net Debt / EBITDA (0-5)
     net_debt_ebitda = None
     if total_debt is not None and ebitda and ebitda > 0:
         net_debt = total_debt - (total_cash or 0)
         net_debt_ebitda = net_debt / ebitda
-        if net_debt_ebitda <= 1:      nde_pts = 6
-        elif net_debt_ebitda <= 2:    nde_pts = 4.5
-        elif net_debt_ebitda <= 4:    nde_pts = 2
+        if net_debt_ebitda <= 1:      nde_pts = 5
+        elif net_debt_ebitda <= 2:    nde_pts = 3.75
+        elif net_debt_ebitda <= 4:    nde_pts = 1.5
         else:                          nde_pts = 0
         b_pts += nde_pts
         breakdown.append((
-            f"Net Debt/EBITDA {net_debt_ebitda:.2f}×: +{nde_pts:.1f}/6",
-            _pts_color(nde_pts, 6)
+            f"Net Debt/EBITDA {net_debt_ebitda:.2f}×: +{nde_pts:.1f}/5",
+            _pts_color(nde_pts, 5)
         ))
     else:
         missing_fields.append("Net Debt/EBITDA")
 
+    # Dilución (0-4, NUEVO) -- variación de acciones en circulación vs año
+    # anterior. Emitir acciones nuevas para financiar pérdidas diluye a los
+    # accionistas actuales aunque el negocio "crezca" en ingresos.
+    sh_cur, sh_prior = bh.get("shares_out_cur"), bh.get("shares_out_prior")
+    if sh_cur is not None and sh_prior is not None and sh_prior > 0:
+        dilution_pct = (sh_cur - sh_prior) / sh_prior * 100
+        if dilution_pct <= 1:     dil_pts = 4
+        elif dilution_pct <= 3:   dil_pts = 2.5
+        elif dilution_pct <= 8:   dil_pts = 1
+        else:                      dil_pts = 0
+        b_pts += dil_pts
+        breakdown.append((
+            f"Dilución (acciones en circulación): {dilution_pct:+.1f}% vs año anterior: +{dil_pts:.1f}/4",
+            _pts_color(dil_pts, 4)
+        ))
+    else:
+        missing_fields.append("Dilución (histórico acciones)")
+
     score += b_pts
 
     # Calidad del beneficio: FCF / Beneficio neto anual (0-8 pts)
-    # Un ratio alto indica que el beneficio contable se traduce en caja real;
-    # un ratio bajo o negativo sugiere ajustes contables que inflan el
-    # beneficio sin respaldo de generación de caja efectiva. Ver párrafo
-    # explicativo siempre visible debajo del desglose.
     fcf_quality = None
     if fcf_raw is not None and ni_recent and ni_recent > 0:
         fcf_quality = fcf_raw / ni_recent
@@ -858,8 +1068,9 @@ def _calc_health_score(y: dict, profile: dict) -> tuple[int, list[tuple[str, str
 
 # ─── Evaluación final ─────────────────────────────────────────────────────────
 
-def _evaluate(y: dict) -> dict:
+def _evaluate(y: dict, bh: dict | None = None) -> dict:
     """Diagnóstico completo ajustado al sector y a los tipos de interés actuales."""
+    bh = bh or {}
 
     price       = y.get("price") or 0
     sector_raw  = y.get("sector", "")
@@ -879,14 +1090,22 @@ def _evaluate(y: dict) -> dict:
     pe_trailing = y.get("pe_trailing")
     price_book  = y.get("price_book")
 
-    # ── Salud fundamental ────────────────────────────────────────────────
-    health_score, health_breakdown, health_missing = _calc_health_score(y, profile)
+    # ── Salud fundamental (incluye ROIC y Dilución si hay balance histórico)
+    health_score, health_breakdown, health_missing = _calc_health_score(y, profile, bh)
+
+    # ── Piotroski F-Score (0-9, herramienta independiente de fortaleza
+    # financiera — no se mezcla en el score de Salud Fundamental) ─────────
+    piotroski = calc_piotroski_score(y, bh)
 
     # ── Valor objetivo ───────────────────────────────────────────────────
     fair_value, methods_used, targets_range = _calc_fair_value(y, profile)
 
     # Flag informativo: ¿se usó el fallback hyper-growth (EV/Sales)?
     is_hyper_growth = any("hyper-growth" in m for m in methods_used)
+
+    # Regla del 40 — solo relevante/calculada cuando se usa el fallback
+    # hyper-growth, para auditar si ese crecimiento es sano o destruye valor
+    rule_of_40 = _calc_rule_of_40(y) if is_hyper_growth else None
 
     # ── Prima/descuento vs histórico 52W ─────────────────────────────────
     mid_52  = (week52_high + week52_low) / 2 if week52_high and week52_low else None
@@ -1057,6 +1276,8 @@ def _evaluate(y: dict) -> dict:
         "health_modifier_applied": health_modifier_applied,
         "threshold_factor": threshold_factor,
         "diag_base":       diag_base,
+        "piotroski":       piotroski,
+        "rule_of_40":      rule_of_40,
     }
 
 
@@ -1579,7 +1800,9 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     # EVALUACIÓN FINAL + DIAGNÓSTICO GENERAL
     # ════════════════════════════════════════════════════════════════════
-    ev = _evaluate(y)
+    with st.spinner("Consultando balance histórico (ROIC, Piotroski, dilución)…"):
+        bh = fetch_balance_sheet_history(ticker)
+    ev = _evaluate(y, bh)
 
     _section("EVALUACIÓN FINAL")
 
@@ -1675,6 +1898,20 @@ def render_report(ticker, company_name, y: dict,
             f"que un DCF completo — trátalo como una referencia de orden de magnitud, no como "
             f"un precio exacto."
         ))
+        rule40 = ev.get("rule_of_40")
+        if rule40:
+            r40_color = "#059669" if rule40["passes"] else "#dc2626"
+            r40_verdict = (
+                "cumple la Regla del 40 — el crecimiento parece sano" if rule40["passes"]
+                else "NO cumple la Regla del 40 — el crecimiento podría estar destruyendo valor"
+            )
+            reliability_notes.append((
+                r40_color,
+                f"{'✅' if rule40['passes'] else '⚠'} REGLA DEL 40 (auditoría de crecimiento hyper-growth): "
+                f"Crecimiento ingresos {rule40['rev_growth']:+.1f}% + Margen FCF {rule40['fcf_margin']:+.1f}% "
+                f"= {rule40['total']:+.1f}% (umbral: 40%). Esta empresa {r40_verdict}. "
+                f"Crecer rápido quemando caja de forma insostenible no es lo mismo que crecer de forma sana."
+            ))
     elif n_methods <= 1:
         reliability_notes.append((
             "#d97706",
@@ -1734,6 +1971,53 @@ def render_report(ticker, company_name, y: dict,
             '</div>',
             unsafe_allow_html=True
         )
+
+    # Piotroski F-Score — herramienta independiente de fortaleza financiera,
+    # no se mezcla con el score de Salud Fundamental (que es otra
+    # metodología). Se muestra siempre como "X/9 evaluado" para no ocultar
+    # que algunos criterios necesitan datos de balance histórico que Yahoo
+    # no siempre expone para todos los tickers.
+    pio = ev.get("piotroski", {})
+    if pio.get("n_evaluable", 0) > 0:
+        pio_rows = ""
+        for name, status, detail in pio["criteria"]:
+            if status is None:
+                icon, color = "⚪", "#94a3b8"
+                status_txt  = "No evaluable"
+            elif status:
+                icon, color = "✔", "#059669"
+                status_txt  = "Cumple"
+            else:
+                icon, color = "✘", "#dc2626"
+                status_txt  = "No cumple"
+            pio_rows += (
+                f'<div style="display:flex;justify-content:space-between;align-items:center;'
+                f'padding:0.35rem 0;border-bottom:1px solid #eef1f5;font-size:0.78rem;">'
+                f'<span style="color:#334155;">{icon} {name}</span>'
+                f'<span style="color:{color};font-weight:600;text-align:right;">{status_txt}</span>'
+                f'</div>'
+                f'<div style="font-size:0.68rem;color:#94a3b8;padding:0 0 0.4rem 1.2rem;">{detail}</div>'
+            )
+        with st.expander(
+            f"PIOTROSKI F-SCORE: {pio['score']}/{pio['n_evaluable']} evaluado — {pio['level']}",
+            expanded=False
+        ):
+            st.markdown(
+                '<div style="background:#ffffff;border-radius:8px;padding:0.8rem 1rem;">'
+                f'<div style="display:flex;align-items:baseline;gap:0.8rem;margin-bottom:0.3rem;">'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:1.6rem;font-weight:600;color:{pio["color"]};">{pio["score"]}/{pio["n_evaluable"]}</span>'
+                f'<span style="color:#64748b;font-size:0.85rem;">{pio["level"]}</span>'
+                '</div>'
+                f'<div style="font-size:0.72rem;color:#94a3b8;margin-bottom:0.8rem;line-height:1.6;">'
+                f'Sistema de 9 criterios binarios (rentabilidad, apalancamiento/liquidez, eficiencia '
+                f'operativa) para detectar deterioro financiero, incluso en empresas que parecen '
+                f'baratas por otros motivos. {9 - pio["n_evaluable"]} criterio(s) no evaluable(s) '
+                f'por falta de balance histórico de Yahoo para este ticker — no se penaliza, '
+                f'simplemente se excluye del cálculo.</div>'
+                f'{pio_rows}'
+                '</div>',
+                unsafe_allow_html=True
+            )
 
     # Metodología de valoración
     mh = "".join(f'<div style="font-size:0.76rem;color:#64748b;padding:0.3rem 0;border-bottom:1px solid #eef1f5;">▸ {m}</div>'
@@ -1917,6 +2201,9 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     with st.spinner("Consultando momentum de revisiones de analistas…"):
         y["analyst_revisions"] = fetch_analyst_revisions(ticker)
+    y["insiders_data"]  = company_info.get("insiders", [])
+    y["next_q_date"]    = ea.get("next_q_date") if ea else None
+    y["last_q_date"]    = ea.get("last_q_date") if ea else None
     signal = calc_entry_signal(y, tech, ev)
     render_entry_signal(signal)
 
