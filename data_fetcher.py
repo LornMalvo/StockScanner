@@ -282,6 +282,78 @@ def _calc_fibonacci_zone(price: float, week52_high: float | None, week52_low: fl
         return None
 
 
+def _calc_historical_support(closes: pd.Series, dates: list, price: float) -> dict | None:
+    """
+    Encuentra el soporte histórico estructural más fuerte por debajo del
+    precio actual, usando los 2 años de histórico ya disponibles.
+
+    Método: se localizan los mínimos locales de la serie (puntos que son el
+    valor más bajo dentro de una ventana de ±5 sesiones), se agrupan en
+    "clusters" los que están a menos del 2.5% entre sí (niveles de precio
+    donde el mercado ha rebotado varias veces), y se identifica el cluster
+    con más toques (más veces que el precio ha rebotado ahí) que esté por
+    debajo del precio actual y dentro de un rango razonable (hasta un 40%
+    por debajo), para que sea relevante como referencia práctica y no un
+    mínimo histórico demasiado lejano para importar en el corto plazo.
+
+    A diferencia de las medias móviles (soportes dinámicos que se mueven
+    con el tiempo) o Fibonacci (niveles proporcionales fijos), esto son
+    niveles de precio REALES donde el mercado ya ha demostrado interés
+    comprador de forma repetida.
+    """
+    try:
+        vals = closes.values
+        n    = len(vals)
+        if n < 30:
+            return None
+
+        # Mínimos locales (ventana ±5 sesiones)
+        local_mins = []
+        for i in range(5, n - 5):
+            seg = vals[i-5:i+6]
+            if vals[i] == seg.min():
+                local_mins.append((i, float(vals[i])))
+
+        # Solo mínimos por debajo del precio actual y dentro de un -40% razonable
+        candidates = [(i, v) for i, v in local_mins if v < price and v >= price * 0.60]
+        if not candidates:
+            return None
+
+        # Clustering simple: agrupar niveles a menos del 2.5% entre sí
+        candidates.sort(key=lambda x: x[1])
+        clusters = []
+        for i, v in candidates:
+            placed = False
+            for cl in clusters:
+                if abs(v - cl["avg"]) / cl["avg"] <= 0.025:
+                    cl["touches"].append((i, v))
+                    cl["avg"] = sum(t[1] for t in cl["touches"]) / len(cl["touches"])
+                    placed = True
+                    break
+            if not placed:
+                clusters.append({"avg": v, "touches": [(i, v)]})
+
+        # Cluster más fuerte (más toques) por debajo del precio
+        clusters.sort(key=lambda c: len(c["touches"]), reverse=True)
+        best = clusters[0]
+        if len(best["touches"]) < 2:
+            return None   # exigir al menos 2 toques para considerarlo "soporte" real
+
+        touch_idxs = [t[0] for t in best["touches"]]
+        last_touch_idx = max(touch_idxs)
+        last_touch_date = dates[last_touch_idx] if last_touch_idx < len(dates) else None
+        distance_pct = (price - best["avg"]) / price * 100
+
+        return {
+            "level":        round(best["avg"], 2),
+            "touches":      len(best["touches"]),
+            "distance_pct": round(distance_pct, 1),
+            "last_touch_date": last_touch_date,
+        }
+    except Exception:
+        return None
+
+
 def fetch_technical_data(ticker: str) -> dict:
     """RSI(14), MM50, MM200 con metadatos de frescura."""
     try:
@@ -338,6 +410,12 @@ def fetch_technical_data(ticker: str) -> dict:
         week52_l  = float(closes_full.tail(252).min())
         fib_data  = _calc_fibonacci_zone(price, week52_h, week52_l)
 
+        dates_str_full = [
+            (d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10])
+            for d in hist_full.index
+        ]
+        support_data = _calc_historical_support(closes_full, dates_str_full, price)
+
         # ── Serie histórica para gráfico ─────────────────────────────────
         # Las medias móviles se calculan sobre los 2 años completos (para que
         # la MM200 tenga suficiente margen previo en TODO el tramo mostrado),
@@ -379,6 +457,7 @@ def fetch_technical_data(ticker: str) -> dict:
             "adx":          adx_val,
             "obv":          obv_data,
             "fibonacci":    fib_data,
+            "historical_support": support_data,
             "week52_high_calc": week52_h,
             "week52_low_calc":  week52_l,
             # Metadatos
@@ -525,6 +604,19 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
                         earnings_yoy  = (ni_year_cur - ni_year_prev) / abs(ni_year_prev) * 100
                     break
 
+        # Yahoo Finance devuelve dividendYield unas veces como fracción
+        # decimal (0.0142 = 1.42%) y otras veces ya como porcentaje
+        # (1.42 = 1.42%), sin previo aviso ni consistencia por ticker —
+        # esto causaba que algunos dividend yields se mostraran como 142%
+        # en vez de 1.42%. Normalizamos aquí una única vez: ningún dividend
+        # yield real de una empresa cotizada supera el 100% (fracción 1.0),
+        # así que si el valor bruto es > 1 asumimos que ya viene en
+        # porcentaje y lo convertimos a fracción decimal, para que el resto
+        # de la app (que multiplica ×100 para mostrar) lo trate de forma
+        # uniforme sin importar qué formato haya devuelto Yahoo esta vez.
+        _dy_raw  = info.get("dividendYield")
+        _dy_norm = (_dy_raw / 100 if (_dy_raw is not None and _dy_raw > 1) else _dy_raw)
+
         return {
             # Identificación
             "company_name":  info.get("longName") or info.get("shortName", ticker),
@@ -561,6 +653,7 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
             "total_debt":     info.get("totalDebt"),
             "debt_equity":    info.get("debtToEquity"),
             "current_ratio":  info.get("currentRatio"),
+            "quick_ratio":    info.get("quickRatio"),
             "free_cash_flow": info.get("freeCashflow"),
             "operating_cf":   info.get("operatingCashflow"),
 
@@ -577,7 +670,7 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
             "ni_date_prev":   ni_date_prev,
 
             # Dividendos
-            "dividend_yield": info.get("dividendYield"),
+            "dividend_yield": _dy_norm,
             "dividend_rate":  info.get("dividendRate"),
 
             # Otros
