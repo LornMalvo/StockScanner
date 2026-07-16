@@ -945,7 +945,10 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
     # Comprar justo antes de una presentación es un riesgo de gap overnight
     # que ningún indicador técnico puede prever. Empresas que acaban de
     # presentar (<7 días) puntúan mejor que las que están a punto de
-    # hacerlo (<7 días para la próxima) — menos incertidumbre inmediata.
+    # hacerlo (<=10 días para la próxima) — menos incertidumbre inmediata.
+    # Umbral de "próxima presentación" ampliado de 7 a 10 días: con 7 días
+    # casos como 19 días de margen se marcaban positivos, un margen que en
+    # la práctica sigue siendo relativamente ajustado para abrir posición.
     next_q_date = y.get("next_q_date")
     last_q_date = y.get("last_q_date")
     try:
@@ -958,13 +961,13 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
         if last_q_date and last_q_date not in ("N/A", None):
             days_since_last = (now - datetime.strptime(last_q_date, "%Y-%m-%d").replace(tzinfo=_tz.utc)).days
 
-        if days_to_next is not None:
-            if days_to_next <= 7:
+        if days_since_last is not None and days_since_last < 7:
+            checks.append(("Sin resultados inminentes", True,
+                f"Resultados presentados hace {days_since_last} días — incertidumbre ya despejada", 1))
+        elif days_to_next is not None:
+            if days_to_next <= 10:
                 checks.append(("Sin resultados inminentes", False,
-                    f"Próxima presentación en {days_to_next} días — riesgo de gap overnight", 1))
-            elif days_since_last is not None and days_since_last <= 7:
-                checks.append(("Sin resultados inminentes", True,
-                    f"Resultados presentados hace {days_since_last} días — incertidumbre ya despejada", 1))
+                    f"⚠ Próxima presentación en {days_to_next} días — riesgo de gap overnight, vigilar", 1))
             else:
                 checks.append(("Sin resultados inminentes", True,
                     f"Próxima presentación en {days_to_next} días — margen suficiente", 1))
