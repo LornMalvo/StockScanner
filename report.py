@@ -1710,26 +1710,35 @@ def render_report(ticker, company_name, y: dict,
     tiempo_desde = ea.get("tiempo_desde", "") if ea else ""
     tiempo_hasta = ea.get("tiempo_hasta", "") if ea else ""
 
-    dates_html = ""
-    if last_q_fmt != "N/A" or next_q_fmt != "N/A":
-        dates_html = (
-            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;margin-bottom:0.9rem;">'
-            '<div style="background:#f4f6f9;border-radius:6px;padding:0.6rem 0.8rem;">'
-            '<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">Última presentación</div>'
-            f'<div style="font-size:0.9rem;color:#0f172a;font-weight:600;">{last_q_fmt}</div>'
-            f'<div style="font-size:0.7rem;color:#94a3b8;">{f"hace {tiempo_desde}" if tiempo_desde else ""}</div>'
-            '</div>'
-            '<div style="background:#f4f6f9;border-radius:6px;padding:0.6rem 0.8rem;">'
-            '<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">Próxima presentación (estimada)</div>'
-            f'<div style="font-size:0.9rem;color:#0f172a;font-weight:600;">{next_q_fmt}</div>'
-            f'<div style="font-size:0.7rem;color:#94a3b8;">{f"en {tiempo_hasta}" if tiempo_hasta else ""}</div>'
-            '</div>'
-            '</div>'
-            '<div style="font-size:0.68rem;color:#94a3b8;margin-bottom:0.8rem;">'
-            '📅 Última presentación: fuente Finnhub (histórico de earnings). Próxima presentación: '
-            'fuente Yahoo Finance — puede ser una fecha aún no confirmada oficialmente por la '
-            'empresa (estimación basada en el ciclo trimestral habitual) hasta que se acerque la fecha.</div>'
-        )
+    # Las tarjetas se muestran SIEMPRE, con "No disponible" explícito cuando
+    # falte el dato — antes se ocultaba la sección entera si ambas fechas
+    # fallaban (p. ej. sin cobertura de Finnhub para ese ticker concreto),
+    # dejando al usuario sin saber si el dato no existía o si había un fallo.
+    last_q_display = last_q_fmt if last_q_fmt != "N/A" else "No disponible"
+    next_q_display = next_q_fmt if next_q_fmt != "N/A" else "No disponible"
+    last_q_color   = "#0f172a" if last_q_fmt != "N/A" else "#94a3b8"
+    next_q_color   = "#0f172a" if next_q_fmt != "N/A" else "#94a3b8"
+
+    dates_html = (
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;margin-bottom:0.9rem;">'
+        '<div style="background:#f4f6f9;border-radius:6px;padding:0.6rem 0.8rem;">'
+        '<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">Última presentación</div>'
+        f'<div style="font-size:0.9rem;color:{last_q_color};font-weight:600;">{last_q_display}</div>'
+        f'<div style="font-size:0.7rem;color:#94a3b8;">{f"hace {tiempo_desde}" if tiempo_desde else ""}</div>'
+        '</div>'
+        '<div style="background:#f4f6f9;border-radius:6px;padding:0.6rem 0.8rem;">'
+        '<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">Próxima presentación (estimada)</div>'
+        f'<div style="font-size:0.9rem;color:{next_q_color};font-weight:600;">{next_q_display}</div>'
+        f'<div style="font-size:0.7rem;color:#94a3b8;">{f"en {tiempo_hasta}" if tiempo_hasta else ""}</div>'
+        '</div>'
+        '</div>'
+        '<div style="font-size:0.68rem;color:#94a3b8;margin-bottom:0.8rem;">'
+        '📅 Última presentación: fuente Finnhub (histórico de earnings). Próxima presentación: '
+        'fuente Yahoo Finance — puede ser una fecha aún no confirmada oficialmente por la '
+        'empresa (estimación basada en el ciclo trimestral habitual) hasta que se acerque la fecha. '
+        'Si algún dato aparece como "No disponible", la fuente correspondiente no tiene '
+        'cobertura fiable para este ticker en este momento.</div>'
+    )
 
     st.markdown(
         '<div class="metric-card">'

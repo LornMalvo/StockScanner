@@ -626,10 +626,24 @@ def fetch_earnings_analysis(ticker: str, y: dict) -> dict:
                     break
 
         # Próxima presentación desde info de Yahoo (fiable para fechas futuras)
+        # VALIDACIÓN DE SENSATEZ: Yahoo a veces devuelve en earningsTimestamp
+        # un valor que no corresponde realmente al próximo trimestre (campo
+        # desactualizado tras una presentación reciente, o un placeholder).
+        # Un trimestre real está a ~80-100 días del anterior, nunca a menos
+        # de ~35 días — si la candidata no cumple esto, se descarta como no
+        # fiable y se prueba el siguiente fallback, en vez de mostrar una
+        # fecha absurdamente cercana (ej. "próxima" a 8 días de la "última").
+        MIN_DAYS_BETWEEN_QUARTERS = 35
+
+        def _is_plausible_next_date(candidate_dt):
+            if last_q_dt is None:
+                return True   # sin referencia previa, no podemos validar — se acepta
+            return (candidate_dt - last_q_dt).days >= MIN_DAYS_BETWEEN_QUARTERS
+
         next_q_ts = info.get("earningsTimestamp") or info.get("earningsTimestampStart")
         if next_q_ts:
             candidate = datetime.fromtimestamp(next_q_ts, tz=timezone.utc)
-            if candidate > now_utc:
+            if candidate > now_utc and _is_plausible_next_date(candidate):
                 next_q_dt = candidate
         # Fallback: buscar en historial una fila futura sin reportar
         if next_q_dt is None and history:
@@ -637,7 +651,7 @@ def fetch_earnings_analysis(ticker: str, y: dict) -> dict:
                 if h.get("eps_reported") is None:
                     try:
                         c = datetime.strptime(h["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                        if c > now_utc:
+                        if c > now_utc and _is_plausible_next_date(c):
                             next_q_dt = c
                             break
                     except Exception:
@@ -944,11 +958,9 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
     # ── Proximidad a la fecha de resultados ──────────────────────────────
     # Comprar justo antes de una presentación es un riesgo de gap overnight
     # que ningún indicador técnico puede prever. Empresas que acaban de
-    # presentar (<7 días) puntúan mejor que las que están a punto de
-    # hacerlo (<=10 días para la próxima) — menos incertidumbre inmediata.
-    # Umbral de "próxima presentación" ampliado de 7 a 10 días: con 7 días
-    # casos como 19 días de margen se marcaban positivos, un margen que en
-    # la práctica sigue siendo relativamente ajustado para abrir posición.
+    # presentar (<10 días) puntúan mejor que las que están a punto de
+    # hacerlo (<15 días para la próxima) — puramente temporal, sin evaluar
+    # si los resultados fueron buenos o malos.
     next_q_date = y.get("next_q_date")
     last_q_date = y.get("last_q_date")
     try:
@@ -961,13 +973,14 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
         if last_q_date and last_q_date not in ("N/A", None):
             days_since_last = (now - datetime.strptime(last_q_date, "%Y-%m-%d").replace(tzinfo=_tz.utc)).days
 
-        if days_since_last is not None and days_since_last < 7:
+        if days_since_last is not None and days_since_last < 10:
             checks.append(("Sin resultados inminentes", True,
-                f"Resultados presentados hace {days_since_last} días — incertidumbre ya despejada", 1))
+                f"Resultados recién presentados, entrada con margen suficiente para upside / downside "
+                f"(hace {days_since_last} días)", 1))
         elif days_to_next is not None:
-            if days_to_next <= 10:
+            if days_to_next < 15:
                 checks.append(("Sin resultados inminentes", False,
-                    f"⚠ Próxima presentación en {days_to_next} días — riesgo de gap overnight, vigilar", 1))
+                    f"Estudiar posible entrada, resultados inminentes (en {days_to_next} días)", 1))
             else:
                 checks.append(("Sin resultados inminentes", True,
                     f"Próxima presentación en {days_to_next} días — margen suficiente", 1))
