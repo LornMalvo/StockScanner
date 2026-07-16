@@ -436,7 +436,7 @@ def _adjust_sector_profile(profile: dict, rf_current: float | None) -> tuple[dic
 
 # ─── Motor de valoración por sector ──────────────────────────────────────────
 
-def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str], tuple[float, float] | None]:
+def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[float | None, list[str], tuple[float, float] | None]:
     """
     Calcula el valor objetivo usando los métodos relevantes para el sector.
     Devuelve (fair_value, lista_de_métodos_usados, rango_min_max).
@@ -453,6 +453,15 @@ def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str], t
     métodos — un rango estrecho indica más consenso entre metodologías, uno
     amplio indica más incertidumbre real en la valoración.
 
+    CRECIMIENTO SUAVIZADO (CAGR multi-año): el método PEG y la prima de
+    crecimiento del PER ya NO usan el crecimiento de beneficios de un único
+    año (earnings_yoy), porque un pico puntual no recurrente (ej. +292% de
+    Broadcom impulsado por IA) inflaba el Valor Objetivo de forma
+    desproporcionada al multiplicarse linealmente. Ahora se usa el CAGR
+    entre el beneficio más antiguo y más reciente disponibles (hasta ~4
+    años vía balance histórico), con fallback al dato de 1 año si no hay
+    histórico multi-año limpio disponible para el ticker.
+
     FALLBACK HYPER-GROWTH: si la empresa tiene EPS negativo o nulo (PER/PEG
     no aplicables) y el crecimiento de ingresos YoY supera el 25%, se sustituye
     la valoración por múltiplos de beneficio por EV/Sales — comparando el
@@ -461,6 +470,7 @@ def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str], t
     con alto crecimiento (ej. SaaS en expansión, biotecnológicas en fase
     de escalado comercial).
     """
+    bh = bh or {}
     price       = y.get("price") or 0
     eps_fwd     = y.get("eps_forward")
     eps_ttm     = y.get("eps_ttm")
@@ -473,7 +483,8 @@ def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str], t
     fcf         = y.get("free_cash_flow") or 0
     price_book  = y.get("price_book")
     roe         = y.get("roe") or 0
-    earn_growth = (y.get("earnings_yoy") or 0) / 100
+    earn_growth_smoothed, earn_growth_method = _calc_smoothed_earnings_growth(y, bh)
+    earn_growth = earn_growth_smoothed if earn_growth_smoothed is not None else 0
     target_mean = y.get("target_mean")
     ev_revenue  = y.get("ev_revenue")
     rev_yoy     = y.get("revenue_yoy")
@@ -535,7 +546,7 @@ def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str], t
             if earn_growth > 0.20:
                 fair_pe_base = fair_pe
                 fair_pe *= 1.10
-                prima_txt = f" [{fair_pe_base:.0f}×1.10 prima por crecimiento >20%]"
+                prima_txt = f" [{fair_pe_base:.0f}×1.10 prima por crecimiento >20%, {earn_growth_method}]"
             val = fair_pe * eps_fwd
             if val > 0:
                 targets.append(val)
@@ -554,7 +565,7 @@ def _calc_fair_value(y: dict, profile: dict) -> tuple[float | None, list[str], t
                 weighted.append(val)
                 methods_used.append(
                     f"PEG sectorial ( {eps_fwd:,.2f} (EPS Forward) × {profile['peg_ok']:.1f} (PEG sector) "
-                    f"× {growth_pct:.1f} (Crec. beneficios %) ) → {val:,.2f}"
+                    f"× {growth_pct:.1f} (Crec. beneficios, {earn_growth_method}) ) → {val:,.2f}"
                 )
 
         # EV/EBITDA sectorial
@@ -657,6 +668,41 @@ def _pts_color(pts: float, max_pts: float) -> str:
     if pct >= 0.7:  return "#059669"   # verde — bueno/destacable
     if pct >= 0.35: return "#d97706"   # amarillo — normal
     return "#dc2626"                    # rojo — malo
+
+
+def _calc_smoothed_earnings_growth(y: dict, bh: dict) -> tuple[float | None, str]:
+    """
+    Crecimiento de beneficios "suavizado" para uso en valoración (PEG y
+    prima del PER) — evita que un pico puntual de un solo año (ej. +292%
+    de Broadcom impulsado por IA, o cualquier efecto base/adquisición/
+    ajuste fiscal no recurrente) infle artificialmente el Valor Objetivo,
+    ya que ese método multiplica linealmente por esta tasa.
+
+    Usa CAGR (tasa de crecimiento anual compuesto) entre el beneficio neto
+    más antiguo y el más reciente disponibles en bh["net_income_series"]
+    (hasta ~4 años, lo que Yahoo exponga). Si no hay al menos 2 años
+    limpios (año más antiguo positivo), cae al crecimiento YoY de un solo
+    año — el mismo comportamiento que había antes de este cambio.
+
+    Devuelve (tasa_decimal, descripción_del_método_usado).
+    """
+    series = bh.get("net_income_series") or []
+    n = len(series)
+
+    if n >= 2:
+        ni_recent = series[0]
+        ni_oldest = series[-1]
+        n_years   = n - 1
+        if ni_oldest > 0 and ni_recent > 0:
+            cagr = (ni_recent / ni_oldest) ** (1 / n_years) - 1
+            return cagr, f"CAGR {n_years} años"
+
+    # Fallback: crecimiento de un solo año (comportamiento anterior)
+    single_year = y.get("earnings_yoy")
+    if single_year is not None:
+        return single_year / 100, "1 año (sin histórico multi-año limpio)"
+
+    return None, "sin datos"
 
 
 def _calc_roic(y: dict, bh: dict) -> tuple[float | None, str]:
@@ -1098,7 +1144,7 @@ def _evaluate(y: dict, bh: dict | None = None) -> dict:
     piotroski = calc_piotroski_score(y, bh)
 
     # ── Valor objetivo ───────────────────────────────────────────────────
-    fair_value, methods_used, targets_range = _calc_fair_value(y, profile)
+    fair_value, methods_used, targets_range = _calc_fair_value(y, profile, bh)
 
     # Flag informativo: ¿se usó el fallback hyper-growth (EV/Sales)?
     is_hyper_growth = any("hyper-growth" in m for m in methods_used)
@@ -1625,8 +1671,36 @@ def render_report(ticker, company_name, y: dict,
     _section("CONSULTA DE RESULTADOS")
     seeking_alpha_url = f"https://seekingalpha.com/symbol/{ticker}/earnings"
     stocktwits_url     = f"https://stocktwits.com/symbol/{ticker}/earnings"
+
+    last_q_fmt = ea.get("last_q_date_fmt", "N/A") if ea else "N/A"
+    next_q_fmt = ea.get("next_q_date_fmt", "N/A") if ea else "N/A"
+    tiempo_desde = ea.get("tiempo_desde", "") if ea else ""
+    tiempo_hasta = ea.get("tiempo_hasta", "") if ea else ""
+
+    dates_html = ""
+    if last_q_fmt != "N/A" or next_q_fmt != "N/A":
+        dates_html = (
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;margin-bottom:0.9rem;">'
+            '<div style="background:#f4f6f9;border-radius:6px;padding:0.6rem 0.8rem;">'
+            '<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">Última presentación</div>'
+            f'<div style="font-size:0.9rem;color:#0f172a;font-weight:600;">{last_q_fmt}</div>'
+            f'<div style="font-size:0.7rem;color:#94a3b8;">{f"hace {tiempo_desde}" if tiempo_desde else ""}</div>'
+            '</div>'
+            '<div style="background:#f4f6f9;border-radius:6px;padding:0.6rem 0.8rem;">'
+            '<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">Próxima presentación (estimada)</div>'
+            f'<div style="font-size:0.9rem;color:#0f172a;font-weight:600;">{next_q_fmt}</div>'
+            f'<div style="font-size:0.7rem;color:#94a3b8;">{f"en {tiempo_hasta}" if tiempo_hasta else ""}</div>'
+            '</div>'
+            '</div>'
+            '<div style="font-size:0.68rem;color:#94a3b8;margin-bottom:0.8rem;">'
+            '📅 Última presentación: fuente Finnhub (histórico de earnings). Próxima presentación: '
+            'fuente Yahoo Finance — puede ser una fecha aún no confirmada oficialmente por la '
+            'empresa (estimación basada en el ciclo trimestral habitual) hasta que se acerque la fecha.</div>'
+        )
+
     st.markdown(
         '<div class="metric-card">'
+        f'{dates_html}'
         '<div style="font-size:0.85rem;color:#94a3b8;line-height:1.7;margin-bottom:0.8rem;">'
         f'Los datos de EPS estimado/reportado y el histórico de sorpresas de resultados '
         f'requieren una fuente de consenso de analistas en tiempo real que no podemos '
