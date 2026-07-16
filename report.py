@@ -474,6 +474,25 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
     price       = y.get("price") or 0
     eps_fwd     = y.get("eps_forward")
     eps_ttm     = y.get("eps_ttm")
+
+    # ── Chequeo de sensatez: EPS Forward vs EPS TTM ──────────────────────
+    # Yahoo ya nos ha dado datos inconsistentes antes (fechas de earnings,
+    # formato de Dividend Yield). Si eps_forward difiere de forma extrema
+    # respecto a eps_ttm (más de 4× en cualquier dirección, con ambos del
+    # mismo signo), lo tratamos como sospechoso y lo excluimos de PER/PEG
+    # en vez de propagar un dato posiblemente erróneo sin ningún filtro.
+    eps_sanity_warning = None
+    if eps_fwd is not None and eps_ttm is not None and eps_ttm != 0 and eps_fwd != 0:
+        same_sign = (eps_fwd > 0) == (eps_ttm > 0)
+        if same_sign:
+            ratio = max(abs(eps_fwd), abs(eps_ttm)) / max(min(abs(eps_fwd), abs(eps_ttm)), 1e-9)
+            if ratio > 4:
+                eps_sanity_warning = (
+                    f"⚠ EPS Forward ({eps_fwd:.2f}) difiere {ratio:.1f}× de EPS TTM ({eps_ttm:.2f}) "
+                    f"— posible dato erróneo de Yahoo. Se excluye EPS Forward de PER/PEG por seguridad."
+                )
+                eps_fwd = None   # invalidar para que PER/PEG no lo usen
+
     pe_forward  = y.get("pe_forward")
     peg         = y.get("peg_ratio")
     ev_ebitda   = y.get("ev_ebitda")
@@ -491,6 +510,8 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
     analyst_n   = y.get("analyst_count") or 0
 
     methods_used = []
+    if eps_sanity_warning:
+        methods_used.append(eps_sanity_warning)
     targets      = []   # cada método individual, sin ponderar (para el rango)
     weighted     = []   # valores efectivamente promediados (con ponderación)
 
@@ -542,11 +563,23 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
         if method == "per" and eps_fwd and eps_fwd > 0:
             fair_pe = profile["pe_fair"]
             prima_txt = ""
-            # Si la empresa crece más que la media del sector, le damos un 10% de prima
-            if earn_growth > 0.20:
+            # Prima de crecimiento CONTINUA (antes era un escalón binario:
+            # +10% fijo si crecimiento >20%, dando la MISMA prima a una
+            # empresa que crece al 21% que a una que crece al 90% — un
+            # "acantilado" artificial). Ahora escala proporcionalmente al
+            # exceso sobre el umbral del 20%, con un tope del 25% para no
+            # reproducir el mismo problema de picos desproporcionados que
+            # ya corregimos en el crecimiento suavizado (CAGR).
+            PREMIUM_THRESHOLD = 0.20   # a partir de aquí empieza a aplicar prima
+            PREMIUM_SCALE      = 0.5   # 0.5% de prima por cada 1% de exceso sobre el umbral
+            PREMIUM_MAX        = 0.25  # tope máximo de prima: +25%
+            if earn_growth > PREMIUM_THRESHOLD:
+                excess = (earn_growth - PREMIUM_THRESHOLD) * 100   # puntos porcentuales de exceso
+                premium = min(excess * PREMIUM_SCALE / 100, PREMIUM_MAX)
                 fair_pe_base = fair_pe
-                fair_pe *= 1.10
-                prima_txt = f" [{fair_pe_base:.0f}×1.10 prima por crecimiento >20%, {earn_growth_method}]"
+                fair_pe *= (1 + premium)
+                prima_txt = (f" [{fair_pe_base:.0f}×{1+premium:.2f} prima continua por crecimiento "
+                             f"{earn_growth*100:.0f}%>20%, {earn_growth_method}]")
             val = fair_pe * eps_fwd
             if val > 0:
                 targets.append(val)
@@ -2074,7 +2107,7 @@ def render_report(ticker, company_name, y: dict,
             )
         with st.expander(
             f"PIOTROSKI F-SCORE: {pio['score']}/{pio['n_evaluable']} evaluado — {pio['level']}",
-            expanded=False
+            expanded=True
         ):
             st.markdown(
                 '<div style="background:#ffffff;border-radius:8px;padding:0.8rem 1rem;">'
@@ -2112,7 +2145,7 @@ def render_report(ticker, company_name, y: dict,
             '</div>'
         )
 
-    with st.expander("METODOLOGÍA DE VALORACIÓN — ver cálculo del valor objetivo", expanded=True):
+    with st.expander("CÁLCULO DEL VALOR OBJETIVO", expanded=True):
         st.markdown(
             '<div style="background:#ffffff;border-radius:8px;padding:0.8rem 1rem;">'
             f'<div style="font-size:0.72rem;color:#0284c7;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.5rem;">'
