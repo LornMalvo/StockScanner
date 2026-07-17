@@ -1147,6 +1147,222 @@ def _calc_health_score(y: dict, profile: dict, bh: dict | None = None) -> tuple[
 
 # ─── Evaluación final ─────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# VALORACIÓN FINAL — síntesis de los 4 sistemas (Salud Fundamental, Piotroski,
+# Diagnóstico General, Señal de Entrada) en un único veredicto accionable.
+# ─────────────────────────────────────────────────────────────────────────────
+# Diseño: en vez de promediar los 4 sistemas (que comparten inputs entre sí y
+# darían lugar a doble contabilización — ej. FCF positivo puntúa en Salud
+# Fundamental Y en Piotroski), se agrupan en 3 dimensiones independientes:
+#   CALIDAD (Salud Fundamental + Piotroski combinados) · PRECIO (Diagnóstico
+#   General) · TIMING (Señal de Entrada). Cada una con 3 niveles, dando 27
+#   combinaciones posibles con un veredicto y mensaje explícito para cada una
+#   — nunca una media numérica sin matices.
+
+def _classify_calidad(health_score: int, piotroski: dict) -> tuple[str, float]:
+    """
+    Combina Salud Fundamental (0-100) y Piotroski (X/N evaluable) en una
+    única dimensión de Calidad (alta/media/baja). Si Piotroski no tiene
+    suficientes criterios evaluables (<5 de 9) para ser fiable, se usa solo
+    Salud Fundamental. Devuelve (nivel, score_compuesto) para transparencia.
+    """
+    pio_n = piotroski.get("n_evaluable", 0) if piotroski else 0
+    pio_score = piotroski.get("score", 0) if piotroski else 0
+    pio_pct = (pio_score / pio_n * 100) if pio_n > 0 else None
+
+    if pio_pct is not None and pio_n >= 5:
+        composite = health_score * 0.6 + pio_pct * 0.4
+    else:
+        composite = health_score
+
+    if composite >= 65:
+        return "alta", composite
+    elif composite >= 40:
+        return "media", composite
+    else:
+        return "baja", composite
+
+
+def _classify_precio(diag_base: str) -> str:
+    """Mapea el diagnóstico de 7 niveles a 3 categorías de Precio."""
+    barata_set = {"MUY INFRAVALORADA", "INFRAVALORADA", "LIGERAMENTE INFRAVALORADA"}
+    cara_set   = {"EN OBSERVACIÓN", "SOBREVALORADA", "MUY SOBREVALORADA"}
+    if diag_base in barata_set:
+        return "barata"
+    elif diag_base == "PRECIO JUSTO":
+        return "justa"
+    elif diag_base in cara_set:
+        return "cara"
+    return "sin_datos"
+
+
+def _classify_timing(signal_level: str) -> str:
+    """Mapea el nivel de Señal de Entrada a 3 categorías de Timing."""
+    if signal_level in ("ENTRADA IDEAL", "ENTRADA POSIBLE"):
+        return "bueno"
+    elif signal_level == "VIGILAR":
+        return "neutro"
+    elif signal_level == "NO ES MOMENTO":
+        return "malo"
+    return "sin_datos"
+
+
+# Tabla de las 27 combinaciones: (calidad, precio, timing) -> (icono, nivel, color, mensaje)
+_VALORACION_FINAL_TABLA = {
+    ("alta", "barata", "bueno"):   ("🟢🟢", "COMPRAR YA", "#059669",
+        "Oportunidad única: fundamentales excelentes, precio con descuento significativo y momento técnico favorable."),
+    ("alta", "barata", "neutro"):  ("🟢", "COMPRAR", "#16a34a",
+        "Buena oportunidad: fundamentales y precio alineados, vigilar el timing antes de entrar con todo."),
+    ("alta", "barata", "malo"):    ("🟡", "VIGILAR", "#d97706",
+        "Fundamentales y precio excelentes, pero mal momento técnico — esperar confirmación antes de entrar."),
+    ("alta", "justa", "bueno"):    ("🟡", "A LA ESPERA", "#d97706",
+        "En precio y momento justo: buena empresa, sin margen de seguridad en la valoración."),
+    ("alta", "justa", "neutro"):   ("🟡", "A LA ESPERA", "#d97706",
+        "Sin urgencia: esperar mejor precio o una señal técnica más clara."),
+    ("alta", "justa", "malo"):     ("🟡", "A LA ESPERA", "#d97706",
+        "Sin catalizador de precio ni de timing — no hay prisa por entrar."),
+    ("alta", "cara", "bueno"):     ("🟠", "PRECAUCIÓN", "#ea580c",
+        "Buen momentum pero valoración exigente — esperar corrección antes de entrar."),
+    ("alta", "cara", "neutro"):    ("🟠", "PRECAUCIÓN", "#ea580c",
+        "Esperar mejor precio, sin señal técnica que justifique entrar ya."),
+    ("alta", "cara", "malo"):      ("🔴", "EVITAR POR AHORA", "#dc2626",
+        "Buena empresa, pero cara y en mal momento — esperar corrección clara."),
+
+    ("media", "barata", "bueno"):  ("🟢🟡", "COMPRA POSIBLE", "#65a30d",
+        "Fundamentales aceptables con buen precio y timing — vigilar de cerca, posición moderada."),
+    ("media", "barata", "neutro"): ("🟡", "PRECAUCIÓN LEVE", "#d97706",
+        "Precio atractivo pero fundamentales no excepcionales — considerar posición reducida."),
+    ("media", "barata", "malo"):   ("🟠", "PRECAUCIÓN", "#ea580c",
+        "Barata sin confirmación técnica ni fundamentales sólidos — riesgo real de trampa de valor."),
+    ("media", "justa", "bueno"):   ("🟡", "NEUTRAL", "#d97706",
+        "Sin ventaja clara de precio ni calidad destacable — el buen timing no basta por sí solo."),
+    ("media", "justa", "neutro"):  ("🟡", "NEUTRAL", "#d97706",
+        "Sin ningún factor claramente a favor — mejor esperar."),
+    ("media", "justa", "malo"):    ("🔴", "EVITAR POR AHORA", "#dc2626",
+        "Sin argumentos de calidad, precio ni timing a favor."),
+    ("media", "cara", "bueno"):    ("🟠", "PRECAUCIÓN", "#ea580c",
+        "Buen timing técnico, pero se paga de más por fundamentales solo aceptables."),
+    ("media", "cara", "neutro"):   ("🔴", "EVITAR POR AHORA", "#dc2626",
+        "Cara y con fundamentales mediocres, sin señal técnica que lo compense."),
+    ("media", "cara", "malo"):     ("🔴", "EVITAR", "#dc2626",
+        "Combinación desfavorable en las tres dimensiones."),
+
+    ("baja", "barata", "bueno"):   ("🟠", "PRECAUCIÓN", "#ea580c",
+        "Posible value trap: barata por una razón, aunque el timing técnico sea favorable."),
+    ("baja", "barata", "neutro"):  ("🔴", "PRECAUCIÓN ALTA", "#dc2626",
+        "Fundamentales débiles y sin confirmación técnica — alto riesgo de trampa de valor."),
+    ("baja", "barata", "malo"):    ("🔴", "EVITAR", "#dc2626",
+        "Value trap probable, sin ningún catalizador que lo revierta."),
+    ("baja", "justa", "bueno"):    ("🔴", "EVITAR POR AHORA", "#dc2626",
+        "Fundamentales débiles no compensados por el precio, pese al buen timing."),
+    ("baja", "justa", "neutro"):   ("🔴", "EVITAR", "#dc2626",
+        "Fundamentales débiles y sin ninguna ventaja de precio."),
+    ("baja", "justa", "malo"):     ("🔴🔴", "EVITAR", "#991b1b",
+        "Sin ningún argumento a favor en ninguna dimensión."),
+    ("baja", "cara", "bueno"):     ("🔴", "EVITAR", "#dc2626",
+        "Fundamentales débiles y cara — el buen timing no compensa el riesgo de fondo."),
+    ("baja", "cara", "neutro"):    ("🔴🔴", "EVITAR", "#991b1b",
+        "Mala combinación de calidad y precio."),
+    ("baja", "cara", "malo"):      ("🔴🔴", "EVITAR", "#991b1b",
+        "Peor combinación posible: mala calidad, cara y mal momento técnico."),
+}
+
+
+def calc_valoracion_final(ev: dict, signal: dict) -> dict:
+    """
+    Sintetiza Salud Fundamental, Piotroski, Diagnóstico General y Señal de
+    Entrada en un único veredicto accionable, usando la tabla de 27
+    combinaciones (3 niveles × 3 dimensiones). Nunca es una media numérica:
+    siempre un mensaje explícito y auditable con las 3 clasificaciones que
+    lo componen, para que se pueda ver exactamente de dónde sale.
+    """
+    health_score = ev.get("health_score", 0)
+    piotroski    = ev.get("piotroski", {})
+    diag_base    = ev.get("diag_base", "")
+    signal_level = signal.get("level", "")
+
+    calidad, calidad_score = _classify_calidad(health_score, piotroski)
+    precio  = _classify_precio(diag_base)
+    timing  = _classify_timing(signal_level)
+
+    # Fiabilidad: si alguna dimensión no tiene datos suficientes, el
+    # veredicto se marca explícitamente como de fiabilidad reducida
+    reliability_ok = precio != "sin_datos" and timing != "sin_datos"
+
+    key = (calidad, precio, timing)
+    if key in _VALORACION_FINAL_TABLA:
+        icon, level, color, message = _VALORACION_FINAL_TABLA[key]
+    else:
+        # Combinación sin datos suficientes en alguna dimensión — no debería
+        # ocurrir salvo precio/timing "sin_datos", pero se cubre por seguridad
+        icon, level, color = "⚪", "SIN DATOS SUFICIENTES", "#64748b"
+        message = "No se pudo determinar un veredicto fiable — faltan datos de precio objetivo o de señal técnica."
+
+    return {
+        "icon": icon, "level": level, "color": color, "message": message,
+        "calidad": calidad, "calidad_score": round(calidad_score, 1),
+        "precio": precio, "timing": timing,
+        "reliability_ok": reliability_ok,
+    }
+
+
+def render_valoracion_final(vf: dict, ev: dict, signal: dict):
+    """
+    Renderiza el veredicto de Valoración Final con las 3 dimensiones que lo
+    componen siempre visibles — nunca solo el mensaje final sin auditoría.
+    """
+    _section("VALORACIÓN FINAL")
+
+    labels_calidad = {"alta": "Alta", "media": "Media", "baja": "Baja"}
+    labels_precio  = {"barata": "Barata", "justa": "Precio justo", "cara": "Cara", "sin_datos": "Sin datos"}
+    labels_timing  = {"bueno": "Buen timing", "neutro": "Timing neutro", "malo": "Mal timing", "sin_datos": "Sin datos"}
+
+    if not vf.get("reliability_ok", True):
+        st.markdown(
+            '<div style="background:#fffbeb;border:1px solid #d97706;border-left:4px solid #d97706;'
+            'border-radius:6px;padding:0.6rem 0.9rem;margin-bottom:0.8rem;font-size:0.78rem;'
+            'color:#92400e;line-height:1.6;">'
+            '⚠ FIABILIDAD REDUCIDA: falta el Valor Objetivo o la Señal de Entrada no se pudo calcular '
+            'con suficientes datos — el veredicto puede no ser representativo.</div>',
+            unsafe_allow_html=True
+        )
+
+    st.markdown(
+        f'<div class="verdict-box" style="border-left-color:{vf["color"]};">'
+        '<div class="verdict-title">VEREDICTO — SÍNTESIS DE LOS 4 SISTEMAS</div>'
+        '<div style="display:flex;align-items:center;gap:0.7rem;margin-bottom:0.6rem;">'
+        f'<span style="font-size:1.6rem;">{vf["icon"]}</span>'
+        f'<span class="verdict-main" style="color:{vf["color"]};font-size:1.3rem;">{vf["level"]}</span>'
+        '</div>'
+        f'<div style="font-size:0.9rem;color:#334155;line-height:1.6;margin-bottom:1rem;">{vf["message"]}</div>'
+        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.6rem;">'
+        '<div style="background:#ffffff;border-radius:6px;padding:0.6rem 0.8rem;border:1px solid #e2e8f0;">'
+        '<div style="font-size:0.65rem;color:#64748b;text-transform:uppercase;">Calidad</div>'
+        f'<div style="font-size:0.9rem;color:#0f172a;font-weight:600;">{labels_calidad.get(vf["calidad"], vf["calidad"])}</div>'
+        f'<div style="font-size:0.68rem;color:#94a3b8;">Score compuesto: {vf["calidad_score"]}/100</div>'
+        '</div>'
+        '<div style="background:#ffffff;border-radius:6px;padding:0.6rem 0.8rem;border:1px solid #e2e8f0;">'
+        '<div style="font-size:0.65rem;color:#64748b;text-transform:uppercase;">Precio</div>'
+        f'<div style="font-size:0.9rem;color:#0f172a;font-weight:600;">{labels_precio.get(vf["precio"], vf["precio"])}</div>'
+        f'<div style="font-size:0.68rem;color:#94a3b8;">Diagnóstico: {ev.get("diag_base","N/A")}</div>'
+        '</div>'
+        '<div style="background:#ffffff;border-radius:6px;padding:0.6rem 0.8rem;border:1px solid #e2e8f0;">'
+        '<div style="font-size:0.65rem;color:#64748b;text-transform:uppercase;">Timing</div>'
+        f'<div style="font-size:0.9rem;color:#0f172a;font-weight:600;">{labels_timing.get(vf["timing"], vf["timing"])}</div>'
+        f'<div style="font-size:0.68rem;color:#94a3b8;">Señal: {signal.get("level","N/A")}</div>'
+        '</div>'
+        '</div>'
+        '<div style="font-size:0.68rem;color:#94a3b8;margin-top:0.9rem;">'
+        'Calidad = combinación de Salud Fundamental y Piotroski F-Score (60%/40% si Piotroski tiene '
+        '≥5 criterios evaluables, si no solo Salud Fundamental) · Precio = Diagnóstico General · '
+        'Timing = Señal de Entrada. Nunca es una media directa de los 4 sistemas — se agrupan así '
+        'para evitar contar dos veces el mismo dato subyacente (ej. FCF positivo puntúa tanto en '
+        'Salud Fundamental como en Piotroski).</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+
 def _evaluate(y: dict, bh: dict | None = None) -> dict:
     """Diagnóstico completo ajustado al sector y a los tipos de interés actuales."""
     bh = bh or {}
@@ -2322,6 +2538,12 @@ def render_report(ticker, company_name, y: dict,
     y["last_q_date"]    = ea.get("last_q_date") if ea else None
     signal = calc_entry_signal(y, tech, ev)
     render_entry_signal(signal)
+
+    # ════════════════════════════════════════════════════════════════════
+    # VALORACIÓN FINAL — síntesis de los 4 sistemas
+    # ════════════════════════════════════════════════════════════════════
+    vf = calc_valoracion_final(ev, signal)
+    render_valoracion_final(vf, ev, signal)
 
     # ════════════════════════════════════════════════════════════════════
     # COMPARATIVA FRENTE A COMPETENCIA
