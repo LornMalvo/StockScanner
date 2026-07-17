@@ -668,13 +668,18 @@ def fetch_earnings_analysis(ticker: str, y: dict) -> dict:
             next_q_dt = last_q_dt + timedelta(days=91)
             next_q_estimated = True
 
-        # Fallback final de EPS si Finnhub y yfinance fallaron
+        # ANTES había aquí un "último recurso" que usaba trailingEps (EPS de
+        # los ÚLTIMOS 12 MESES) y epsCurrentYear/epsForward (estimación del
+        # AÑO FISCAL COMPLETO) como si fueran el EPS estimado/reportado del
+        # ÚLTIMO TRIMESTRE, calculando una "sorpresa" y un badge BEAT/MISSED
+        # sobre una comparación entre periodos de tiempo distintos — daba
+        # lugar a sorpresas de EPS completamente irreales (ej. Oracle
+        # mostrando -32% cuando el trimestre real había batido expectativas).
+        # Si Finnhub y el histórico de yfinance fallan ambos, es más honesto
+        # mostrar "No disponible" que sustituir con cifras de otra escala
+        # temporal disfrazadas de datos trimestrales.
         if eps_actual is None:
-            print(f"[Earnings] {ticker} — sin histórico, usando trailingEps de Yahoo como último recurso")
-            eps_actual   = _safe_float(info.get("trailingEps"))
-            eps_estimate = _safe_float(info.get("epsCurrentYear")) or _safe_float(info.get("epsForward"))
-            if eps_actual and eps_estimate and eps_estimate != 0:
-                eps_surprise = (eps_actual - eps_estimate) / abs(eps_estimate) * 100
+            print(f"[Earnings] {ticker} — sin histórico trimestral disponible (Finnhub y yfinance fallaron)")
 
         if eps_surprise is not None:
             beat_eps = eps_surprise > 0
