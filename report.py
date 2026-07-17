@@ -2570,7 +2570,7 @@ def render_report(ticker, company_name, y: dict,
     render_pdf_download_button(
         ticker, company_name, y, ev, tech,
         sq_data, signal, trend, mult_data, ea,
-        fx_rate, peers_data
+        fx_rate, peers_data, vf
     )
 
     st.caption(

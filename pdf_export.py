@@ -180,6 +180,7 @@ def generate_analysis_pdf(
     ea: dict | None,
     fx_rate: float | None = None,
     peers_data: list | None = None,
+    vf: dict | None = None,
 ) -> bytes:
     """Genera el PDF completo del analisis y devuelve los bytes para descarga."""
     buffer = io.BytesIO()
@@ -501,6 +502,46 @@ def generate_analysis_pdf(
             story.append(chk_table)
         story.append(Spacer(1, 10))
 
+    # -- Valoracion Final (sintesis de los 4 sistemas) -------------------------
+    if vf:
+        story.append(Paragraph("VALORACION FINAL", styles["SectionHeader"]))
+        story.append(Paragraph(
+            f"<b>{vf.get('icon','')} {vf.get('level','N/A')}</b>",
+            ParagraphStyle(name="VFLevel", fontName="Helvetica-Bold", fontSize=12,
+                            textColor=colors.HexColor(vf.get("color", "#0f172a")), spaceAfter=4)
+        ))
+        story.append(Paragraph(vf.get("message", ""), styles["BodySmall"]))
+
+        labels_calidad = {"alta": "Alta", "media": "Media", "baja": "Baja"}
+        labels_precio  = {"barata": "Barata", "justa": "Precio justo", "cara": "Cara", "sin_datos": "Sin datos"}
+        labels_timing  = {"bueno": "Buen timing", "neutro": "Timing neutro", "malo": "Mal timing", "sin_datos": "Sin datos"}
+
+        if not vf.get("reliability_ok", True):
+            story.append(Paragraph(
+                "FIABILIDAD REDUCIDA: falta el Valor Objetivo o la Senal de Entrada no se pudo "
+                "calcular con suficientes datos -- el veredicto puede no ser representativo.",
+                styles["WarnBox"]
+            ))
+
+        vf_table = [
+            ["Dimension", "Clasificacion", "Base"],
+            ["Calidad", labels_calidad.get(vf.get("calidad"), "N/A"),
+             f"Score compuesto: {vf.get('calidad_score','N/A')}/100"],
+            ["Precio", labels_precio.get(vf.get("precio"), "N/A"),
+             f"Diagnostico: {ev.get('diag_base','N/A')}"],
+            ["Timing", labels_timing.get(vf.get("timing"), "N/A"),
+             f"Senal: {signal.get('level','N/A') if signal else 'N/A'}"],
+        ]
+        story.append(_table(vf_table, col_widths=[3.5*cm, 4.5*cm, 7.2*cm]))
+        story.append(Paragraph(
+            "Calidad = combinacion de Salud Fundamental y Piotroski F-Score (60%/40% si Piotroski "
+            "tiene 5 o mas criterios evaluables, si no solo Salud Fundamental) -- Precio = Diagnostico "
+            "General -- Timing = Senal de Entrada. Nunca es una media directa de los 4 sistemas, para "
+            "evitar contar dos veces el mismo dato subyacente.",
+            styles["BodyTiny"]
+        ))
+        story.append(Spacer(1, 10))
+
     # -- Historico de multiplos ------------------------------------------------
     if mult_data:
         story.append(Paragraph("HISTORICO DE MULTIPLOS PROPIOS (PER 5 anos)", styles["SectionHeader"]))
@@ -517,9 +558,13 @@ def generate_analysis_pdf(
     # -- Analisis de ultimos resultados -----------------------------------------
     if ea and not ea.get("error"):
         story.append(Paragraph("ANALISIS DE ULTIMOS RESULTADOS", styles["SectionHeader"]))
+        _last_q = ea.get("last_q_date")
+        _next_q = ea.get("next_q_date")
+        _last_q_txt = _last_q if _last_q and _last_q != "N/A" else "No disponible"
+        _next_q_txt = _next_q if _next_q and _next_q != "N/A" else "No disponible"
         story.append(Paragraph(
-            f"<b>Ultimo trimestre:</b> {ea.get('last_q_date','N/A')} &nbsp;&nbsp; "
-            f"<b>Proxima presentacion:</b> {ea.get('next_q_date','N/A')}",
+            f"<b>Ultimo trimestre:</b> {_last_q_txt} &nbsp;&nbsp; "
+            f"<b>Proxima presentacion:</b> {_next_q_txt}",
             styles["BodySmall"]
         ))
         positives = ea.get("positives", [])
@@ -591,6 +636,7 @@ def render_pdf_download_button(
     ea: dict | None,
     fx_rate: float | None = None,
     peers_data: list | None = None,
+    vf: dict | None = None,
 ):
     """Boton de Streamlit para generar y descargar el PDF del analisis."""
     import streamlit as st
@@ -598,7 +644,7 @@ def render_pdf_download_button(
     try:
         pdf_bytes = generate_analysis_pdf(
             ticker, company_name, y, ev, tech,
-            sq_data, signal, trend, mult_data, ea, fx_rate, peers_data
+            sq_data, signal, trend, mult_data, ea, fx_rate, peers_data, vf
         )
         now_str  = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
         filename = f"analisis_{ticker}_{now_str}.pdf"
