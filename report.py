@@ -474,15 +474,49 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
     price       = y.get("price") or 0
     eps_fwd     = y.get("eps_forward")
     eps_ttm     = y.get("eps_ttm")
+    pe_forward_yahoo = y.get("pe_forward")   # PER Forward que Yahoo YA calcula internamente
 
-    # ── Chequeo de sensatez: EPS Forward vs EPS TTM ──────────────────────
-    # Yahoo ya nos ha dado datos inconsistentes antes (fechas de earnings,
-    # formato de Dividend Yield). Si eps_forward difiere de forma extrema
-    # respecto a eps_ttm (más de 4× en cualquier dirección, con ambos del
-    # mismo signo), lo tratamos como sospechoso y lo excluimos de PER/PEG
-    # en vez de propagar un dato posiblemente erróneo sin ningún filtro.
+    # ── Chequeo de sensatez de EPS Forward, anclado al PRECIO real ───────
+    # El chequeo anterior solo comparaba eps_forward contra eps_ttm entre
+    # sí — pero si Yahoo tiene el mismo problema de escala en AMBOS campos
+    # a la vez (ej. un split de acciones no reflejado correctamente en el
+    # histórico de EPS de ese ticker concreto), el ratio entre ellos sigue
+    # pareciendo razonable y el chequeo cruzado no detecta nada, aunque los
+    # dos números estén disparatados en términos absolutos — exactamente lo
+    # que ocurría con AVGO/MU/STX (EPS Forward de 150+ con precios de
+    # ~$100-150, implicando un PER de <1x, algo virtualmente imposible en
+    # el mercado real).
+    #
+    # Ahora se ancla a dos referencias independientes que Yahoo no calcula
+    # a partir de estos mismos campos:
+    #   1. El PER implícito (precio / eps_forward) debe estar en un rango
+    #      absoluto plausible para cualquier acción cotizada (2×-200×).
+    #   2. Si Yahoo expone su propio forwardPE, el PER implícito no debe
+    #      discrepar más de 3× de ese valor — forwardPE lo calcula Yahoo
+    #      con su propia lógica interna, así que sirve de verificación
+    #      cruzada independiente del campo EPS bruto.
     eps_sanity_warning = None
-    if eps_fwd is not None and eps_ttm is not None and eps_ttm != 0 and eps_fwd != 0:
+    if eps_fwd is not None and eps_fwd > 0 and price > 0:
+        implied_pe = price / eps_fwd
+        suspicious = implied_pe < 2 or implied_pe > 200
+        if not suspicious and pe_forward_yahoo and pe_forward_yahoo > 0:
+            cross_ratio = max(implied_pe, pe_forward_yahoo) / max(min(implied_pe, pe_forward_yahoo), 1e-9)
+            if cross_ratio > 3:
+                suspicious = True
+        if suspicious:
+            eps_sanity_warning = (
+                f"⚠ EPS Forward ({eps_fwd:.2f}) implica un PER de {implied_pe:.1f}× "
+                f"(Precio {price:.2f} ÷ EPS) "
+                + (f"frente al PER Forward de {pe_forward_yahoo:.1f}× que da Yahoo directamente "
+                   if pe_forward_yahoo else "")
+                + "— posible dato erróneo de Yahoo (ej. split no reflejado en el histórico de EPS). "
+                  "Se excluye EPS Forward de PER/PEG por seguridad."
+            )
+            eps_fwd = None   # invalidar para que PER/PEG no lo usen
+
+    # Chequeo adicional (capa secundaria): EPS Forward vs EPS TTM, por si
+    # el precio no está disponible para anclar el chequeo principal de arriba
+    if eps_sanity_warning is None and eps_fwd is not None and eps_ttm is not None and eps_ttm != 0 and eps_fwd != 0:
         same_sign = (eps_fwd > 0) == (eps_ttm > 0)
         if same_sign:
             ratio = max(abs(eps_fwd), abs(eps_ttm)) / max(min(abs(eps_fwd), abs(eps_ttm)), 1e-9)
@@ -729,11 +763,25 @@ def _calc_smoothed_earnings_growth(y: dict, bh: dict) -> tuple[float | None, str
         if ni_oldest > 0 and ni_recent > 0:
             cagr = (ni_recent / ni_oldest) ** (1 / n_years) - 1
             return cagr, f"CAGR {n_years} años"
+        # Razón específica del fallback, para que sea diagnosticable en vez
+        # de un genérico "sin histórico limpio" que no distingue si es un
+        # problema de datos o un hecho real de la empresa (año con pérdidas)
+        single_year = y.get("earnings_yoy")
+        if ni_oldest <= 0 and ni_recent > 0:
+            reason = f"1 año (año base con pérdidas hace {n_years} años, CAGR no aplicable)"
+        elif ni_recent <= 0:
+            reason = "1 año (beneficio neto actual negativo, CAGR no aplicable)"
+        else:
+            reason = "1 año (datos de balance no concluyentes)"
+        if single_year is not None:
+            return single_year / 100, reason
+        return None, "sin datos"
 
-    # Fallback: crecimiento de un solo año (comportamiento anterior)
+    # Fallback: sin serie multi-año en absoluto (balance histórico no
+    # disponible para este ticker, o Yahoo no expone la fila "Net Income")
     single_year = y.get("earnings_yoy")
     if single_year is not None:
-        return single_year / 100, "1 año (sin histórico multi-año limpio)"
+        return single_year / 100, "1 año (sin balance histórico disponible para este ticker)"
 
     return None, "sin datos"
 
