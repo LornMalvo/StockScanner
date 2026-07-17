@@ -459,7 +459,7 @@ def _robust_aggregate(weighted: list[float]) -> float:
     return statistics.median(weighted)
 
 
-def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[float | None, list[str], tuple[float, float] | None]:
+def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[float | None, list[str], tuple[float, float] | None, float | None]:
     """
     Calcula el valor objetivo usando los métodos relevantes para el sector.
     Devuelve (fair_value, lista_de_métodos_usados, rango_min_max).
@@ -570,12 +570,16 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
     if eps_sanity_warning:
         methods_used.append(eps_sanity_warning)
     targets      = []   # cada método individual, sin ponderar (para el rango)
-    weighted     = []   # valores efectivamente promediados (con ponderación)
+    weighted     = []   # valores para la mediana CON peso doble al consenso (≥10 analistas)
+    weighted_single = []   # valores para la mediana SIN peso doble — consenso cuenta 1 vez siempre
 
     def _add_consensus():
-        """Añade el consenso de analistas con ponderación según cobertura."""
+        """Añade el consenso de analistas — con peso doble en 'weighted' (si ≥10
+        analistas) y con peso simple en 'weighted_single', para poder comparar
+        ambas medianas y ver cuánto influye esa ponderación en el resultado."""
         if target_mean and target_mean > 0:
             targets.append(target_mean)
+            weighted_single.append(target_mean)
             if analyst_n >= 10:
                 weighted.append(target_mean)
                 weighted.append(target_mean)   # peso doble
@@ -601,6 +605,7 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
         if val > 0:
             targets.append(val)
             weighted.append(val)
+            weighted_single.append(val)
             methods_used.append(
                 f"EV/Sales hyper-growth ( {price:,.2f} (Precio) × [ {ev_sales_fair:.1f} (EV/Sales sector) "
                 f"÷ {ev_revenue:.1f} (EV/Sales actual) ] , Rev YoY {rev_yoy:.0f}% > 25% ) → {val:,.2f}"
@@ -609,10 +614,11 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
         # porque el EPS negativo los invalida por definición.
         _add_consensus()
         if not weighted:
-            return None, [], None
+            return None, [], None, None
         fair_value = _robust_aggregate(weighted)
+        fair_value_single = _robust_aggregate(weighted_single)
         rng = (min(targets), max(targets)) if len(targets) >= 2 else None
-        return fair_value, methods_used, rng
+        return fair_value, methods_used, rng, fair_value_single
 
     for method in profile["methods"]:
 
@@ -641,6 +647,7 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
             if val > 0:
                 targets.append(val)
                 weighted.append(val)
+                weighted_single.append(val)
                 methods_used.append(
                     f"PER sectorial ( {fair_pe:.1f}{prima_txt} × {eps_fwd:,.2f} (EPS Forward) ) → {val:,.2f}"
                 )
@@ -663,6 +670,7 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
             if val > 0:
                 targets.append(val)
                 weighted.append(val)
+                weighted_single.append(val)
                 methods_used.append(
                     f"PEG sectorial ( {eps_fwd:,.2f} (EPS Forward) × {profile['peg_ok']:.1f} (PEG sector) "
                     f"× {growth_pct:.1f} (Crec. beneficios, {earn_growth_method}{cap_note}) ) → {val:,.2f}"
@@ -704,6 +712,7 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
             if val > 0:
                 targets.append(val)
                 weighted.append(val)
+                weighted_single.append(val)
                 methods_used.append(formula_note.format(val=val))
 
         # FCF Yield (DCF simplificado): precio justo = FCF / yield_esperado
@@ -715,6 +724,7 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
             if val > 0:
                 targets.append(val)
                 weighted.append(val)
+                weighted_single.append(val)
                 methods_used.append(
                     f"FCF Yield ( {fcf_per_share:,.2f} (FCF/acción) ÷ {fcf_yield_target*100:.0f}% "
                     f"(yield exigido) ) → {val:,.2f}"
@@ -728,6 +738,7 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
             if val > 0:
                 targets.append(val)
                 weighted.append(val)
+                weighted_single.append(val)
                 methods_used.append(
                     f"Price/Book justo ( {price:,.2f} (Precio) × [ {fair_pb:.2f} (ROE {roe*100:.1f}% ÷ Ke {cost_of_equity*100:.0f}%) "
                     f"÷ {price_book:.2f} (P/B actual) ] ) → {val:,.2f}"
@@ -736,11 +747,12 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
     _add_consensus()
 
     if not weighted:
-        return None, [], None
+        return None, [], None, None
 
     fair_value = _robust_aggregate(weighted)
+    fair_value_single = _robust_aggregate(weighted_single)
     rng = (min(targets), max(targets)) if len(targets) >= 2 else None
-    return fair_value, methods_used, rng
+    return fair_value, methods_used, rng, fair_value_single
 
 
 # ─── Salud fundamental ajustada al sector ────────────────────────────────────
@@ -1498,7 +1510,7 @@ def _evaluate(y: dict, bh: dict | None = None) -> dict:
     piotroski = calc_piotroski_score(y, bh)
 
     # ── Valor objetivo ───────────────────────────────────────────────────
-    fair_value, methods_used, targets_range = _calc_fair_value(y, profile, bh)
+    fair_value, methods_used, targets_range, fair_value_single = _calc_fair_value(y, profile, bh)
 
     # Flag informativo: ¿se usó el fallback hyper-growth (EV/Sales)?
     is_hyper_growth = any("hyper-growth" in m for m in methods_used)
@@ -1655,6 +1667,7 @@ def _evaluate(y: dict, bh: dict | None = None) -> dict:
         "health_score":    health_score,
         "health_breakdown": health_breakdown,
         "fair_value":      fair_value,
+        "fair_value_single": fair_value_single,
         "methods_used":    methods_used,
         "upside":          upside,
         "diag":            diag,
@@ -2465,13 +2478,30 @@ def render_report(ticker, company_name, y: dict,
     if fair:
         fair_eur_final = f' <span style="color:#94a3b8;font-size:0.85em;">(€{fair*fx_rate:,.2f})</span>' if fx_rate and currency_y == "USD" else ""
         n_methods_final = len(ev.get("methods_used", []))
+        fair_single = ev.get("fair_value_single")
+        diff_html = ""
+        if fair_single and fair and fair != fair_single:
+            diff_pct = (fair - fair_single) / fair_single * 100
+            fair_single_eur = f' <span style="color:#94a3b8;font-size:0.85em;">(€{fair_single*fx_rate:,.2f})</span>' if fx_rate and currency_y == "USD" else ""
+            diff_color = "#059669" if diff_pct >= 0 else "#dc2626"
+            diff_html = (
+                '<div style="margin-top:0.5rem;display:flex;justify-content:space-between;align-items:baseline;">'
+                '<span style="font-size:0.72rem;color:#94a3b8;">— si el consenso contase 1 sola vez '
+                '(en vez de peso doble)</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.85rem;color:#64748b;">'
+                f'{currency_y} {fair_single:,.2f}{fair_single_eur} '
+                f'<span style="color:{diff_color};">({diff_pct:+.1f}%)</span></span>'
+                '</div>'
+            )
         fair_final_html = (
-            '<div style="margin-top:0.8rem;padding-top:0.7rem;border-top:2px solid #dbeafe;'
-            'display:flex;justify-content:space-between;align-items:baseline;">'
+            '<div style="margin-top:0.8rem;padding-top:0.7rem;border-top:2px solid #dbeafe;">'
+            '<div style="display:flex;justify-content:space-between;align-items:baseline;">'
             f'<span style="font-size:0.78rem;color:#0284c7;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">'
-            f'Valor objetivo (media de {n_methods_final} método{"s" if n_methods_final != 1 else ""})</span>'
+            f'Valor objetivo (mediana de {n_methods_final} método{"s" if n_methods_final != 1 else ""}, consenso ×2 peso)</span>'
             f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:1.1rem;font-weight:700;color:#0f172a;">'
             f'{currency_y} {fair:,.2f}{fair_eur_final}</span>'
+            '</div>'
+            f'{diff_html}'
             '</div>'
         )
 
@@ -2482,10 +2512,12 @@ def render_report(ticker, company_name, y: dict,
             f'Métodos aplicados (sector: {ev["sector_label"]})</div>'
             f'{mh}'
             '<div style="margin-top:0.6rem;font-size:0.72rem;color:#64748b;">'
-            'El valor objetivo es la <b>mediana</b> de los métodos disponibles más el consenso de '
-            'analistas (con peso doble si hay ≥10 analistas) — la mediana se usa en vez de la media '
-            'aritmética simple porque es inmune a que un solo método atípico distorsione el resultado '
-            'final.</div>'
+            'El valor objetivo principal es la <b>mediana</b> de los métodos disponibles más el '
+            'consenso de analistas con <b>peso doble</b> (si hay ≥10 analistas) — la mediana se usa '
+            'en vez de la media aritmética porque es inmune a que un solo método atípico distorsione '
+            'el resultado. Se muestra también, a modo de contraste, la mediana alternativa dando al '
+            'consenso el mismo peso que el resto de métodos (peso simple), para ver cuánto influye '
+            'esa ponderación en el resultado final.</div>'
             f'{fair_final_html}'
             '</div>',
             unsafe_allow_html=True

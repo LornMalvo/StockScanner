@@ -223,9 +223,16 @@ def generate_analysis_pdf(
     story.append(Paragraph("DIAGNOSTICO GENERAL", styles["SectionHeader"]))
     diag_data = [
         ["Precio actual", f"{currency} {price_now:,.2f}"],
-        ["Valor objetivo estimado", f"{currency} {fair:,.2f}" if fair else "N/A"],
-        ["Upside / Downside", f"{upside:+.2f}%" if upside is not None else "N/A"],
+        ["Valor objetivo (mediana, consenso peso doble)", f"{currency} {fair:,.2f}" if fair else "N/A"],
     ]
+    fair_single = ev.get("fair_value_single")
+    if fair_single and fair and fair != fair_single:
+        diff_pct = (fair - fair_single) / fair_single * 100
+        diag_data.append([
+            "Valor objetivo (mediana, consenso peso simple)",
+            f"{currency} {fair_single:,.2f} ({diff_pct:+.1f}% vs peso doble)"
+        ])
+    diag_data.append(["Upside / Downside", f"{upside:+.2f}%" if upside is not None else "N/A"])
     if target_mean:
         an_upside = (target_mean - price_now) / price_now * 100 if price_now else None
         diag_data.append([
