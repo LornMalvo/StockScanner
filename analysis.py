@@ -727,7 +727,17 @@ def fetch_earnings_analysis(ticker: str, y: dict) -> dict:
         if rev_yoy < 0:     negatives.append(f"Contracción de ingresos: {rev_yoy:.1f}% YoY")
         if debt_eq > 200:   negatives.append(f"Deuda elevada: D/E {debt_eq:.0f}%")
         if curr_ratio < 1:  negatives.append(f"Liquidez ajustada (Current Ratio: {curr_ratio:.1f}×)")
-        if fcf < 0:         negatives.append("Free Cash Flow negativo: consumiendo caja")
+        if fcf < 0:
+            operating_cf = y.get("operating_cf")
+            if operating_cf is not None and operating_cf > 0:
+                capex_implied = operating_cf - fcf
+                negatives.append(
+                    f"Free Cash Flow negativo, pero CFO positivo (${operating_cf/1e6:,.0f}M) — "
+                    f"probablemente por CAPEX de expansión (≈${capex_implied/1e6:,.0f}M), no por "
+                    f"operativa débil"
+                )
+            else:
+                negatives.append("Free Cash Flow negativo: consumiendo caja de operaciones")
         if q_growth and q_growth < -10:
             negatives.append(f"Desaceleración QoQ: {q_growth:.1f}% vs trimestre anterior")
 
