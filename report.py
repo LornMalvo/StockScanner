@@ -2067,6 +2067,7 @@ def render_report(ticker, company_name, y: dict,
 
     last_q_fmt = ea.get("last_q_date_fmt", "N/A") if ea else "N/A"
     next_q_fmt = ea.get("next_q_date_fmt", "N/A") if ea else "N/A"
+    next_q_estimated_flag = ea.get("next_q_estimated", False) if ea else False
     tiempo_desde = ea.get("tiempo_desde", "") if ea else ""
     tiempo_hasta = ea.get("tiempo_hasta", "") if ea else ""
 
@@ -2078,6 +2079,7 @@ def render_report(ticker, company_name, y: dict,
     next_q_display = next_q_fmt if next_q_fmt != "N/A" else "No disponible"
     last_q_color   = "#0f172a" if last_q_fmt != "N/A" else "#94a3b8"
     next_q_color   = "#0f172a" if next_q_fmt != "N/A" else "#94a3b8"
+    next_q_label   = "Próxima presentación (calculada, ~3 meses)" if next_q_estimated_flag else "Próxima presentación (estimada)"
 
     dates_html = (
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;margin-bottom:0.9rem;">'
@@ -2087,16 +2089,20 @@ def render_report(ticker, company_name, y: dict,
         f'<div style="font-size:0.7rem;color:#94a3b8;">{f"hace {tiempo_desde}" if tiempo_desde else ""}</div>'
         '</div>'
         '<div style="background:#f4f6f9;border-radius:6px;padding:0.6rem 0.8rem;">'
-        '<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">Próxima presentación (estimada)</div>'
+        f'<div style="font-size:0.68rem;color:#64748b;text-transform:uppercase;">{next_q_label}</div>'
         f'<div style="font-size:0.9rem;color:{next_q_color};font-weight:600;">{next_q_display}</div>'
         f'<div style="font-size:0.7rem;color:#94a3b8;">{f"en {tiempo_hasta}" if tiempo_hasta else ""}</div>'
         '</div>'
         '</div>'
         '<div style="font-size:0.68rem;color:#94a3b8;margin-bottom:0.8rem;">'
         '📅 Última presentación: fuente Finnhub (histórico de earnings). Próxima presentación: '
-        'fuente Yahoo Finance — puede ser una fecha aún no confirmada oficialmente por la '
-        'empresa (estimación basada en el ciclo trimestral habitual) hasta que se acerque la fecha. '
-        'Si algún dato aparece como "No disponible", la fuente correspondiente no tiene '
+        'fuente Yahoo Finance cuando está disponible'
+        + (', o <b>calculada automáticamente</b> como ~3 meses (91 días) tras la última '
+           'presentación conocida cuando ninguna fuente da una fecha confirmada — el ciclo '
+           'trimestral habitual de casi todas las cotizadas' if next_q_estimated_flag else
+           ' — puede ser una fecha aún no confirmada oficialmente por la empresa (estimación '
+           'basada en el ciclo trimestral habitual) hasta que se acerque la fecha')
+        + '. Si algún dato aparece como "No disponible", la fuente correspondiente no tiene '
         'cobertura fiable para este ticker en este momento.</div>'
     )
 
@@ -2767,6 +2773,7 @@ def render_report(ticker, company_name, y: dict,
         y["analyst_revisions"] = fetch_analyst_revisions(ticker)
     y["insiders_data"]  = company_info.get("insiders", [])
     y["next_q_date"]    = ea.get("next_q_date") if ea else None
+    y["next_q_estimated"] = ea.get("next_q_estimated", False) if ea else False
     y["last_q_date"]    = ea.get("last_q_date") if ea else None
     signal = calc_entry_signal(y, tech, ev)
     render_entry_signal(signal)

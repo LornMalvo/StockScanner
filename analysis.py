@@ -10,7 +10,7 @@ import requests
 import time
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BENCHMARKS DE SECTOR — medias de mercado por métrica
@@ -657,6 +657,17 @@ def fetch_earnings_analysis(ticker: str, y: dict) -> dict:
                     except Exception:
                         continue
 
+        # Fallback final: si ninguna fuente (Yahoo, Finnhub) da una fecha de
+        # próxima presentación, pero SÍ conocemos la última, se estima la
+        # siguiente a ~3 meses (91 días) después — el ciclo trimestral
+        # habitual de casi todas las cotizadas. Mejor una estimación
+        # razonable y claramente marcada como tal que dejar el dato
+        # completamente vacío cuando sí hay información de la que partir.
+        next_q_estimated = False
+        if next_q_dt is None and last_q_dt is not None:
+            next_q_dt = last_q_dt + timedelta(days=91)
+            next_q_estimated = True
+
         # Fallback final de EPS si Finnhub y yfinance fallaron
         if eps_actual is None:
             print(f"[Earnings] {ticker} — sin histórico, usando trailingEps de Yahoo como último recurso")
@@ -760,6 +771,7 @@ def fetch_earnings_analysis(ticker: str, y: dict) -> dict:
             "next_q_date":      next_q_date,
             "last_q_date_fmt":  last_q_date_fmt,
             "next_q_date_fmt":  next_q_date_fmt,
+            "next_q_estimated": next_q_estimated,
             "tiempo_desde":     tiempo_desde,
             "tiempo_hasta":     tiempo_hasta,
             "eps_estimate":     eps_estimate,
@@ -983,6 +995,9 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
         if last_q_date and last_q_date not in ("N/A", None):
             days_since_last = (now - datetime.strptime(last_q_date, "%Y-%m-%d").replace(tzinfo=_tz.utc)).days
 
+        next_q_estimated = y.get("next_q_estimated", False)
+        est_note = " (estimada, ~3 meses tras la última)" if next_q_estimated else ""
+
         if days_since_last is not None and days_since_last < 10:
             checks.append(("Sin resultados inminentes", True,
                 f"Resultados recién presentados, entrada con margen suficiente para upside / downside "
@@ -990,10 +1005,10 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
         elif days_to_next is not None:
             if days_to_next < 15:
                 checks.append(("Resultados inminentes", False,
-                    f"Estudiar posible entrada, resultados inminentes (en {days_to_next} días)", 1))
+                    f"Estudiar posible entrada, resultados inminentes (en {days_to_next} días{est_note})", 1))
             else:
                 checks.append(("Sin resultados inminentes", True,
-                    f"Próxima presentación en {days_to_next} días — margen suficiente", 1))
+                    f"Próxima presentación en {days_to_next} días{est_note} — margen suficiente", 1))
     except Exception:
         pass
 
