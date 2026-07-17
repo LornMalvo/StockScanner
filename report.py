@@ -1460,6 +1460,8 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
     fair_value = ev.get("fair_value")
     exit_plan = None
     stop_loss = None
+    stop_loss_source = None
+    stop_loss_confidence = None
     if fair_value and fair_value > entry_plan[0]["price"]:
         # Objetivos intermedios como fracciones del camino hacia el Valor
         # Objetivo desde el nivel de entrada más cercano al precio actual
@@ -1470,15 +1472,58 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
             {"label": "Objetivo 2", "price": round(entry_ref + camino * 0.8, 2), "capital_pct": 40},
             {"label": "Objetivo 3 (Valor Objetivo)", "price": round(fair_value, 2), "capital_pct": 30},
         ]
-        # Stop loss: el nivel de entrada más profundo, con un margen de
-        # seguridad adicional del 5% por debajo, para no saltar por ruido
-        stop_loss = round(entry_plan[-1]["price"] * 0.95, 2)
+
+        # Stop Loss: NO se ancla al "nivel que caiga en 3ª posición por
+        # distancia" (podía ser cualquier tipo de candidato, incluida una
+        # simple media móvil sin memoria de mercado real) — se prioriza
+        # explícitamente por fiabilidad estructural, buscando entre TODOS
+        # los candidatos disponibles (no solo los 3 elegidos para el plan
+        # de entrada) el más fiable que esté a un precio igual o inferior
+        # al Nivel 3, para que el Stop Loss nunca quede por encima de
+        # ningún nivel de entrada planeado (si no, se activaría el stop
+        # antes incluso de alcanzar los niveles de compra más profundos).
+        nivel3_price = entry_plan[2]["price"]
+
+        def _es_soporte_historico(lbl): return lbl.startswith("Soporte histórico")
+        def _es_fibonacci_profundo(lbl): return "78.6%" in lbl or "61.8%" in lbl
+        def _es_mm200(lbl): return lbl == "MM200"
+
+        RELIABILITY_ORDER = [
+            ("Alta — nivel con evidencia de rebotes reales", _es_soporte_historico),
+            ("Media-alta — retroceso técnico profundo reconocido", _es_fibonacci_profundo),
+            ("Moderada — media móvil simple, sin memoria de mercado real", _es_mm200),
+        ]
+
+        sl_source = None
+        for confidence_txt, check in RELIABILITY_ORDER:
+            matches = [(lbl, lvl) for lbl, lvl in candidates if check(lbl) and lvl <= nivel3_price]
+            if matches:
+                # Si hay varios que cumplen, el más profundo (más conservador)
+                sl_source = min(matches, key=lambda x: x[1])
+                stop_loss_confidence = confidence_txt
+                break
+
+        if sl_source is None:
+            # Ningún candidato de mayor fiabilidad disponible por debajo del
+            # Nivel 3 — fallback al comportamiento anterior, pero marcado
+            # honestamente como de menor confianza en vez de presentarlo
+            # igual que un nivel bien fundamentado
+            sl_source = (entry_plan[2]["label"], nivel3_price)
+            stop_loss_confidence = "Moderada — sin soporte estructural más fiable disponible por debajo de este nivel"
+
+        stop_loss_source = sl_source[0]
+        # Margen de seguridad adicional del 5% por debajo, para no saltar
+        # por un simple pico de ruido de un día que perfore el nivel y
+        # rebote enseguida
+        stop_loss = round(sl_source[1] * 0.95, 2)
 
     return {
         "calidad": calidad,
         "entry_plan": entry_plan,
         "exit_plan": exit_plan,
         "stop_loss": stop_loss,
+        "stop_loss_source": stop_loss_source,
+        "stop_loss_confidence": stop_loss_confidence,
         "current_price": price,
     }
 
@@ -1538,12 +1583,17 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD"):
             )
         if plan["stop_loss"]:
             sl_dist = (plan["stop_loss"] - plan["current_price"]) / plan["current_price"] * 100
+            sl_source_txt = plan.get("stop_loss_source", "")
+            sl_confidence_txt = plan.get("stop_loss_confidence", "")
             exit_html += (
-                '<div style="display:flex;justify-content:space-between;align-items:center;'
-                'padding:0.5rem 0.7rem;background:#fee2e2;border-radius:6px;margin-top:0.3rem;">'
+                '<div style="padding:0.5rem 0.7rem;background:#fee2e2;border-radius:6px;margin-top:0.3rem;">'
+                '<div style="display:flex;justify-content:space-between;align-items:center;">'
                 '<span style="color:#dc2626;font-weight:700;">Stop Loss</span>'
                 f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#dc2626;font-weight:700;">'
                 f'{currency} {plan["stop_loss"]:,.2f} ({sl_dist:+.1f}%)</span>'
+                '</div>'
+                f'<div style="font-size:0.68rem;color:#991b1b;margin-top:0.3rem;">'
+                f'Anclado a: <b>{sl_source_txt}</b> (con 5% de margen adicional) · Fiabilidad: {sl_confidence_txt}</div>'
                 '</div>'
             )
 
@@ -1551,8 +1601,10 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD"):
         f'<div class="metric-card">{entry_html}{exit_html}'
         '<div style="font-size:0.68rem;color:#94a3b8;margin-top:0.7rem;">'
         'Plan orientativo derivado de Soporte histórico, Fibonacci y medias móviles ya calculados, '
-        'combinados con el Valor Objetivo. No es una recomendación de inversión — el Stop Loss marca '
-        'el nivel donde la tesis técnica quedaría invalidada, no un consejo de cuánto arriesgar.</div>'
+        'combinados con el Valor Objetivo. No es una recomendación de inversión. El Stop Loss se '
+        'prioriza por fiabilidad estructural (Soporte histórico > Fibonacci profundo > MM200), no '
+        'por cuál nivel esté simplemente más cerca — la fiabilidad indicada refleja cuánta confianza '
+        'da ese tipo de nivel concreto, no una garantía.</div>'
         '</div>',
         unsafe_allow_html=True
     )
