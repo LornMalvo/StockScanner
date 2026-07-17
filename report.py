@@ -1065,6 +1065,7 @@ def _calc_health_score(y: dict, profile: dict, bh: dict | None = None) -> tuple[
     curr_ratio_raw = y.get("current_ratio")
     quick_ratio_raw= y.get("quick_ratio")
     fcf_raw        = y.get("free_cash_flow")
+    operating_cf_raw = y.get("operating_cf")
     ni_recent      = y.get("ni_year_cur")   # beneficio neto anual más reciente
     total_debt     = y.get("total_debt")
     total_cash     = y.get("total_cash")
@@ -1174,11 +1175,36 @@ def _calc_health_score(y: dict, profile: dict, bh: dict | None = None) -> tuple[
     # Net Debt/EBITDA y Dilución (NUEVA).
     b_pts = 0
 
-    # FCF positivo (0-3)
-    fcf_pts = 3 if fcf > 0 else 0
+    # FCF positivo, con desglose CFO/CAPEX (0-3)
+    # CAPEX = CFO - FCF (relación estándar: FCF = CFO - CAPEX). No penaliza
+    # con la misma dureza un FCF negativo causado por CAPEX de expansión
+    # (fábricas nuevas, centros de datos, ampliación de capacidad — negocio
+    # operativo sano, solo invirtiendo fuerte) que uno causado por quema de
+    # caja operativa real (CFO también negativo — el negocio del día a día
+    # no genera caja, señal mucho más preocupante).
+    operating_cf = operating_cf_raw if operating_cf_raw is not None else None
+    capex_implied = None
+    if operating_cf is not None and fcf_raw is not None:
+        capex_implied = operating_cf - fcf_raw   # CAPEX ≈ CFO − FCF
+
+    if fcf > 0:
+        fcf_pts = 3
+        fcf_label = "positivo"
+    elif operating_cf is not None and operating_cf > 0:
+        fcf_pts = 1.5   # crédito parcial: quema caja por expansión, no por operativa débil
+        fcf_label = "negativo por CAPEX de expansión (CFO positivo)"
+    else:
+        fcf_pts = 0     # CFO también negativo/desconocido: quema de caja operativa real
+        fcf_label = "negativo (operativa débil o sin datos de CFO)"
+
     b_pts += fcf_pts
-    breakdown.append((f"Free Cash Flow {'positivo' if fcf>0 else 'negativo'}: +{fcf_pts}/3",
-                       _pts_color(fcf_pts, 3)))
+    fcf_detail = f"Free Cash Flow {fcf_label}: +{fcf_pts:.1f}/3"
+    if operating_cf is not None:
+        fcf_detail += f" (CFO: {operating_cf/1e6:,.0f}M"
+        if capex_implied is not None:
+            fcf_detail += f", CAPEX≈{capex_implied/1e6:,.0f}M"
+        fcf_detail += ")"
+    breakdown.append((fcf_detail, _pts_color(fcf_pts, 3)))
 
     # Current Ratio (0-2.5)
     if curr_ratio >= 1.5:   cr_pts = 2.5
@@ -2074,14 +2100,79 @@ def render_report(ticker, company_name, y: dict,
         'cobertura fiable para este ticker en este momento.</div>'
     )
 
+    # Puntos positivos / a vigilar del último trimestre — mismo análisis que
+    # ya se incluía en el PDF descargable, ahora también visible aquí. Nota:
+    # estos datos pueden estar disponibles aunque las fechas de arriba
+    # muestren "No disponible" — provienen de un camino de datos distinto
+    # (fallback directo a Yahoo con trailingEps/epsForward cuando el
+    # histórico de Finnhub no tiene cobertura para este ticker), así que
+    # no es contradictorio ver ambos casos a la vez.
+    eps_summary_html = ""
+    if ea:
+        eps_est  = ea.get("eps_estimate")
+        eps_act  = ea.get("eps_actual")
+        eps_surp = ea.get("eps_surprise")
+        beat_eps = ea.get("beat_eps")
+        positives = ea.get("positives", [])
+        negatives = ea.get("negatives", [])
+        warnings_list = ea.get("warnings", [])
+
+        if eps_est is not None or eps_act is not None:
+            beat_badge = (
+                '<span style="background:#d1fae5;color:#059669;padding:2px 9px;border-radius:4px;'
+                'font-size:0.72rem;font-weight:700;">✔ SUPERÓ</span>' if beat_eps is True else
+                '<span style="background:#fee2e2;color:#dc2626;padding:2px 9px;border-radius:4px;'
+                'font-size:0.72rem;font-weight:700;">✘ NO ALCANZÓ</span>' if beat_eps is False else ""
+            )
+            eps_summary_html += (
+                '<div style="display:flex;align-items:center;gap:0.8rem;margin-bottom:0.7rem;'
+                'padding:0.5rem 0.7rem;background:#f4f6f9;border-radius:6px;font-size:0.8rem;">'
+                f'<span style="color:#64748b;">EPS estimado:</span> '
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#334155;">'
+                f'{f"${eps_est:.2f}" if eps_est is not None else "N/D"}</span>'
+                f'<span style="color:#64748b;">Reportado:</span> '
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:600;">'
+                f'{f"${eps_act:.2f}" if eps_act is not None else "N/D"}</span>'
+                + (f'<span style="font-family:\'IBM Plex Mono\',monospace;'
+                   f'color:{"#059669" if (eps_surp or 0)>=0 else "#dc2626"};font-weight:600;">'
+                   f'{eps_surp:+.1f}%</span>' if eps_surp is not None else '')
+                + f' {beat_badge}'
+                '</div>'
+            )
+
+        if warnings_list:
+            for w in warnings_list:
+                eps_summary_html += (
+                    '<div style="background:#eff6ff;border-left:3px solid #0284c7;border-radius:4px;'
+                    'padding:0.5rem 0.7rem;margin-bottom:0.7rem;font-size:0.76rem;color:#334155;'
+                    f'line-height:1.6;">ℹ️ {w}</div>'
+                )
+
+        if positives or negatives:
+            cols_html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;">'
+            cols_html += '<div>'
+            if positives:
+                cols_html += ('<div style="font-size:0.7rem;color:#059669;text-transform:uppercase;'
+                               'letter-spacing:0.05em;margin-bottom:0.4rem;">Puntos positivos</div>')
+                for p in positives:
+                    cols_html += (f'<div style="font-size:0.78rem;color:#334155;padding:0.2rem 0;">'
+                                   f'<span style="color:#059669;">▸</span> {p}</div>')
+            cols_html += '</div><div>'
+            if negatives:
+                cols_html += ('<div style="font-size:0.7rem;color:#dc2626;text-transform:uppercase;'
+                               'letter-spacing:0.05em;margin-bottom:0.4rem;">Puntos a vigilar</div>')
+                for n in negatives:
+                    cols_html += (f'<div style="font-size:0.78rem;color:#334155;padding:0.2rem 0;">'
+                                   f'<span style="color:#dc2626;">▸</span> {n}</div>')
+            cols_html += '</div></div>'
+            eps_summary_html += cols_html + '<div style="margin-bottom:0.9rem;"></div>'
+
     st.markdown(
         '<div class="metric-card">'
         f'{dates_html}'
+        f'{eps_summary_html}'
         '<div style="font-size:0.85rem;color:#94a3b8;line-height:1.7;margin-bottom:0.8rem;">'
-        f'Los datos de EPS estimado/reportado y el histórico de sorpresas de resultados '
-        f'requieren una fuente de consenso de analistas en tiempo real que no podemos '
-        f'garantizar al 100% de fiabilidad desde esta app. Para consultar los últimos '
-        f'resultados presentados, los próximos programados y el histórico completo de '
+        f'Para el histórico completo de resultados de '
         f'<b style="color:#0f172a;">{ticker}</b>, usa uno de estos enlaces directos:</div>'
         '<div style="display:flex;gap:0.7rem;flex-wrap:wrap;">'
         f'<a href="{seeking_alpha_url}" target="_blank" style="display:inline-block;'
