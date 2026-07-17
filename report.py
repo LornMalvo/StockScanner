@@ -459,7 +459,7 @@ def _robust_aggregate(weighted: list[float]) -> float:
     return statistics.median(weighted)
 
 
-def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[float | None, list[str], tuple[float, float] | None, float | None]:
+def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None, mult_data: dict | None = None) -> tuple[float | None, list[str], tuple[float, float] | None, float | None]:
     """
     Calcula el valor objetivo usando los métodos relevantes para el sector.
     Devuelve (fair_value, lista_de_métodos_usados, rango_min_max).
@@ -742,6 +742,28 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
                 methods_used.append(
                     f"Price/Book justo ( {price:,.2f} (Precio) × [ {fair_pb:.2f} (ROE {roe*100:.1f}% ÷ Ke {cost_of_equity*100:.0f}%) "
                     f"÷ {price_book:.2f} (P/B actual) ] ) → {val:,.2f}"
+                )
+
+    # PER histórico PROPIO (5 años) aplicado al beneficio esperado — a
+    # diferencia del PER sectorial (que compara contra la media del sector),
+    # este usa el múltiplo al que la propia empresa ha cotizado
+    # históricamente, sin importar si el sector en su conjunto está caro o
+    # barato en este momento. Se aplica independientemente del sector
+    # (no depende de profile["methods"]) siempre que haya histórico de
+    # precios suficiente. Usa EPS Forward si está disponible (y pasó el
+    # chequeo de sensatez), si no cae a EPS TTM.
+    if mult_data and mult_data.get("per_mean"):
+        per_propio = mult_data["per_mean"]
+        eps_para_per_propio = eps_fwd if (eps_fwd and eps_fwd > 0) else (eps_ttm if eps_ttm and eps_ttm > 0 else None)
+        if eps_para_per_propio:
+            val = per_propio * eps_para_per_propio
+            if val > 0:
+                targets.append(val)
+                weighted.append(val)
+                weighted_single.append(val)
+                methods_used.append(
+                    f"PER histórico propio (5 años) ( {per_propio:.1f} × "
+                    f"{eps_para_per_propio:,.2f} ({'EPS Forward' if eps_fwd and eps_fwd>0 else 'EPS TTM'}) ) → {val:,.2f}"
                 )
 
     _add_consensus()
@@ -1350,6 +1372,192 @@ def _classify_timing(signal_level: str) -> str:
     return "sin_datos"
 
 
+def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
+    """
+    Plan de entrada (3 niveles escalonados con % de capital) y plan de
+    salida (take profit + stop loss), combinando datos técnicos que la app
+    ya calcula por separado — Soporte histórico, Fibonacci, MM50/MM200 —
+    en un plan accionable único, en vez de dejar al usuario la tarea de
+    cruzarlos manualmente.
+
+    Por qué varios niveles y no uno solo: nadie sabe hasta dónde puede caer
+    una acción antes de girar al alza. Escalonar la entrada permite
+    promediar el coste: si cae más de lo esperado, se compra más barato con
+    el capital reservado para los niveles inferiores.
+
+    El reparto de capital entre niveles depende de la Calidad (Salud
+    Fundamental + Piotroski, misma clasificación que en Valoración Final):
+    empresas de más calidad reciben más peso en el nivel más cercano al
+    precio actual (más confianza en que no caerá mucho más antes de girar);
+    empresas de calidad baja reciben más peso en los niveles inferiores
+    (más cautela, se exige más confirmación de que ha tocado suelo antes de
+    comprometer capital importante).
+    """
+    price = y.get("price")
+    if not price or not tech or tech.get("error"):
+        return None
+
+    health_score = ev.get("health_score", 0)
+    piotroski    = ev.get("piotroski", {})
+    calidad, _   = _classify_calidad(health_score, piotroski)
+
+    CAPITAL_SPLITS = {
+        "alta":  (50, 30, 20),
+        "media": (35, 35, 30),
+        "baja":  (20, 35, 45),
+    }
+    splits = CAPITAL_SPLITS.get(calidad, CAPITAL_SPLITS["media"])
+
+    # ── Recopilar candidatos a soporte, todos por debajo del precio actual
+    candidates = []
+    mm50  = tech.get("mm50")
+    mm200 = tech.get("mm200")
+    if mm50 and mm50 < price:
+        candidates.append(("MM50", mm50))
+    if mm200 and mm200 < price:
+        candidates.append(("MM200", mm200))
+
+    fib_data = tech.get("fibonacci")
+    if fib_data and fib_data.get("levels"):
+        for label in ("50.0%", "61.8%", "78.6%"):
+            lvl = fib_data["levels"].get(label)
+            if lvl and lvl < price:
+                candidates.append((f"Fibonacci {label}", lvl))
+
+    support_data = tech.get("historical_support")
+    if support_data and support_data.get("level") and support_data["level"] < price:
+        candidates.append((f"Soporte histórico ({support_data['touches']}× rebotes)", support_data["level"]))
+
+    if not candidates:
+        return None
+
+    # Ordenar de más cercano al precio (mayor) a más profundo (menor)
+    candidates.sort(key=lambda c: c[1], reverse=True)
+
+    # Seleccionar 3 niveles con separación mínima del 2% entre ellos, para
+    # que no queden pegados si varias fuentes coinciden casi en el mismo precio
+    MIN_GAP = 0.02
+    levels = [candidates[0]]
+    for label, lvl in candidates[1:]:
+        if len(levels) >= 3:
+            break
+        if (levels[-1][1] - lvl) / levels[-1][1] >= MIN_GAP:
+            levels.append((label, lvl))
+
+    # Si no hay suficientes niveles distintos, completar con % fijos del
+    # precio actual como aproximación razonable (mejor un plan con 3 niveles
+    # aproximados que uno incompleto)
+    while len(levels) < 3:
+        fallback_pct = [0.97, 0.92, 0.85][len(levels)]
+        levels.append((f"Aproximación (-{(1-fallback_pct)*100:.0f}%)", price * fallback_pct))
+
+    entry_plan = [
+        {"label": lbl, "price": round(lvl, 2), "capital_pct": splits[i]}
+        for i, (lbl, lvl) in enumerate(levels[:3])
+    ]
+
+    # ── Plan de salida ────────────────────────────────────────────────────
+    fair_value = ev.get("fair_value")
+    exit_plan = None
+    stop_loss = None
+    if fair_value and fair_value > entry_plan[0]["price"]:
+        # Objetivos intermedios como fracciones del camino hacia el Valor
+        # Objetivo desde el nivel de entrada más cercano al precio actual
+        entry_ref = entry_plan[0]["price"]
+        camino = fair_value - entry_ref
+        exit_plan = [
+            {"label": "Objetivo 1", "price": round(entry_ref + camino * 0.5, 2), "capital_pct": 30},
+            {"label": "Objetivo 2", "price": round(entry_ref + camino * 0.8, 2), "capital_pct": 40},
+            {"label": "Objetivo 3 (Valor Objetivo)", "price": round(fair_value, 2), "capital_pct": 30},
+        ]
+        # Stop loss: el nivel de entrada más profundo, con un margen de
+        # seguridad adicional del 5% por debajo, para no saltar por ruido
+        stop_loss = round(entry_plan[-1]["price"] * 0.95, 2)
+
+    return {
+        "calidad": calidad,
+        "entry_plan": entry_plan,
+        "exit_plan": exit_plan,
+        "stop_loss": stop_loss,
+        "current_price": price,
+    }
+
+
+def render_entry_exit_plan(plan: dict | None, currency: str = "USD"):
+    """Renderiza el plan de entrada/salida combinado."""
+    _section("PLAN DE ENTRADA Y SALIDA")
+
+    if not plan:
+        st.markdown(
+            '<div class="metric-card"><span style="color:#64748b;">'
+            'Sin datos técnicos suficientes para generar un plan de niveles '
+            '(RSI, soportes o Fibonacci no disponibles para este ticker).</span></div>',
+            unsafe_allow_html=True
+        )
+        return
+
+    calidad_labels = {"alta": "Alta", "media": "Media", "baja": "Baja"}
+    st.markdown(
+        f'<div style="font-size:0.72rem;color:#64748b;margin-bottom:0.6rem;">'
+        f'Reparto de capital ajustado a Calidad <b style="color:#0284c7;">'
+        f'{calidad_labels.get(plan["calidad"], plan["calidad"])}</b> — '
+        f'{"más peso cerca del precio actual (mayor confianza)" if plan["calidad"]=="alta" else "más peso en niveles profundos (más cautela, se exige confirmación)" if plan["calidad"]=="baja" else "reparto equilibrado"}.</div>',
+        unsafe_allow_html=True
+    )
+
+    entry_html = '<div style="font-size:0.7rem;color:#059669;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem;">Plan de Entrada</div>'
+    for i, lvl in enumerate(plan["entry_plan"]):
+        dist_pct = (lvl["price"] - plan["current_price"]) / plan["current_price"] * 100
+        entry_html += (
+            '<div style="display:flex;justify-content:space-between;align-items:center;'
+            'padding:0.5rem 0.7rem;background:#f4f6f9;border-radius:6px;margin-bottom:0.4rem;">'
+            f'<div><span style="font-weight:600;color:#0f172a;">Nivel {i+1}</span> '
+            f'<span style="font-size:0.72rem;color:#64748b;">— {lvl["label"]}</span></div>'
+            f'<div style="text-align:right;">'
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:600;">'
+            f'{currency} {lvl["price"]:,.2f}</span> '
+            f'<span style="font-size:0.72rem;color:#dc2626;">({dist_pct:+.1f}%)</span><br>'
+            f'<span style="background:#d1fae5;color:#059669;padding:1px 8px;border-radius:4px;'
+            f'font-size:0.72rem;font-weight:700;">{lvl["capital_pct"]}% capital</span>'
+            '</div></div>'
+        )
+
+    exit_html = ""
+    if plan["exit_plan"]:
+        exit_html = '<div style="font-size:0.7rem;color:#0284c7;text-transform:uppercase;letter-spacing:0.05em;margin:0.8rem 0 0.5rem 0;">Plan de Salida</div>'
+        for obj in plan["exit_plan"]:
+            exit_html += (
+                '<div style="display:flex;justify-content:space-between;align-items:center;'
+                'padding:0.5rem 0.7rem;background:#eff6ff;border-radius:6px;margin-bottom:0.4rem;">'
+                f'<span style="color:#0f172a;font-weight:600;">{obj["label"]}</span>'
+                f'<div><span style="font-family:\'IBM Plex Mono\',monospace;color:#0284c7;font-weight:600;">'
+                f'{currency} {obj["price"]:,.2f}</span> '
+                f'<span style="background:#dbeafe;color:#0284c7;padding:1px 8px;border-radius:4px;'
+                f'font-size:0.72rem;font-weight:700;margin-left:0.4rem;">{obj["capital_pct"]}%</span></div>'
+                '</div>'
+            )
+        if plan["stop_loss"]:
+            sl_dist = (plan["stop_loss"] - plan["current_price"]) / plan["current_price"] * 100
+            exit_html += (
+                '<div style="display:flex;justify-content:space-between;align-items:center;'
+                'padding:0.5rem 0.7rem;background:#fee2e2;border-radius:6px;margin-top:0.3rem;">'
+                '<span style="color:#dc2626;font-weight:700;">Stop Loss</span>'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#dc2626;font-weight:700;">'
+                f'{currency} {plan["stop_loss"]:,.2f} ({sl_dist:+.1f}%)</span>'
+                '</div>'
+            )
+
+    st.markdown(
+        f'<div class="metric-card">{entry_html}{exit_html}'
+        '<div style="font-size:0.68rem;color:#94a3b8;margin-top:0.7rem;">'
+        'Plan orientativo derivado de Soporte histórico, Fibonacci y medias móviles ya calculados, '
+        'combinados con el Valor Objetivo. No es una recomendación de inversión — el Stop Loss marca '
+        'el nivel donde la tesis técnica quedaría invalidada, no un consejo de cuánto arriesgar.</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+
 # Tabla de las 27 combinaciones: (calidad, precio, timing) -> (icono, nivel, color, mensaje)
 _VALORACION_FINAL_TABLA = {
     ("alta", "barata", "bueno"):   ("🟢🟢", "COMPRAR YA", "#059669",
@@ -1506,7 +1714,7 @@ def render_valoracion_final(vf: dict, ev: dict, signal: dict):
     )
 
 
-def _evaluate(y: dict, bh: dict | None = None) -> dict:
+def _evaluate(y: dict, bh: dict | None = None, mult_data: dict | None = None) -> dict:
     """Diagnóstico completo ajustado al sector y a los tipos de interés actuales."""
     bh = bh or {}
 
@@ -1536,7 +1744,7 @@ def _evaluate(y: dict, bh: dict | None = None) -> dict:
     piotroski = calc_piotroski_score(y, bh)
 
     # ── Valor objetivo ───────────────────────────────────────────────────
-    fair_value, methods_used, targets_range, fair_value_single = _calc_fair_value(y, profile, bh)
+    fair_value, methods_used, targets_range, fair_value_single = _calc_fair_value(y, profile, bh, mult_data)
 
     # Flag informativo: ¿se usó el fallback hyper-growth (EV/Sales)?
     is_hyper_growth = any("hyper-growth" in m for m in methods_used)
@@ -2349,7 +2557,19 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     with st.spinner("Consultando balance histórico (ROIC, Piotroski, dilución)…"):
         bh = fetch_balance_sheet_history(ticker)
-    ev = _evaluate(y, bh)
+
+    # PER histórico PROPIO (5 años) calculado ANTES de _evaluate para poder
+    # usarlo como método adicional del Valor Objetivo — se usa el PER "justo"
+    # ESTÁTICO del sector aquí (sin el ajuste dinámico por tipos, que todavía
+    # no existe en este punto porque depende de ev) solo para la comparación
+    # informativa "vs sector" que ya se mostraba; el propio per_mean no
+    # depende de ese ajuste. Se reutiliza el mismo mult_data más abajo en la
+    # sección de "Histórico de Múltiplos Propios" sin volver a pedir datos.
+    _static_profile, _ = _get_sector_profile(y.get("sector", ""))
+    with st.spinner("Calculando múltiplos históricos…"):
+        mult_data = fetch_historical_multiples(ticker, y, sector_pe_fair=_static_profile["pe_fair"])
+
+    ev = _evaluate(y, bh, mult_data)
 
     _section("EVALUACIÓN FINAL")
 
@@ -2762,8 +2982,12 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     # HISTÓRICO DE MÚLTIPLOS PROPIOS
     # ════════════════════════════════════════════════════════════════════
-    with st.spinner("Calculando múltiplos históricos…"):
-        mult_data = fetch_historical_multiples(ticker, y, sector_pe_fair=ev.get("pe_ref"))
+    # mult_data ya se calculó antes de _evaluate (para poder usar el PER
+    # histórico propio como método del Valor Objetivo) — aquí solo se
+    # actualiza el campo informativo "PER justo sector" con el valor YA
+    # ajustado por tipos de interés (ev.get("pe_ref")), sin volver a pedir
+    # datos a Yahoo.
+    mult_data["sector_pe_fair"] = ev.get("pe_ref")
     render_historical_multiples(mult_data)
 
     # ════════════════════════════════════════════════════════════════════
@@ -2777,6 +3001,12 @@ def render_report(ticker, company_name, y: dict,
     y["last_q_date"]    = ea.get("last_q_date") if ea else None
     signal = calc_entry_signal(y, tech, ev)
     render_entry_signal(signal)
+
+    # ════════════════════════════════════════════════════════════════════
+    # PLAN DE ENTRADA Y SALIDA
+    # ════════════════════════════════════════════════════════════════════
+    entry_exit_plan = calc_entry_exit_plan(y, ev, tech)
+    render_entry_exit_plan(entry_exit_plan, currency_y)
 
     # ════════════════════════════════════════════════════════════════════
     # VALORACIÓN FINAL — síntesis de los 4 sistemas
