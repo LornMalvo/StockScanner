@@ -979,7 +979,7 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
                 f"(hace {days_since_last} días)", 1))
         elif days_to_next is not None:
             if days_to_next < 15:
-                checks.append(("Sin resultados inminentes", False,
+                checks.append(("Resultados inminentes", False,
                     f"Estudiar posible entrada, resultados inminentes (en {days_to_next} días)", 1))
             else:
                 checks.append(("Sin resultados inminentes", True,
