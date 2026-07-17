@@ -6,6 +6,7 @@ Renderiza el informe completo en Streamlit con el diseño claro.
 import streamlit as st
 import plotly.graph_objects as go
 import yfinance as yf
+import statistics
 from data_fetcher import fetch_balance_sheet_history
 from analysis import (
     calc_entry_signal, calc_trend, fetch_peer_data, get_manual_competitors,
@@ -436,6 +437,28 @@ def _adjust_sector_profile(profile: dict, rf_current: float | None) -> tuple[dic
 
 # ─── Motor de valoración por sector ──────────────────────────────────────────
 
+def _robust_aggregate(weighted: list[float]) -> float:
+    """
+    Agrega los valores de los distintos métodos de valoración usando la
+    MEDIANA en vez de la media aritmética simple.
+
+    Por qué: aunque cada método individual tenga sus propias salvaguardas
+    (topes de crecimiento, chequeos de sensatez de EPS, etc.), la media
+    aritmética simple sigue siendo estructuralmente frágil — CUALQUIER
+    método que produzca un valor atípico (por un motivo no previsto
+    todavía) puede seguir distorsionando el resultado final por completo,
+    ya que un solo outlier extremo desplaza la media proporcionalmente a
+    su magnitud, sin límite. La mediana es inmune a esto: un valor atípico,
+    por extremo que sea, cuenta como un solo voto posicional, no arrastra
+    el resultado hacia sí. El peso doble del consenso de analistas (cuando
+    aplica) ya viene reflejado en duplicar su entrada en la lista antes de
+    llegar aquí, así que sigue pesando el doble también bajo mediana.
+    """
+    if not weighted:
+        return None
+    return statistics.median(weighted)
+
+
 def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[float | None, list[str], tuple[float, float] | None]:
     """
     Calcula el valor objetivo usando los métodos relevantes para el sector.
@@ -587,7 +610,7 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
         _add_consensus()
         if not weighted:
             return None, [], None
-        fair_value = sum(weighted) / len(weighted)
+        fair_value = _robust_aggregate(weighted)
         rng = (min(targets), max(targets)) if len(targets) >= 2 else None
         return fair_value, methods_used, rng
 
@@ -623,31 +646,65 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
                 )
 
         # PEG: precio justo = EPS × PEG_sector × tasa_crecimiento × 100
+        # TOPE DE SEGURIDAD (nuevo): incluso tras el suavizado CAGR, un
+        # crecimiento anualizado sostenido por encima del 60% es
+        # extraordinariamente raro en la práctica. Se acota como capa de
+        # seguridad adicional, independiente de si el crecimiento venía de
+        # CAGR multi-año o del fallback de 1 año — así un fallo puntual del
+        # histórico de balance para un ticker concreto (p.ej. si Yahoo no
+        # devuelve suficientes años limpios) no puede seguir disparando
+        # valoraciones desproporcionadas como ya ha ocurrido.
         elif method == "peg" and peg and eps_fwd and eps_fwd > 0 and earn_growth > 0:
-            # PEG justo del sector como referencia
-            growth_pct = earn_growth * 100
+            GROWTH_CAP_PEG = 0.60
+            growth_capped = min(earn_growth, GROWTH_CAP_PEG)
+            growth_pct = growth_capped * 100
+            cap_note = " (acotado, valor real mayor)" if earn_growth > GROWTH_CAP_PEG else ""
             val = eps_fwd * profile["peg_ok"] * growth_pct
             if val > 0:
                 targets.append(val)
                 weighted.append(val)
                 methods_used.append(
                     f"PEG sectorial ( {eps_fwd:,.2f} (EPS Forward) × {profile['peg_ok']:.1f} (PEG sector) "
-                    f"× {growth_pct:.1f} (Crec. beneficios, {earn_growth_method}) ) → {val:,.2f}"
+                    f"× {growth_pct:.1f} (Crec. beneficios, {earn_growth_method}{cap_note}) ) → {val:,.2f}"
                 )
 
-        # EV/EBITDA sectorial
+        # EV/EBITDA sectorial — FÓRMULA CORREGIDA: separa Enterprise Value
+        # de Equity Value explícitamente en vez de escalar el precio
+        # linealmente por el ratio de múltiplos. La fórmula anterior
+        # (precio × EV/EBITDA_justo/actual) asume implícitamente que la
+        # deuda neta escala proporcionalmente con el equity, lo cual es
+        # matemáticamente falso salvo que la empresa no tenga deuda —
+        # introduce un sesgo real en empresas apalancadas.
+        # Fórmula correcta: Equity Value = EBITDA × Múltiplo objetivo − Deuda
+        # Neta; Precio = Equity Value ÷ Acciones en circulación.
         elif method == "ev_ebitda" and ev_ebitda and ebitda and ebitda > 0:
             fair_ev_ebitda = profile["ev_ebitda_fair"]
-            # Valor implícito de mercado ajustando el múltiplo justo vs el actual
-            ratio = fair_ev_ebitda / ev_ebitda if ev_ebitda else 1
-            val   = price * ratio
+            shares_out = y.get("shares_outstanding")
+            net_debt   = (y.get("total_debt") or 0) - (y.get("total_cash") or 0)
+
+            if shares_out and shares_out > 0:
+                equity_value_target = ebitda * fair_ev_ebitda - net_debt
+                val = equity_value_target / shares_out
+                formula_note = (
+                    f"EV/EBITDA sectorial ( [ {ebitda/1e9:,.2f}B (EBITDA) × {fair_ev_ebitda:.1f} "
+                    f"(múltiplo sector) − {net_debt/1e9:,.2f}B (deuda neta) ] ÷ "
+                    f"{shares_out/1e6:,.0f}M (acciones) ) → {{val:,.2f}}"
+                )
+            else:
+                # Fallback si no hay acciones en circulación disponibles:
+                # mantiene el atajo anterior, pero se marca explícitamente
+                # como aproximación menos precisa en el propio texto.
+                ratio = fair_ev_ebitda / ev_ebitda if ev_ebitda else 1
+                val   = price * ratio
+                formula_note = (
+                    f"EV/EBITDA sectorial ( {price:,.2f} (Precio) × [ {fair_ev_ebitda:.1f} (EV/EBITDA sector) "
+                    f"÷ {ev_ebitda:.1f} (EV/EBITDA actual) ] , aproximación sin deuda neta — "
+                    f"sin datos de acciones en circulación ) → {{val:,.2f}}"
+                )
             if val > 0:
                 targets.append(val)
                 weighted.append(val)
-                methods_used.append(
-                    f"EV/EBITDA sectorial ( {price:,.2f} (Precio) × [ {fair_ev_ebitda:.1f} (EV/EBITDA sector) "
-                    f"÷ {ev_ebitda:.1f} (EV/EBITDA actual) ] ) → {val:,.2f}"
-                )
+                methods_used.append(formula_note.format(val=val))
 
         # FCF Yield (DCF simplificado): precio justo = FCF / yield_esperado
         elif method == "dcf_lite" and fcf > 0 and market_cap > 0:
@@ -681,7 +738,7 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None) -> tuple[fl
     if not weighted:
         return None, [], None
 
-    fair_value = sum(weighted) / len(weighted)
+    fair_value = _robust_aggregate(weighted)
     rng = (min(targets), max(targets)) if len(targets) >= 2 else None
     return fair_value, methods_used, rng
 
@@ -2425,7 +2482,10 @@ def render_report(ticker, company_name, y: dict,
             f'Métodos aplicados (sector: {ev["sector_label"]})</div>'
             f'{mh}'
             '<div style="margin-top:0.6rem;font-size:0.72rem;color:#64748b;">'
-            'El valor objetivo es la media aritmética de los métodos disponibles más el consenso de analistas.</div>'
+            'El valor objetivo es la <b>mediana</b> de los métodos disponibles más el consenso de '
+            'analistas (con peso doble si hay ≥10 analistas) — la mediana se usa en vez de la media '
+            'aritmética simple porque es inmune a que un solo método atípico distorsione el resultado '
+            'final.</div>'
             f'{fair_final_html}'
             '</div>',
             unsafe_allow_html=True
@@ -2468,7 +2528,8 @@ def render_report(ticker, company_name, y: dict,
         )
 
     tip_vo = _vtip(
-        f"Valor objetivo = media aritmética de hasta 4 métodos ajustados al sector {ev.get('sector_label','')}. "
+        f"Valor objetivo = mediana de hasta 4 métodos ajustados al sector {ev.get('sector_label','')} "
+        f"(mediana en vez de media, para que un método atípico no distorsione el resultado). "
         f"Métodos aplicados: {methods_text}. "
         "Se excluyen los métodos para los que no hay datos disponibles. "
         "El consenso de analistas siempre se incluye si existe. "
