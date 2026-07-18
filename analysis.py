@@ -957,6 +957,38 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
                       else "Precio fuera de zonas de soporte Fibonacci clave (61.8%/78.6%)")
         checks.append(("Cerca de soporte estructural (Fibonacci)", fib_ok, fib_detail, 2))
 
+    # ── Cerca de mínimos anuales o soporte histórico con rebotes previos ──
+    # Distinto del check de Fibonacci (que usa niveles proporcionales
+    # calculados matemáticamente): aquí se comprueba si el precio está
+    # literalmente cerca del mínimo real de 52 semanas, o de un nivel donde
+    # la acción ya ha rebotado varias veces de verdad (Soporte histórico,
+    # con evidencia empírica de interés comprador en ese precio concreto).
+    NEAR_LOW_THRESHOLD = 0.05   # 5% de margen sobre el mínimo/soporte
+    price_now   = y.get("price")
+    week52_low  = y.get("52w_low")
+    support_data = tech.get("historical_support") if tech and not tech.get("error") else None
+
+    near_low_reasons = []
+    if price_now and week52_low and week52_low > 0:
+        dist_to_low = (price_now - week52_low) / week52_low
+        if 0 <= dist_to_low <= NEAR_LOW_THRESHOLD:
+            near_low_reasons.append(f"a {dist_to_low*100:.1f}% del mínimo anual ({week52_low:,.2f})")
+
+    if support_data and support_data.get("distance_pct") is not None:
+        if 0 <= support_data["distance_pct"] <= NEAR_LOW_THRESHOLD * 100:
+            near_low_reasons.append(
+                f"a {support_data['distance_pct']:.1f}% de soporte histórico con "
+                f"{support_data['touches']} rebotes previos ({support_data['level']:,.2f})"
+            )
+
+    if price_now and (week52_low or support_data):
+        near_low_ok = len(near_low_reasons) > 0
+        near_low_detail = (
+            "Precio " + " y ".join(near_low_reasons) if near_low_ok
+            else "Precio alejado tanto del mínimo anual como de soportes históricos con rebotes previos"
+        )
+        checks.append(("Cerca de mínimos anuales o soporte con rebotes previos", near_low_ok, near_low_detail, 2))
+
     # ── Transacciones de insiders (compras/ventas de directivos) ─────────
     # Dato con buen track record académico: los insiders compran cuando
     # creen que el mercado infravalora su propia empresa. Se evalúan las
@@ -1075,9 +1107,10 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
             desc = "Factores positivos, pero con veto técnico activo — ver aviso arriba."
             adx_veto_applied = True
 
-    MAX_POSSIBLE_CHECKS = 16   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección,
-                               # revisiones, MACD, OBV, Fibonacci, insiders, fuerza relativa,
-                               # resultados, liquidez (16 max; ADX es veto, no check puntuado)
+    MAX_POSSIBLE_CHECKS = 17   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección,
+                               # revisiones, MACD, OBV, Fibonacci, cerca de mínimos/soporte,
+                               # insiders, fuerza relativa, resultados, liquidez
+                               # (17 max; ADX es veto, no check puntuado)
     missing_checks = MAX_POSSIBLE_CHECKS - len(checks)
     reliability_ok = missing_checks <= 3   # tolerable perder hasta 3 checks (datos no siempre disponibles)
 
@@ -1831,7 +1864,7 @@ def render_entry_signal(signal: dict):
             f'<div style="background:#f4f6f9;border:1px solid #d97706;border-left:4px solid #d97706;'
             f'border-radius:6px;padding:0.6rem 0.9rem;margin-bottom:0.6rem;font-size:0.78rem;'
             f'color:#d97706;line-height:1.6;">'
-            f'⚠ FIABILIDAD REDUCIDA: solo se pudieron evaluar {n_total} de 16 criterios posibles '
+            f'⚠ FIABILIDAD REDUCIDA: solo se pudieron evaluar {n_total} de 17 criterios posibles '
             f'por falta de datos (técnico, valoración o fundamentales). El score puede no ser '
             f'representativo — interpreta esta señal con cautela adicional.</div>',
             unsafe_allow_html=True

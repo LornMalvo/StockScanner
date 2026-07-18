@@ -21,15 +21,17 @@ from dcf import (
     render_historical_multiples,
 )
 from pdf_export import render_pdf_download_button
-from gemini_valuation import render_ai_valuation
 
 
 # ─── Gráfico de cotización con MM50/MM200 ────────────────────────────────────
 
-def _render_price_chart(tech: dict, ticker: str, currency: str = "USD"):
+def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_exit_plan: dict | None = None):
     """
     Gráfico interactivo de cotización a 1 año con MM50 y MM200 superpuestas.
     Zoom, pan y tooltip con fecha + precio al pasar el cursor (nativo de Plotly).
+    Opcionalmente puede superponer los niveles del Plan de Entrada y Salida
+    Sugerido — desactivado por defecto, activable con un botón, para no
+    saturar el gráfico cuando no interesa verlo.
     """
     history = tech.get("price_history", [])
     if not history:
@@ -39,6 +41,15 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD"):
     closes = [h["close"] for h in history]
     mm50s  = [h["mm50"]  for h in history]
     mm200s = [h["mm200"] for h in history]
+
+    show_plan = False
+    if entry_exit_plan:
+        toggle_key = f"show_plan_chart_{ticker}"
+        show_plan = st.toggle(
+            "Mostrar Plan de Entrada y Salida Sugerido",
+            value=st.session_state.get(toggle_key, False),
+            key=toggle_key,
+        )
 
     fig = go.Figure()
 
@@ -58,6 +69,29 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD"):
             line=dict(color="#dc2626", width=1.4, dash="solid"),
             hovertemplate="<b>%{x}</b><br>MM200: " + currency + " %{y:.2f}<extra></extra>",
         ))
+
+    if show_plan and entry_exit_plan:
+        for i, lvl in enumerate(entry_exit_plan.get("entry_plan", [])):
+            fig.add_hline(
+                y=lvl["price"], line=dict(color="#059669", width=1.2, dash="dot"),
+                annotation_text=f"Entrada {i+1}: {currency} {lvl['price']:,.2f}",
+                annotation_position="top left",
+                annotation=dict(font=dict(size=9, color="#059669")),
+            )
+        for obj in (entry_exit_plan.get("exit_plan") or []):
+            fig.add_hline(
+                y=obj["price"], line=dict(color="#0284c7", width=1.2, dash="dot"),
+                annotation_text=f"{obj['label']}: {currency} {obj['price']:,.2f}",
+                annotation_position="top left",
+                annotation=dict(font=dict(size=9, color="#0284c7")),
+            )
+        if entry_exit_plan.get("stop_loss"):
+            fig.add_hline(
+                y=entry_exit_plan["stop_loss"], line=dict(color="#dc2626", width=1.6, dash="dash"),
+                annotation_text=f"Stop Loss: {currency} {entry_exit_plan['stop_loss']:,.2f}",
+                annotation_position="bottom left",
+                annotation=dict(font=dict(size=9, color="#dc2626")),
+            )
 
     fig.update_layout(
         height=380,
@@ -1528,9 +1562,9 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
     }
 
 
-def render_entry_exit_plan(plan: dict | None, currency: str = "USD"):
+def render_entry_exit_plan(plan: dict | None, currency: str = "USD", fx_rate: float | None = None):
     """Renderiza el plan de entrada/salida combinado."""
-    _section("PLAN DE ENTRADA Y SALIDA")
+    _section("PLAN DE ENTRADA Y SALIDA SUGERIDO")
 
     if not plan:
         st.markdown(
@@ -1541,7 +1575,25 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD"):
         )
         return
 
+    def _eur(val):
+        """Conversión a EUR entre paréntesis, igual que en el resto de la app."""
+        if fx_rate and currency == "USD":
+            return f' <span style="color:#94a3b8;font-size:0.85em;">(€{val*fx_rate:,.2f})</span>'
+        return ""
+
     calidad_labels = {"alta": "Alta", "media": "Media", "baja": "Baja"}
+
+    price_now = plan["current_price"]
+    st.markdown(
+        '<div style="display:flex;justify-content:space-between;align-items:baseline;'
+        'padding:0.5rem 0.7rem;background:#eff6ff;border-radius:6px;margin-bottom:0.7rem;">'
+        '<span style="font-size:0.78rem;color:#64748b;">Precio actual de cotización</span>'
+        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:1rem;font-weight:700;color:#0284c7;">'
+        f'{currency} {price_now:,.2f}{_eur(price_now)}</span>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
     st.markdown(
         f'<div style="font-size:0.72rem;color:#64748b;margin-bottom:0.6rem;">'
         f'Reparto de capital ajustado a Calidad <b style="color:#0284c7;">'
@@ -1552,7 +1604,7 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD"):
 
     entry_html = '<div style="font-size:0.7rem;color:#059669;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem;">Plan de Entrada</div>'
     for i, lvl in enumerate(plan["entry_plan"]):
-        dist_pct = (lvl["price"] - plan["current_price"]) / plan["current_price"] * 100
+        dist_pct = (lvl["price"] - price_now) / price_now * 100
         entry_html += (
             '<div style="display:flex;justify-content:space-between;align-items:center;'
             'padding:0.5rem 0.7rem;background:#f4f6f9;border-radius:6px;margin-bottom:0.4rem;">'
@@ -1560,7 +1612,7 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD"):
             f'<span style="font-size:0.72rem;color:#64748b;">— {lvl["label"]}</span></div>'
             f'<div style="text-align:right;">'
             f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:600;">'
-            f'{currency} {lvl["price"]:,.2f}</span> '
+            f'{currency} {lvl["price"]:,.2f}{_eur(lvl["price"])}</span> '
             f'<span style="font-size:0.72rem;color:#dc2626;">({dist_pct:+.1f}%)</span><br>'
             f'<span style="background:#d1fae5;color:#059669;padding:1px 8px;border-radius:4px;'
             f'font-size:0.72rem;font-weight:700;">{lvl["capital_pct"]}% capital</span>'
@@ -1571,18 +1623,21 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD"):
     if plan["exit_plan"]:
         exit_html = '<div style="font-size:0.7rem;color:#0284c7;text-transform:uppercase;letter-spacing:0.05em;margin:0.8rem 0 0.5rem 0;">Plan de Salida</div>'
         for obj in plan["exit_plan"]:
+            upside_pct = (obj["price"] - price_now) / price_now * 100
             exit_html += (
                 '<div style="display:flex;justify-content:space-between;align-items:center;'
                 'padding:0.5rem 0.7rem;background:#eff6ff;border-radius:6px;margin-bottom:0.4rem;">'
                 f'<span style="color:#0f172a;font-weight:600;">{obj["label"]}</span>'
-                f'<div><span style="font-family:\'IBM Plex Mono\',monospace;color:#0284c7;font-weight:600;">'
-                f'{currency} {obj["price"]:,.2f}</span> '
+                f'<div style="text-align:right;">'
+                f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#0284c7;font-weight:600;">'
+                f'{currency} {obj["price"]:,.2f}{_eur(obj["price"])}</span> '
+                f'<span style="font-size:0.72rem;color:#059669;font-weight:700;">(+{upside_pct:.1f}% upside)</span><br>'
                 f'<span style="background:#dbeafe;color:#0284c7;padding:1px 8px;border-radius:4px;'
-                f'font-size:0.72rem;font-weight:700;margin-left:0.4rem;">{obj["capital_pct"]}%</span></div>'
+                f'font-size:0.72rem;font-weight:700;">{obj["capital_pct"]}% capital</span></div>'
                 '</div>'
             )
         if plan["stop_loss"]:
-            sl_dist = (plan["stop_loss"] - plan["current_price"]) / plan["current_price"] * 100
+            sl_dist = (plan["stop_loss"] - price_now) / price_now * 100
             sl_source_txt = plan.get("stop_loss_source", "")
             sl_confidence_txt = plan.get("stop_loss_confidence", "")
             exit_html += (
@@ -1590,7 +1645,7 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD"):
                 '<div style="display:flex;justify-content:space-between;align-items:center;">'
                 '<span style="color:#dc2626;font-weight:700;">Stop Loss</span>'
                 f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#dc2626;font-weight:700;">'
-                f'{currency} {plan["stop_loss"]:,.2f} ({sl_dist:+.1f}%)</span>'
+                f'{currency} {plan["stop_loss"]:,.2f}{_eur(plan["stop_loss"])} ({sl_dist:+.1f}%)</span>'
                 '</div>'
                 f'<div style="font-size:0.68rem;color:#991b1b;margin-top:0.3rem;">'
                 f'Anclado a: <b>{sl_source_txt}</b> (con 5% de margen adicional) · Fiabilidad: {sl_confidence_txt}</div>'
@@ -2459,13 +2514,38 @@ def render_report(ticker, company_name, y: dict,
     )
 
     # ════════════════════════════════════════════════════════════════════
+    # CÓMPUTO ADELANTADO: balance histórico, múltiplos propios, evaluación
+    # y plan de entrada/salida — se calculan aquí (antes de Análisis
+    # Técnico) para poder dibujar los niveles del plan directamente sobre
+    # el gráfico de cotización. El RENDER visual de "Evaluación Final"
+    # sigue apareciendo más abajo, en su posición original — solo se
+    # adelanta el cálculo, no la sección en pantalla.
+    # ════════════════════════════════════════════════════════════════════
+    with st.spinner("Consultando balance histórico (ROIC, Piotroski, dilución)…"):
+        bh = fetch_balance_sheet_history(ticker)
+
+    # PER histórico PROPIO (5 años) calculado ANTES de _evaluate para poder
+    # usarlo como método adicional del Valor Objetivo — se usa el PER "justo"
+    # ESTÁTICO del sector aquí (sin el ajuste dinámico por tipos, que todavía
+    # no existe en este punto porque depende de ev) solo para la comparación
+    # informativa "vs sector" que ya se mostraba; el propio per_mean no
+    # depende de ese ajuste. Se reutiliza el mismo mult_data más abajo en la
+    # sección de "Histórico de Múltiplos Propios" sin volver a pedir datos.
+    _static_profile, _ = _get_sector_profile(y.get("sector", ""))
+    with st.spinner("Calculando múltiplos históricos…"):
+        mult_data = fetch_historical_multiples(ticker, y, sector_pe_fair=_static_profile["pe_fair"])
+
+    ev = _evaluate(y, bh, mult_data)
+    entry_exit_plan = calc_entry_exit_plan(y, ev, tech)
+
+    # ════════════════════════════════════════════════════════════════════
     # ANÁLISIS TÉCNICO
     # ════════════════════════════════════════════════════════════════════
     tech_date = tech.get("last_date","N/A") if tech and not tech.get("error") else "N/A"
     _section(f"ANÁLISIS TÉCNICO &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance · último dato: {tech_date}</span>")
 
     if tech and not tech.get("error"):
-        _render_price_chart(tech, ticker, currency_y)
+        _render_price_chart(tech, ticker, currency_y, entry_exit_plan)
 
         col_t1, col_t2 = st.columns(2)
 
@@ -2607,22 +2687,6 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     # EVALUACIÓN FINAL + DIAGNÓSTICO GENERAL
     # ════════════════════════════════════════════════════════════════════
-    with st.spinner("Consultando balance histórico (ROIC, Piotroski, dilución)…"):
-        bh = fetch_balance_sheet_history(ticker)
-
-    # PER histórico PROPIO (5 años) calculado ANTES de _evaluate para poder
-    # usarlo como método adicional del Valor Objetivo — se usa el PER "justo"
-    # ESTÁTICO del sector aquí (sin el ajuste dinámico por tipos, que todavía
-    # no existe en este punto porque depende de ev) solo para la comparación
-    # informativa "vs sector" que ya se mostraba; el propio per_mean no
-    # depende de ese ajuste. Se reutiliza el mismo mult_data más abajo en la
-    # sección de "Histórico de Múltiplos Propios" sin volver a pedir datos.
-    _static_profile, _ = _get_sector_profile(y.get("sector", ""))
-    with st.spinner("Calculando múltiplos históricos…"):
-        mult_data = fetch_historical_multiples(ticker, y, sector_pe_fair=_static_profile["pe_fair"])
-
-    ev = _evaluate(y, bh, mult_data)
-
     _section("EVALUACIÓN FINAL")
 
     health_score = ev["health_score"]
@@ -3027,11 +3091,6 @@ def render_report(ticker, company_name, y: dict,
     )
 
     # ════════════════════════════════════════════════════════════════════
-    # VALORACIÓN POR IA — GEMINI PRO
-    # ════════════════════════════════════════════════════════════════════
-    render_ai_valuation(ticker, y.get("price"), currency_y)
-
-    # ════════════════════════════════════════════════════════════════════
     # HISTÓRICO DE MÚLTIPLOS PROPIOS
     # ════════════════════════════════════════════════════════════════════
     # mult_data ya se calculó antes de _evaluate (para poder usar el PER
@@ -3055,10 +3114,12 @@ def render_report(ticker, company_name, y: dict,
     render_entry_signal(signal)
 
     # ════════════════════════════════════════════════════════════════════
-    # PLAN DE ENTRADA Y SALIDA
+    # PLAN DE ENTRADA Y SALIDA SUGERIDO
     # ════════════════════════════════════════════════════════════════════
-    entry_exit_plan = calc_entry_exit_plan(y, ev, tech)
-    render_entry_exit_plan(entry_exit_plan, currency_y)
+    # entry_exit_plan ya se calculó antes de Análisis Técnico (para poder
+    # dibujar los niveles sobre el gráfico) — se reutiliza aquí sin volver
+    # a calcularlo.
+    render_entry_exit_plan(entry_exit_plan, currency_y, fx_rate)
 
     # ════════════════════════════════════════════════════════════════════
     # VALORACIÓN FINAL — síntesis de los 4 sistemas
