@@ -2294,6 +2294,7 @@ def calc_short_squeeze(y: dict) -> dict:
         "pct_float":          pct_float,
         "shares_short":       shares_short,
         "float_shares":       float_shares,
+        "shares_outstanding": y.get("shares_outstanding"),
         "monthly_change_pct": monthly_change_pct,
         "date_si":            date_str,
         "factors":            factors,
@@ -2330,12 +2331,16 @@ def render_short_squeeze(sq: dict):
         return str(int(v))
 
     def tip(text):
-        safe = text.replace('"','&quot;')
+        # Mismo arreglo que en report.py: title= nativo no se activa en
+        # pantallas táctiles, se reemplaza por .tooltip-wrap/.tooltip-box
+        safe = text.replace('"', '&quot;').replace("'", "&#39;")
         return (
-            f'<span title="{safe}" style="margin-left:0.3rem;cursor:help;'
-            f'font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
-            f'border-radius:50%;padding:0 3px;font-family:monospace;'
-            f'vertical-align:middle;">?</span>'
+            '<span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;'
+            'vertical-align:middle;">'
+            '<span style="font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
+            'border-radius:50%;padding:0 3px;font-family:monospace;">?</span>'
+            f'<span class="tooltip-box">{text}</span>'
+            '</span>'
         )
 
     # Desglose de factores
@@ -2385,7 +2390,7 @@ def render_short_squeeze(sq: dict):
         f'<div style="height:8px;border-radius:4px;background:{color};width:{score}%;"></div>'
         f'</div>'
         # Métricas clave en grid
-        f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.5rem;margin-bottom:1rem;">'
+        f'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.5rem;margin-bottom:1rem;">'
         f'<div style="background:#f4f6f9;border-radius:6px;padding:0.45rem 0.6rem;">'
         f'<div style="font-size:0.67rem;color:#64748b;">Short Ratio{tip_sr}</div>'
         f'<div style="font-family:\'IBM Plex Mono\',monospace;color:{color};font-weight:700;">'
@@ -2398,6 +2403,10 @@ def render_short_squeeze(sq: dict):
         f'<div style="font-size:0.67rem;color:#64748b;">Acciones en corto</div>'
         f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:600;">'
         f'{fmt_shares(sq["shares_short"])}</div></div>'
+        f'<div style="background:#f4f6f9;border-radius:6px;padding:0.45rem 0.6rem;">'
+        f'<div style="font-size:0.67rem;color:#64748b;">Acciones en circulación</div>'
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:600;">'
+        f'{fmt_shares(sq.get("shares_outstanding"))}</div></div>'
         f'</div>'
         # Desglose por factor
         f'<div style="font-size:0.7rem;color:#0284c7;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.5rem;">'

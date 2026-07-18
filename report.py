@@ -225,6 +225,7 @@ TOOLTIPS = {
     "Price/Book":         "Precio dividido entre valor contable. P/B < 1 puede indicar ganga (o problemas). Normal: 1-3×. Financieras suelen estar cerca de 1×.",
     "EV/Revenue":         "Valor empresa dividido entre ingresos. Similar a P/S pero incluye deuda. Bueno: <3×, normal: 3-8×. Sectores de alto margen aceptan múltiplos mayores.",
     "EV/EBITDA":          "Valor empresa dividido entre EBITDA. Métrica de valoración universal. Bueno: <8×, normal: 8-15×, caro: >20×. Energía: <6×, Tech: hasta 25× es normal.",
+    "Acciones en circulación": "Número total de acciones emitidas por la empresa que cotizan en el mercado. Market Cap = precio × acciones en circulación. Una cifra creciente año a año indica dilución (ver Salud Fundamental).",
     "Market Cap":         "Valor total de mercado de todas las acciones en circulación. Define el tamaño: <$2B micro/small cap, $2-10B mid cap, >$10B large cap.",
 
     "Profit Margin":      "Beneficio neto / ingresos. Mide cuánto queda tras todos los gastos. Bueno: >15%, aceptable: 5-15%, malo: <5%. Tech suele superar el 20%.",
@@ -1490,6 +1491,12 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
         for i, (lbl, lvl) in enumerate(levels[:3])
     ]
 
+    # Precio medio de compra si se ejecutan los 3 niveles con el capital
+    # indicado en cada uno (media ponderada por %, no media simple)
+    avg_entry_price = round(
+        sum(lvl["price"] * lvl["capital_pct"] for lvl in entry_plan) / 100, 2
+    )
+
     # ── Plan de salida ────────────────────────────────────────────────────
     fair_value = ev.get("fair_value")
     exit_plan = None
@@ -1501,10 +1508,19 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
         # Objetivo desde el nivel de entrada más cercano al precio actual
         entry_ref = entry_plan[0]["price"]
         camino = fair_value - entry_ref
+        n_metodos = len(ev.get("methods_used", []))
         exit_plan = [
-            {"label": "Objetivo 1", "price": round(entry_ref + camino * 0.5, 2), "capital_pct": 30},
-            {"label": "Objetivo 2", "price": round(entry_ref + camino * 0.8, 2), "capital_pct": 40},
-            {"label": "Objetivo 3 (Valor Objetivo)", "price": round(fair_value, 2), "capital_pct": 30},
+            {"label": "Objetivo 1", "price": round(entry_ref + camino * 0.5, 2), "capital_pct": 30,
+             "explanation": ("50% del camino desde el Nivel 1 de entrada hasta el Valor Objetivo — "
+                              "asegura parte de la ganancia pronto sin esperar a que se cumpla toda la tesis.")},
+            {"label": "Objetivo 2", "price": round(entry_ref + camino * 0.8, 2), "capital_pct": 40,
+             "explanation": ("80% del camino hacia el Valor Objetivo — la mayor parte del capital se "
+                              "libera aquí, cuando ya se ha capturado casi toda la revalorización esperada.")},
+            {"label": "Objetivo 3 (Valor Objetivo)", "price": round(fair_value, 2), "capital_pct": 30,
+             "explanation": (f"Valor Objetivo calculado por el motor de valoración (mediana de "
+                              f"{n_metodos} método{'s' if n_metodos != 1 else ''} aplicables a este sector, "
+                              f"ver 'Cálculo del Valor Objetivo' más abajo) — el precio donde la tesis "
+                              f"fundamental se considera cumplida.")},
         ]
 
         # Stop Loss: NO se ancla al "nivel que caiga en 3ª posición por
@@ -1554,6 +1570,7 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
     return {
         "calidad": calidad,
         "entry_plan": entry_plan,
+        "avg_entry_price": avg_entry_price,
         "exit_plan": exit_plan,
         "stop_loss": stop_loss,
         "stop_loss_source": stop_loss_source,
@@ -1618,6 +1635,16 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD", fx_rate: fl
             f'font-size:0.72rem;font-weight:700;">{lvl["capital_pct"]}% capital</span>'
             '</div></div>'
         )
+    if plan.get("avg_entry_price"):
+        entry_html += (
+            '<div style="display:flex;justify-content:space-between;align-items:center;'
+            'padding:0.5rem 0.7rem;background:#ecfdf5;border-radius:6px;margin-top:0.3rem;'
+            'border:1px dashed #059669;">'
+            '<span style="color:#059669;font-weight:700;">Precio medio si se ejecutan los 3 niveles</span>'
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#059669;font-weight:700;">'
+            f'{currency} {plan["avg_entry_price"]:,.2f}{_eur(plan["avg_entry_price"])}</span>'
+            '</div>'
+        )
 
     exit_html = ""
     if plan["exit_plan"]:
@@ -1625,8 +1652,8 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD", fx_rate: fl
         for obj in plan["exit_plan"]:
             upside_pct = (obj["price"] - price_now) / price_now * 100
             exit_html += (
-                '<div style="display:flex;justify-content:space-between;align-items:center;'
-                'padding:0.5rem 0.7rem;background:#eff6ff;border-radius:6px;margin-bottom:0.4rem;">'
+                '<div style="padding:0.5rem 0.7rem;background:#eff6ff;border-radius:6px;margin-bottom:0.4rem;">'
+                '<div style="display:flex;justify-content:space-between;align-items:center;">'
                 f'<span style="color:#0f172a;font-weight:600;">{obj["label"]}</span>'
                 f'<div style="text-align:right;">'
                 f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#0284c7;font-weight:600;">'
@@ -1634,6 +1661,8 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD", fx_rate: fl
                 f'<span style="font-size:0.72rem;color:#059669;font-weight:700;">(+{upside_pct:.1f}% upside)</span><br>'
                 f'<span style="background:#dbeafe;color:#0284c7;padding:1px 8px;border-radius:4px;'
                 f'font-size:0.72rem;font-weight:700;">{obj["capital_pct"]}% capital</span></div>'
+                '</div>'
+                f'<div style="font-size:0.68rem;color:#64748b;margin-top:0.3rem;">{obj.get("explanation","")}</div>'
                 '</div>'
             )
         if plan["stop_loss"]:
@@ -2227,6 +2256,7 @@ def render_report(ticker, company_name, y: dict,
         html += _kv("EV/Revenue",   _fmt_num(y.get("ev_revenue"),4))
         html += _kv_bench("EV/EBITDA", _fmt_num(y.get("ev_ebitda"),4),
             sbm.get("ev_ebitda"), f"{sbm.get('ev_ebitda')}x")
+        html += _kv("Acciones en circulación", _fmt_big(y.get("shares_outstanding"), ""))
         html += _kv("Market Cap",   _fmt_big(y.get("market_cap"),"$",fx_rate))
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
@@ -2614,10 +2644,20 @@ def render_report(ticker, company_name, y: dict,
         support_d = tech.get("historical_support")
 
         def _tip(text):
-            safe = text.replace('"', '&quot;')
-            return (f'<span title="{safe}" style="margin-left:0.3rem;cursor:help;font-size:0.6rem;'
-                    f'color:#94a3b8;border:1px solid #cbd5e1;border-radius:50%;padding:0 3px;'
-                    f'font-family:monospace;">?</span>')
+            # ANTES usaba el atributo HTML nativo title="..." — funciona con
+            # el ratón en escritorio, pero NO tiene ningún mecanismo de
+            # activación en pantallas táctiles (no existe "hover" al tocar).
+            # Se reescribe para reutilizar el sistema .tooltip-wrap /
+            # .tooltip-box (CSS :hover ya definido en app.py), que sí
+            # responde a un toque en la mayoría de navegadores móviles.
+            safe = text.replace('"', '&quot;').replace("'", "&#39;")
+            return (
+                '<span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;">'
+                '<span style="font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
+                'border-radius:50%;padding:0 3px;font-family:monospace;">?</span>'
+                f'<span class="tooltip-box">{text}</span>'
+                '</span>'
+            )
 
         col_t3, col_t4 = st.columns(2)
         with col_t3:
@@ -2984,12 +3024,16 @@ def render_report(ticker, company_name, y: dict,
     methods_text = " · ".join(methods_list) if methods_list else "Sin datos suficientes"
 
     def _vtip(text):
-        safe = text.replace('"', '&quot;')
+        # Mismo arreglo que _tip(): reemplaza el atributo title= nativo
+        # (sin activación táctil) por el sistema .tooltip-wrap/.tooltip-box
+        safe = text.replace('"', '&quot;').replace("'", "&#39;")
         return (
-            f'<span title="{safe}" style="margin-left:0.3rem;cursor:help;'
-            f'font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
-            f'border-radius:50%;padding:0 3px;font-family:monospace;'
-            f'vertical-align:middle;">?</span>'
+            '<span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;'
+            'vertical-align:middle;">'
+            '<span style="font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
+            'border-radius:50%;padding:0 3px;font-family:monospace;">?</span>'
+            f'<span class="tooltip-box">{text}</span>'
+            '</span>'
         )
 
     tip_vo = _vtip(

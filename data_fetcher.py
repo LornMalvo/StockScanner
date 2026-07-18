@@ -402,11 +402,12 @@ def _find_row(df: pd.DataFrame, candidates: list):
 
 def fetch_balance_sheet_history(ticker: str) -> dict:
     """
-    Extrae del balance e income statement ANUAL (2 últimos años disponibles)
-    todos los campos necesarios para Piotroski F-Score, ROIC y el chequeo de
-    dilución. Cada campo puede venir como None si Yahoo no lo expone para
-    ese ticker concreto — los consumidores de este dict deben tratarlo así,
-    nunca asumir 0.
+    Extrae del balance e income statement ANUAL (hasta 4 años disponibles,
+    lo que Yahoo exponga) todos los campos necesarios para Piotroski
+    F-Score, ROIC, el chequeo de dilución, y el crecimiento de beneficios
+    suavizado (CAGR multi-año) usado en el Valor Objetivo. Cada campo puede
+    venir como None si Yahoo no lo expone para ese ticker concreto — los
+    consumidores de este dict deben tratarlo así, nunca asumir 0.
     """
     result = {
         "total_assets_cur": None, "total_assets_prior": None,
@@ -418,6 +419,7 @@ def fetch_balance_sheet_history(ticker: str) -> dict:
         "total_equity_cur": None,
         "operating_income_cur": None,
         "net_income_prior": None,
+        "net_income_series": [],   # más reciente primero, hasta ~4 años
         "revenue_prior_for_turnover": None,
     }
     try:
@@ -490,6 +492,8 @@ def fetch_balance_sheet_history(ticker: str) -> dict:
             if ni_row is not None:
                 vals = ni_row.dropna()
                 if len(vals) >= 2: result["net_income_prior"] = float(vals.iloc[1])
+                # Serie completa disponible (más reciente primero), para CAGR multi-año
+                result["net_income_series"] = [float(v) for v in vals.tolist()]
 
     except Exception as e:
         print(f"[BalanceHistory] {ticker}: {e}")
@@ -788,16 +792,36 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
 
         # Yahoo Finance devuelve dividendYield unas veces como fracción
         # decimal (0.0142 = 1.42%) y otras veces ya como porcentaje
-        # (1.42 = 1.42%), sin previo aviso ni consistencia por ticker —
-        # esto causaba que algunos dividend yields se mostraran como 142%
-        # en vez de 1.42%. Normalizamos aquí una única vez: ningún dividend
-        # yield real de una empresa cotizada supera el 100% (fracción 1.0),
-        # así que si el valor bruto es > 1 asumimos que ya viene en
-        # porcentaje y lo convertimos a fracción decimal, para que el resto
-        # de la app (que multiplica ×100 para mostrar) lo trate de forma
-        # uniforme sin importar qué formato haya devuelto Yahoo esta vez.
-        _dy_raw  = info.get("dividendYield")
-        _dy_norm = (_dy_raw / 100 if (_dy_raw is not None and _dy_raw > 1) else _dy_raw)
+        # (1.42 = 1.42%), sin previo aviso ni consistencia por ticker.
+        # ARREGLO ANTERIOR (insuficiente): solo corregíamos si el valor
+        # bruto era > 1, asumiendo que ese era el único caso "ya en
+        # porcentaje". Pero para empresas de yield bajo (<1%, ej. MSFT,
+        # AAPL, AVGO) Yahoo puede devolver el valor YA en formato
+        # porcentaje pese a ser < 1 (ej. 0.91 significando "0.91%", no una
+        # fracción de 91%) — el test ">1" no detectaba esto y el resto de
+        # la app (que multiplica ×100 para mostrar) lo convertía en 91%.
+        #
+        # ARREGLO ROBUSTO: en vez de un umbral fijo, se usa un dato
+        # independiente para desambiguar — dividendRate (importe anual en
+        # $/acción) ÷ precio da el yield real esperado. Se compara el
+        # valor bruto de Yahoo contra las DOS interpretaciones posibles
+        # (como fracción, o como porcentaje) y se elige la que más se
+        # acerque al yield real calculado de forma independiente.
+        _dy_raw   = info.get("dividendYield")
+        _div_rate = info.get("dividendRate")
+        _dy_norm  = _dy_raw
+        if _dy_raw is not None:
+            if _div_rate and price and price > 0:
+                _expected_fraction = _div_rate / price
+                _expected_percent  = _expected_fraction * 100
+                _dist_as_fraction = abs(_dy_raw - _expected_fraction)
+                _dist_as_percent  = abs(_dy_raw - _expected_percent)
+                _dy_norm = (_dy_raw / 100) if _dist_as_percent < _dist_as_fraction else _dy_raw
+            else:
+                # Sin dividendRate para contrastar: fallback al umbral
+                # anterior (mejor que nada, aunque no cubre el caso de
+                # yields bajos ya en formato porcentaje)
+                _dy_norm = (_dy_raw / 100 if _dy_raw > 1 else _dy_raw)
 
         return {
             # Identificación
