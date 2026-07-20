@@ -176,15 +176,29 @@ def _render_macd_chart(tech: dict):
 
     fig.update_layout(
         height=200,
-        margin=dict(l=10, r=10, t=24, b=10),
+        margin=dict(l=10, r=10, t=44, b=10),
         plot_bgcolor="#ffffff",
         paper_bgcolor="#ffffff",
         font=dict(family="Inter, sans-serif", size=12, color="#1e293b"),
         hovermode="x unified",
         bargap=0,
-        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0,
+        legend=dict(orientation="h", yanchor="bottom", y=1.22, xanchor="left", x=0.34,
                     font=dict(size=11)),
-        xaxis=dict(showgrid=False, showline=True, linecolor="#e2e8f0"),
+        xaxis=dict(
+            showgrid=False, showline=True, linecolor="#e2e8f0",
+            rangeslider=dict(visible=False),
+            rangeselector=dict(
+                x=0, y=1.22, xanchor="left", yanchor="bottom",
+                buttons=[
+                    dict(count=1, label="1M", step="month", stepmode="backward"),
+                    dict(count=3, label="3M", step="month", stepmode="backward"),
+                    dict(count=6, label="6M", step="month", stepmode="backward"),
+                    dict(step="all", label="1A"),
+                ],
+                bgcolor="#f4f6f9", activecolor="#dbeafe",
+                font=dict(size=10, color="#334155"),
+            ),
+        ),
         yaxis=dict(showgrid=True, gridcolor="#f1f5f9", showline=True, linecolor="#e2e8f0"),
     )
 
@@ -2763,6 +2777,31 @@ def render_report(ticker, company_name, y: dict,
         html_top += _kv("Beta",          _fmt_num(y.get("beta"), 2))
         st.markdown(f'<div class="metric-card">{html_top}</div>', unsafe_allow_html=True)
 
+        # ── Nuevos indicadores: MACD, ADX, OBV, Fibonacci (extraídos antes
+        # para poder pintar el bloque MACD/ADX junto al de RSI, en vez de
+        # dejarlo una fila más abajo con un hueco visual bajo el RSI) ─────
+        macd_d = tech.get("macd")
+        adx_v  = tech.get("adx")
+        obv_d  = tech.get("obv")
+        fib_d  = tech.get("fibonacci")
+        support_d = tech.get("historical_support")
+
+        def _tip(text):
+            # ANTES usaba el atributo HTML nativo title="..." — funciona con
+            # el ratón en escritorio, pero NO tiene ningún mecanismo de
+            # activación en pantallas táctiles (no existe "hover" al tocar).
+            # Se reescribe para reutilizar el sistema .tooltip-wrap /
+            # .tooltip-box (CSS :hover ya definido en app.py), que sí
+            # responde a un toque en la mayoría de navegadores móviles.
+            safe = text.replace('"', '&quot;').replace("'", "&#39;")
+            return (
+                '<span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;">'
+                '<span style="font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
+                'border-radius:50%;padding:0 3px;font-family:monospace;">?</span>'
+                f'<span class="tooltip-box">{text}</span>'
+                '</span>'
+            )
+
         col_t1, col_t2 = st.columns(2)
 
         with col_t1:
@@ -2792,6 +2831,27 @@ def render_report(ticker, company_name, y: dict,
             )
 
         with col_t2:
+            html2 = ""
+            if macd_d:
+                macd_sig = ("Cruce alcista" if macd_d["bullish_cross"] else
+                            "Divergencia alcista" if macd_d["bullish_divergence"] else
+                            "Cruce bajista" if macd_d["bearish_cross"] else "Sin señal de giro")
+                macd_col = "green" if (macd_d["bullish_cross"] or macd_d["bullish_divergence"]) else \
+                           "red" if macd_d["bearish_cross"] else ""
+                html2 += _kv(f"MACD{_tip('EMA(12)-EMA(26). El histograma mide la distancia entre el MACD y su línea de señal EMA(9). Un cruce alcista o una divergencia (precio cae, histograma sube) sugiere que el impulso bajista se agota.')}",
+                    f'{macd_d["macd"]:.3f}', "row-val")
+                html2 += _kv("Histograma", f'{macd_d["histogram"]:+.3f}',
+                    "row-val green" if macd_d["histogram"] >= 0 else "row-val red")
+                html2 += _kv("Señal MACD", macd_sig, f"row-val {macd_col}")
+            if adx_v is not None:
+                adx_lbl = "Tendencia fuerte" if adx_v > 25 else "Tendencia débil / lateral"
+                html2 += _kv(f"ADX (14){_tip('Average Directional Index: mide la FUERZA de la tendencia, no su dirección. >25 = tendencia fuerte (alcista o bajista). <20 = mercado sin tendencia clara. Se usa para bloquear Entrada Ideal si hay tendencia bajista fuerte confirmada.')}",
+                    f'{adx_v:.1f} ({adx_lbl})', "row-val")
+            if html2:
+                st.markdown(f'<div class="metric-card">{html2}</div>', unsafe_allow_html=True)
+
+        col_t3, col_t4 = st.columns(2)
+        with col_t3:
             mm50      = tech.get("mm50")
             mm200     = tech.get("mm200")
             d50       = tech.get("dist_mm50")
@@ -2821,50 +2881,6 @@ def render_report(ticker, company_name, y: dict,
                     f'{last_cross["type"]} — {last_cross["date"]}', f"row-val {lc_color}")
 
             st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
-
-        # ── Nuevos indicadores: MACD, ADX, OBV, Fibonacci ────────────────
-        macd_d = tech.get("macd")
-        adx_v  = tech.get("adx")
-        obv_d  = tech.get("obv")
-        fib_d  = tech.get("fibonacci")
-        support_d = tech.get("historical_support")
-
-        def _tip(text):
-            # ANTES usaba el atributo HTML nativo title="..." — funciona con
-            # el ratón en escritorio, pero NO tiene ningún mecanismo de
-            # activación en pantallas táctiles (no existe "hover" al tocar).
-            # Se reescribe para reutilizar el sistema .tooltip-wrap /
-            # .tooltip-box (CSS :hover ya definido en app.py), que sí
-            # responde a un toque en la mayoría de navegadores móviles.
-            safe = text.replace('"', '&quot;').replace("'", "&#39;")
-            return (
-                '<span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;">'
-                '<span style="font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
-                'border-radius:50%;padding:0 3px;font-family:monospace;">?</span>'
-                f'<span class="tooltip-box">{text}</span>'
-                '</span>'
-            )
-
-        col_t3, col_t4 = st.columns(2)
-        with col_t3:
-            html2 = ""
-            if macd_d:
-                macd_sig = ("Cruce alcista" if macd_d["bullish_cross"] else
-                            "Divergencia alcista" if macd_d["bullish_divergence"] else
-                            "Cruce bajista" if macd_d["bearish_cross"] else "Sin señal de giro")
-                macd_col = "green" if (macd_d["bullish_cross"] or macd_d["bullish_divergence"]) else \
-                           "red" if macd_d["bearish_cross"] else ""
-                html2 += _kv(f"MACD{_tip('EMA(12)-EMA(26). El histograma mide la distancia entre el MACD y su línea de señal EMA(9). Un cruce alcista o una divergencia (precio cae, histograma sube) sugiere que el impulso bajista se agota.')}",
-                    f'{macd_d["macd"]:.3f}', "row-val")
-                html2 += _kv("Histograma", f'{macd_d["histogram"]:+.3f}',
-                    "row-val green" if macd_d["histogram"] >= 0 else "row-val red")
-                html2 += _kv("Señal MACD", macd_sig, f"row-val {macd_col}")
-            if adx_v is not None:
-                adx_lbl = "Tendencia fuerte" if adx_v > 25 else "Tendencia débil / lateral"
-                html2 += _kv(f"ADX (14){_tip('Average Directional Index: mide la FUERZA de la tendencia, no su dirección. >25 = tendencia fuerte (alcista o bajista). <20 = mercado sin tendencia clara. Se usa para bloquear Entrada Ideal si hay tendencia bajista fuerte confirmada.')}",
-                    f'{adx_v:.1f} ({adx_lbl})', "row-val")
-            if html2:
-                st.markdown(f'<div class="metric-card">{html2}</div>', unsafe_allow_html=True)
 
         with col_t4:
             html3 = ""
