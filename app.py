@@ -1,6 +1,6 @@
 import streamlit as st
 from data_fetcher import fetch_yahoo_data, fetch_usd_eur_rate, fetch_technical_data
-from report import render_report
+from report import render_report, TOOLTIPS, fetch_peer_full_data
 from stock_scanner import render_scanner
 from portfolio import render_portfolio
 from favorites import render_favorite_star, render_favorites_tab
@@ -200,151 +200,252 @@ with tab_analisis:
 with tab_compare:
     st.markdown("""
     <div style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">
-    Analiza dos empresas en paralelo para comparar sus métricas clave directamente.
+    Compara varias empresas en paralelo, lado a lado.
     </div>
     """, unsafe_allow_html=True)
 
-    cc1, cc2, cc3, cc4 = st.columns([3, 1, 3, 1])
-    with cc1:
-        ticker_a = st.text_input("Ticker A", placeholder="AAPL",
-                                  label_visibility="collapsed", key="cmp_a").strip().upper()
-    with cc2:
-        btn_cmp  = st.button("COMPARAR →", key="btn_compare")
-    with cc3:
-        ticker_b = st.text_input("Ticker B", placeholder="MSFT",
-                                  label_visibility="collapsed", key="cmp_b").strip().upper()
-    with cc4:
-        st.write("")  # spacer
+    MAX_COMPARE = 6
+    if "compare_tickers" not in st.session_state:
+        st.session_state.compare_tickers = ["", ""]
 
-    if btn_cmp and ticker_a and ticker_b:
-        if ticker_a == ticker_b:
-            st.warning("Introduce dos tickers distintos.")
-        else:
-            with st.spinner(f"Cargando {ticker_a} y {ticker_b}…"):
-                data_a = fetch_yahoo_data(ticker_a)
-                data_b = fetch_yahoo_data(ticker_b)
+    # ── Gestión de empresas a comparar (mínimo 2, máximo MAX_COMPARE) ────
+    slot_cols = st.columns(len(st.session_state.compare_tickers))
+    for i, col in enumerate(slot_cols):
+        with col:
+            st.session_state.compare_tickers[i] = st.text_input(
+                f"Ticker {i+1}",
+                value=st.session_state.compare_tickers[i],
+                placeholder=["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA"][i % 6],
+                label_visibility="collapsed",
+                key=f"cmp_ticker_{i}",
+            ).strip().upper()
+            if len(st.session_state.compare_tickers) > 2:
+                if st.button("✕ Quitar", key=f"cmp_remove_{i}", use_container_width=True):
+                    st.session_state.compare_tickers.pop(i)
+                    # Limpia las claves de los text_input: al desplazarse los
+                    # índices, Streamlit reutilizaría el valor cacheado de
+                    # cada key en vez del nuevo `value` pasado explícitamente.
+                    for j in range(len(st.session_state.compare_tickers) + 1):
+                        st.session_state.pop(f"cmp_ticker_{j}", None)
+                    st.rerun()
 
-            if not data_a:
-                st.error(f"No se encontró {ticker_a}")
-            elif not data_b:
-                st.error(f"No se encontró {ticker_b}")
-            else:
-                # Tabla comparativa de métricas clave
-                def _cmp_row(label, val_a, val_b, fmt="{:.2f}", low_good=False, suffix=""):
-                    """Fila de comparación — verde la mejor."""
-                    def fv(v):
-                        if v is None: return "N/A"
-                        try:    return fmt.format(v) + suffix
-                        except: return str(v)
-                    col_a = col_b = "#0f172a"
-                    if val_a is not None and val_b is not None:
-                        try:
-                            if low_good:
-                                col_a = "#059669" if val_a < val_b else "#dc2626"
-                                col_b = "#059669" if val_b < val_a else "#dc2626"
-                            else:
-                                col_a = "#059669" if val_a > val_b else "#dc2626"
-                                col_b = "#059669" if val_b > val_a else "#dc2626"
-                        except Exception:
-                            pass
-                    return (
-                        f'<tr style="border-bottom:1px solid #eef1f5;">'
-                        f'<td style="padding:0.32rem 0.6rem;font-size:0.8rem;color:#64748b;">{label}</td>'
-                        f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;'
-                        f'padding:0.32rem 0.6rem;color:{col_a};font-weight:600;">{fv(val_a)}</td>'
-                        f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;'
-                        f'padding:0.32rem 0.6rem;color:{col_b};font-weight:600;">{fv(val_b)}</td>'
-                        f'</tr>'
-                    )
+    col_add, col_go, col_adv = st.columns([1, 1, 2])
+    with col_add:
+        if len(st.session_state.compare_tickers) < MAX_COMPARE:
+            if st.button("➕ Añadir empresa", key="cmp_add_ticker", use_container_width=True):
+                st.session_state.compare_tickers.append("")
+                st.rerun()
+    with col_go:
+        btn_cmp = st.button("COMPARAR →", key="btn_compare", use_container_width=True)
+    with col_adv:
+        peers_full = st.toggle(
+            "Incluir métricas avanzadas (Calidad del beneficio, PER actual/sector/histórico, "
+            "Salud Fundamental, Piotroski F-Score, Valor Objetivo, Diagnóstico General, Señal de "
+            "Entrada y Veredicto Final) — más lento, analiza cada empresa a fondo",
+            value=st.session_state.get("cmp_peers_full", False),
+            key="cmp_peers_full",
+        )
 
-                def _big(v):
-                    if not v: return None
-                    v = float(v)
-                    if abs(v) >= 1e12: return f"${v/1e12:.2f}T"
-                    if abs(v) >= 1e9:  return f"${v/1e9:.2f}B"
-                    if abs(v) >= 1e6:  return f"${v/1e6:.1f}M"
-                    return f"${v:,.0f}"
+    tickers_clean = [t for t in st.session_state.compare_tickers if t]
+    tickers_clean = list(dict.fromkeys(tickers_clean))  # sin duplicados, conserva orden
 
-                na, nb = data_a.get("company_name",ticker_a)[:22], data_b.get("company_name",ticker_b)[:22]
-                hs = "padding:0.35rem 0.6rem;font-size:0.75rem;color:#0284c7;text-align:right;border-bottom:1px solid #e2e8f0;"
-
-                rows = (
-                    _cmp_row("Precio actual",   data_a.get("price"),         data_b.get("price"),        fmt="${:,.2f}", low_good=False)
-                  + _cmp_row("Market Cap",      _big(data_a.get("market_cap")), _big(data_b.get("market_cap")), fmt="{}", low_good=False)
-                  + "<tr><td colspan='3' style='padding:0.2rem;background:#f8fafc;font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>VALORACIÓN</td></tr>"
-                  + _cmp_row("PER Forward",     data_a.get("pe_forward"),    data_b.get("pe_forward"),   fmt="{:.1f}×", low_good=True)
-                  + _cmp_row("PEG Ratio",       data_a.get("peg_ratio"),     data_b.get("peg_ratio"),    fmt="{:.2f}",  low_good=True)
-                  + _cmp_row("EV/EBITDA",       data_a.get("ev_ebitda"),     data_b.get("ev_ebitda"),    fmt="{:.1f}×", low_good=True)
-                  + _cmp_row("Price/Sales",     data_a.get("price_sales"),   data_b.get("price_sales"),  fmt="{:.2f}×", low_good=True)
-                  + "<tr><td colspan='3' style='padding:0.2rem;background:#f8fafc;font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>RENTABILIDAD</td></tr>"
-                  + _cmp_row("Margen neto",     (data_a.get("profit_margin") or 0)*100,  (data_b.get("profit_margin") or 0)*100,  fmt="{:.1f}%", low_good=False)
-                  + _cmp_row("Margen operativo",(data_a.get("operating_margin") or 0)*100,(data_b.get("operating_margin") or 0)*100,fmt="{:.1f}%",low_good=False)
-                  + _cmp_row("ROE",             (data_a.get("roe") or 0)*100,            (data_b.get("roe") or 0)*100,            fmt="{:.1f}%", low_good=False)
-                  + _cmp_row("ROA",             (data_a.get("roa") or 0)*100,            (data_b.get("roa") or 0)*100,            fmt="{:.1f}%", low_good=False)
-                  + "<tr><td colspan='3' style='padding:0.2rem;background:#f8fafc;font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>CRECIMIENTO</td></tr>"
-                  + _cmp_row("Revenue YoY",     data_a.get("revenue_yoy"),   data_b.get("revenue_yoy"),  fmt="{:+.1f}%",low_good=False)
-                  + _cmp_row("Earnings YoY",    data_a.get("earnings_yoy"),  data_b.get("earnings_yoy"), fmt="{:+.1f}%",low_good=False)
-                  + _cmp_row("EPS TTM",         data_a.get("eps_ttm"),       data_b.get("eps_ttm"),      fmt="${:.2f}", low_good=False)
-                  + "<tr><td colspan='3' style='padding:0.2rem;background:#f8fafc;font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>BALANCE</td></tr>"
-                  + _cmp_row("Free Cash Flow",  _big(data_a.get("free_cash_flow")), _big(data_b.get("free_cash_flow")), fmt="{}", low_good=False)
-                  + _cmp_row("Deuda/Equity",    data_a.get("debt_equity"),   data_b.get("debt_equity"),  fmt="{:.1f}%", low_good=True)
-                  + _cmp_row("Current Ratio",   data_a.get("current_ratio"), data_b.get("current_ratio"),fmt="{:.2f}×", low_good=False)
-                  + "<tr><td colspan='3' style='padding:0.2rem;background:#f8fafc;font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>TÉCNICO</td></tr>"
-                  + _cmp_row("Beta",            data_a.get("beta"),          data_b.get("beta"),         fmt="{:.2f}",  low_good=True)
-                  + _cmp_row("Short Ratio",     data_a.get("short_ratio"),   data_b.get("short_ratio"),  fmt="{:.1f}d", low_good=True)
-                  + _cmp_row("Div. Yield",      (data_a.get("dividend_yield") or 0)*100,(data_b.get("dividend_yield") or 0)*100, fmt="{:.2f}%", low_good=False)
-                )
-
-                st.markdown(
-                    '<div class="metric-card" style="padding:0.5rem;">'
-                    '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">'
-                    '<thead><tr style="background:#f8fafc;">'
-                    f'<th style="{hs}text-align:left;color:#64748b;">Métrica</th>'
-                    f'<th style="{hs}color:#0284c7;">{ticker_a} — {na}</th>'
-                    f'<th style="{hs}color:#d97706;">{ticker_b} — {nb}</th>'
-                    f'</tr></thead><tbody>{rows}</tbody></table></div>'
-                    '<div style="font-size:0.7rem;color:#64748b;margin-top:0.5rem;">'
-                    'Verde = mejor valor entre los dos · Rojo = peor</div>'
-                    '</div>',
-                    unsafe_allow_html=True
-                )
-
-                # Análisis técnico de ambos
-                st.markdown('<div style="margin-top:1rem;"></div>', unsafe_allow_html=True)
-                col_ta, col_tb = st.columns(2)
-                with col_ta:
-                    with st.spinner(f"Técnico {ticker_a}…"):
-                        tech_a = fetch_technical_data(ticker_a)
-                    if tech_a and not tech_a.get("error"):
-                        rsi_a = tech_a.get("rsi","N/A")
-                        mm50_a, mm200_a = tech_a.get("mm50"), tech_a.get("mm200")
-                        price_a = data_a.get("price", 0)
-                        st.markdown(
-                            f'<div class="metric-card"><div class="metric-label">{ticker_a} — Técnico</div>'
-                            f'RSI: <b style="color:#0f172a;">{rsi_a}</b> &nbsp;·&nbsp; '
-                            f'MM50: <b style="color:{"#059669" if mm50_a and price_a > mm50_a else "#dc2626"};">'
-                            f'{"▲" if mm50_a and price_a > mm50_a else "▼"}</b> &nbsp;·&nbsp; '
-                            f'MM200: <b style="color:{"#059669" if mm200_a and price_a > mm200_a else "#dc2626"};">'
-                            f'{"▲" if mm200_a and price_a > mm200_a else "▼"}</b></div>',
-                            unsafe_allow_html=True)
-                with col_tb:
-                    with st.spinner(f"Técnico {ticker_b}…"):
-                        tech_b = fetch_technical_data(ticker_b)
-                    if tech_b and not tech_b.get("error"):
-                        rsi_b = tech_b.get("rsi","N/A")
-                        mm50_b, mm200_b = tech_b.get("mm50"), tech_b.get("mm200")
-                        price_b = data_b.get("price", 0)
-                        st.markdown(
-                            f'<div class="metric-card"><div class="metric-label">{ticker_b} — Técnico</div>'
-                            f'RSI: <b style="color:#0f172a;">{rsi_b}</b> &nbsp;·&nbsp; '
-                            f'MM50: <b style="color:{"#059669" if mm50_b and price_b > mm50_b else "#dc2626"};">'
-                            f'{"▲" if mm50_b and price_b > mm50_b else "▼"}</b> &nbsp;·&nbsp; '
-                            f'MM200: <b style="color:{"#059669" if mm200_b and price_b > mm200_b else "#dc2626"};">'
-                            f'{"▲" if mm200_b and price_b > mm200_b else "▼"}</b></div>',
-                            unsafe_allow_html=True)
-
+    if btn_cmp and len(tickers_clean) < 2:
+        st.warning("Introduce al menos dos tickers distintos para comparar.")
     elif btn_cmp:
-        st.warning("Introduce los dos tickers para comparar.")
+        spinner_msg = ("Analizando a fondo cada empresa (puede tardar varios segundos)…"
+                        if peers_full else f"Cargando {', '.join(tickers_clean)}…")
+        with st.spinner(spinner_msg):
+            if peers_full:
+                full_data = fetch_peer_full_data(tickers_clean)
+                basic_data = {d["ticker"]: d for d in full_data}
+            else:
+                full_data = None
+                basic_data = {}
+                for tk in tickers_clean:
+                    d = fetch_yahoo_data(tk)
+                    if d:
+                        d["ticker"] = tk
+                        basic_data[tk] = d
+
+        missing = [tk for tk in tickers_clean if tk not in basic_data]
+        if missing:
+            st.error(f"No se encontraron datos para: {', '.join(missing)}")
+
+        found = [tk for tk in tickers_clean if tk in basic_data]
+        if len(found) >= 2:
+            def _big(v):
+                if not v: return None
+                v = float(v)
+                if abs(v) >= 1e12: return f"${v/1e12:.2f}T"
+                if abs(v) >= 1e9:  return f"${v/1e9:.2f}B"
+                if abs(v) >= 1e6:  return f"${v/1e6:.1f}M"
+                return f"${v:,.0f}"
+
+            def _num(v, dec=2, prefix="", suffix=""):
+                if v is None: return "N/A"
+                try: return f"{prefix}{v:,.{dec}f}{suffix}"
+                except Exception: return "N/A"
+
+            hs = ("padding:0.35rem 0.6rem;font-size:0.75rem;color:#0284c7;"
+                  "text-align:right;border-bottom:1px solid #e2e8f0;white-space:nowrap;")
+
+            def th_tip(label, tip):
+                tip_safe = (tip or "").replace('"', "&quot;")
+                tip_html = (
+                    f'<span style="margin-left:0.25rem;position:relative;cursor:help;display:inline-block;">'
+                    f'<span style="font-size:0.6rem;color:#0284c7;border:1px solid #0284c7;'
+                    f'border-radius:50%;padding:0 3px;font-family:\'IBM Plex Mono\',monospace;" '
+                    f'title="{tip_safe}">?</span></span>'
+                ) if tip else ""
+                return f'<th style="{hs}">{label}{tip_html}</th>'
+
+            def cmp_row(label, tip, values, fmt=lambda v: _num(v), low_good=False):
+                """Fila con una celda por empresa — verde la mejor, rojo la peor."""
+                numeric = [v for v in values if isinstance(v, (int, float))]
+                best = (min(numeric) if low_good else max(numeric)) if numeric else None
+                worst = (max(numeric) if low_good else min(numeric)) if numeric else None
+                cells = ""
+                for v in values:
+                    col = "#0f172a"
+                    if isinstance(v, (int, float)) and best is not None and len(numeric) > 1:
+                        if v == best: col = "#059669"
+                        elif v == worst: col = "#dc2626"
+                    cells += (f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;'
+                              f'padding:0.32rem 0.6rem;color:{col};font-weight:600;">{fmt(v)}</td>')
+                tip_safe = (tip or "").replace('"', "&quot;")
+                tip_html = (
+                    f'<span style="margin-left:0.25rem;position:relative;cursor:help;display:inline-block;">'
+                    f'<span style="font-size:0.6rem;color:#0284c7;border:1px solid #0284c7;'
+                    f'border-radius:50%;padding:0 3px;font-family:\'IBM Plex Mono\',monospace;" '
+                    f'title="{tip_safe}">?</span></span>'
+                ) if tip else ""
+                return (f'<tr style="border-bottom:1px solid #eef1f5;">'
+                        f'<td style="padding:0.32rem 0.6rem;font-size:0.8rem;color:#64748b;">{label}{tip_html}</td>'
+                        f'{cells}</tr>')
+
+            def cmp_group(title):
+                colspan = len(found) + 1
+                return (f"<tr><td colspan='{colspan}' style='padding:0.2rem 0.6rem;background:#f8fafc;"
+                        f"font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>"
+                        f"{title}</td></tr>")
+
+            d_list = [basic_data[tk] for tk in found]
+
+            rows  = cmp_row("Precio actual", TOOLTIPS.get("Precio Actual"),
+                             [d.get("price") for d in d_list], fmt=lambda v: _num(v, 2, "$"))
+            rows += cmp_row("Market Cap", TOOLTIPS.get("Market Cap"),
+                             [d.get("market_cap") for d in d_list], fmt=lambda v: _big(v) or "N/A")
+            rows += cmp_group("VALORACIÓN")
+            rows += cmp_row("PER Forward", TOOLTIPS.get("PER Forward"),
+                             [d.get("pe_forward") for d in d_list], fmt=lambda v: _num(v, 1, suffix="×"), low_good=True)
+            rows += cmp_row("PEG Ratio", TOOLTIPS.get("PEG Ratio"),
+                             [d.get("peg_ratio") for d in d_list], low_good=True)
+            rows += cmp_row("EV/EBITDA", TOOLTIPS.get("EV/EBITDA"),
+                             [d.get("ev_ebitda") for d in d_list], fmt=lambda v: _num(v, 1, suffix="×"), low_good=True)
+            rows += cmp_row("Price/Sales", TOOLTIPS.get("Price/Sales"),
+                             [d.get("price_sales") for d in d_list], fmt=lambda v: _num(v, 2, suffix="×"), low_good=True)
+            rows += cmp_group("RENTABILIDAD")
+            rows += cmp_row("Margen neto", TOOLTIPS.get("Profit Margin"),
+                             [(d.get("profit_margin") or 0) * 100 for d in d_list], fmt=lambda v: _num(v, 1, suffix="%"))
+            rows += cmp_row("Margen operativo", TOOLTIPS.get("Operating Margin"),
+                             [(d.get("operating_margin") or 0) * 100 for d in d_list], fmt=lambda v: _num(v, 1, suffix="%"))
+            rows += cmp_row("ROE", TOOLTIPS.get("ROE"),
+                             [(d.get("roe") or 0) * 100 for d in d_list], fmt=lambda v: _num(v, 1, suffix="%"))
+            rows += cmp_row("ROA", TOOLTIPS.get("ROA"),
+                             [(d.get("roa") or 0) * 100 for d in d_list], fmt=lambda v: _num(v, 1, suffix="%"))
+            rows += cmp_group("CRECIMIENTO")
+            rows += cmp_row("Revenue YoY", TOOLTIPS.get("Revenue Growth"),
+                             [d.get("revenue_yoy") for d in d_list], fmt=lambda v: _num(v, 1, suffix="%"))
+            rows += cmp_row("Earnings YoY", TOOLTIPS.get("Earnings Growth"),
+                             [d.get("earnings_yoy") for d in d_list], fmt=lambda v: _num(v, 1, suffix="%"))
+            rows += cmp_row("EPS TTM", TOOLTIPS.get("EPS (TTM)"),
+                             [d.get("eps_ttm") for d in d_list], fmt=lambda v: _num(v, 2, "$"))
+            rows += cmp_group("BALANCE")
+            rows += cmp_row("Free Cash Flow", TOOLTIPS.get("Free Cash Flow"),
+                             [d.get("free_cash_flow") for d in d_list], fmt=lambda v: _big(v) or "N/A")
+            rows += cmp_row("Deuda/Equity", TOOLTIPS.get("Debt/Equity"),
+                             [d.get("debt_equity") for d in d_list], fmt=lambda v: _num(v, 1, suffix="%"), low_good=True)
+            rows += cmp_row("Current Ratio", TOOLTIPS.get("Current Ratio"),
+                             [d.get("current_ratio") for d in d_list], fmt=lambda v: _num(v, 2, suffix="×"))
+            rows += cmp_group("TÉCNICO")
+            rows += cmp_row("Beta", TOOLTIPS.get("Beta"),
+                             [d.get("beta") for d in d_list], low_good=True)
+            rows += cmp_row("Short Ratio", TOOLTIPS.get("Short Ratio"),
+                             [d.get("short_ratio") for d in d_list], fmt=lambda v: _num(v, 1, suffix="d"), low_good=True)
+            rows += cmp_row("Div. Yield", TOOLTIPS.get("Dividend Yield"),
+                             [(d.get("dividend_yield") or 0) * 100 for d in d_list], fmt=lambda v: _num(v, 2, suffix="%"))
+
+            if peers_full:
+                pio_str = lambda d: d.get("piotroski_str") or "N/A"
+                rows += cmp_group("SALUD Y VALORACIÓN AVANZADA")
+                rows += cmp_row("Calidad beneficio (FCF/NI)",
+                    "Free Cash Flow / Beneficio Neto anual. Mide si el beneficio contable se traduce en caja real. ≥0.9× = alta calidad, <0.5× = posibles ajustes contables agresivos.",
+                    [d.get("fcf_quality") for d in d_list], fmt=lambda v: _num(v, 2, suffix="×"))
+                rows += cmp_row("PER Actual", TOOLTIPS.get("PER Trailing"),
+                    [d.get("pe_trailing") for d in d_list], fmt=lambda v: _num(v, 1, suffix="×"), low_good=True)
+                rows += cmp_row("PER Sector",
+                    "PER 'justo' de referencia para el sector de esta empresa, ajustado por los tipos de interés actuales.",
+                    [d.get("pe_sector") for d in d_list], fmt=lambda v: _num(v, 1, suffix="×"))
+                rows += cmp_row("PER Histórico",
+                    "Media del PER propio de la empresa en los últimos años. Sirve para ver si cotiza cara o barata respecto a su propio pasado, sin comparar con el sector.",
+                    [d.get("pe_historico") for d in d_list], fmt=lambda v: _num(v, 1, suffix="×"))
+                rows += cmp_row("Salud Fundamental",
+                    "Score compuesto (0-100) de rentabilidad, crecimiento, balance y calidad del beneficio. >70 = sólida, 45-70 = normal, <45 = débil.",
+                    [d.get("health_score") for d in d_list], fmt=lambda v: _num(v, 0))
+                rows += cmp_row("Piotroski F-Score",
+                    "9 criterios de fortaleza financiera (rentabilidad, apalancamiento, liquidez, eficiencia). ≥7 = fuerte, 4-6 = normal, <4 = débil.",
+                    [d.get("piotroski_str") for d in d_list], fmt=lambda v: v if v else "N/A")
+                rows += cmp_row("Valor Objetivo",
+                    "Mediana de varios métodos de valoración ajustados al sector, incluyendo el consenso de analistas si existe.",
+                    [d.get("fair_value") for d in d_list], fmt=lambda v: _num(v, 2, "$"))
+                rows += cmp_row("Diagnóstico General",
+                    "Comparación entre el precio actual y el Valor Objetivo calculado (infravalorada, precio justo, sobrevalorada...).",
+                    [d.get("diag") for d in d_list], fmt=lambda v: v if v else "N/A")
+                rows += cmp_row("Señal de Entrada",
+                    "Nivel de oportunidad de compra según una combinación de checks técnicos y fundamentales (Entrada Ideal, Posible, Esperar...).",
+                    [d.get("signal_level") for d in d_list], fmt=lambda v: v if v else "N/A")
+                rows += cmp_row("Veredicto Final",
+                    "Síntesis de Calidad (Salud Fundamental + Piotroski), Precio (Diagnóstico General) y Timing (Señal de Entrada) en una única conclusión.",
+                    [f'{d.get("vf_icon","")} {d.get("vf_level","")}'.strip() for d in d_list],
+                    fmt=lambda v: v if v and v.strip() else "N/A")
+
+            header_cells = "".join(
+                f'<th style="{hs}color:#0284c7;">{tk} — {(basic_data[tk].get("company_name") or basic_data[tk].get("name") or tk)[:20]}</th>'
+                for tk in found
+            )
+
+            st.markdown(
+                '<div class="metric-card" style="padding:0.5rem;">'
+                '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">'
+                '<thead><tr style="background:#f8fafc;">'
+                f'<th style="{hs}text-align:left;color:#64748b;">Métrica</th>'
+                f'{header_cells}'
+                f'</tr></thead><tbody>{rows}</tbody></table></div>'
+                '<div style="font-size:0.7rem;color:#64748b;margin-top:0.5rem;">'
+                'Verde = mejor valor entre las empresas comparadas · Rojo = peor</div>'
+                '</div>',
+                unsafe_allow_html=True
+            )
+
+            # Análisis técnico rápido de cada empresa (RSI/MM50/MM200)
+            st.markdown('<div style="margin-top:1rem;"></div>', unsafe_allow_html=True)
+            tech_cols = st.columns(len(found))
+            for tk, col in zip(found, tech_cols):
+                with col:
+                    with st.spinner(f"Técnico {tk}…"):
+                        tech_d = fetch_technical_data(tk)
+                    if tech_d and not tech_d.get("error"):
+                        rsi_d = tech_d.get("rsi", "N/A")
+                        mm50_d, mm200_d = tech_d.get("mm50"), tech_d.get("mm200")
+                        price_d = basic_data[tk].get("price", 0)
+                        st.markdown(
+                            f'<div class="metric-card"><div class="metric-label">{tk} — Técnico</div>'
+                            f'RSI: <b style="color:#0f172a;">{rsi_d}</b><br>'
+                            f'MM50: <b style="color:{"#059669" if mm50_d and price_d > mm50_d else "#dc2626"};">'
+                            f'{"▲" if mm50_d and price_d > mm50_d else "▼"}</b> &nbsp;·&nbsp; '
+                            f'MM200: <b style="color:{"#059669" if mm200_d and price_d > mm200_d else "#dc2626"};">'
+                            f'{"▲" if mm200_d and price_d > mm200_d else "▼"}</b></div>',
+                            unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

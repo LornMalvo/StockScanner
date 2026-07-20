@@ -2212,31 +2212,23 @@ def fetch_peer_full_data(peers: list) -> list:
                        if pio_p.get("n_evaluable", 0) > 0 else "N/A")
 
             results.append({
-                "ticker":       ticker,
-                "name":         (y_p.get("company_name") or ticker)[:22],
-                "price":        y_p.get("price"),
-                "pe_forward":   y_p.get("pe_forward"),
-                "peg":          y_p.get("peg_ratio"),
-                "ev_ebitda":    y_p.get("ev_ebitda"),
-                "profit_m":     (y_p.get("profit_margin") or 0) * 100,
-                "roe":          (y_p.get("roe") or 0) * 100,
-                "rev_growth":   y_p.get("revenue_yoy"),
-                "market_cap":   y_p.get("market_cap"),
+                **y_p,
+                "ticker": ticker,
+                "name":   (y_p.get("company_name") or ticker)[:22],
                 # ── Métricas ampliadas ──────────────────────────────────
-                "fcf_quality":  desc_p.get("fcf_quality") if desc_p else None,
-                "pe_trailing":  y_p.get("pe_trailing"),
-                "pe_sector":    ev_p.get("pe_ref"),
-                "pe_historico": mult_data_p.get("per_mean") if mult_data_p else None,
-                "health_score": ev_p.get("health_score"),
+                "fcf_quality":   desc_p.get("fcf_quality") if desc_p else None,
+                "pe_sector":     ev_p.get("pe_ref"),
+                "pe_historico":  mult_data_p.get("per_mean") if mult_data_p else None,
+                "health_score":  ev_p.get("health_score"),
                 "piotroski_str": pio_str,
-                "fair_value":   ev_p.get("fair_value"),
-                "diag":         ev_p.get("diag"),
-                "diag_color":   ev_p.get("diag_color"),
-                "signal_level": signal_p.get("level"),
-                "signal_color": signal_p.get("color"),
-                "vf_level":     vf_p.get("level"),
-                "vf_color":     vf_p.get("color"),
-                "vf_icon":      vf_p.get("icon"),
+                "fair_value":    ev_p.get("fair_value"),
+                "diag":          ev_p.get("diag"),
+                "diag_color":    ev_p.get("diag_color"),
+                "signal_level":  signal_p.get("level"),
+                "signal_color":  signal_p.get("color"),
+                "vf_level":      vf_p.get("level"),
+                "vf_color":      vf_p.get("color"),
+                "vf_icon":       vf_p.get("icon"),
             })
         except Exception:
             continue
@@ -3379,25 +3371,13 @@ def render_report(ticker, company_name, y: dict,
     # COMPARATIVA FRENTE A COMPETENCIA
     # ════════════════════════════════════════════════════════════════════
     peers_tickers = get_manual_competitors(ticker)
-    peers_data = []
-    peers_full = False
     if peers_tickers:
-        peers_full = st.toggle(
-            "📊 Incluir métricas avanzadas en el comparador (Calidad del beneficio, PER actual/sector/"
-            "histórico, Salud Fundamental, Piotroski F-Score, Valor Objetivo, Diagnóstico General, "
-            "Señal de Entrada y Veredicto Final de cada competidor) — más lento",
-            value=st.session_state.get(f"peers_full_{ticker}", False),
-            key=f"peers_full_{ticker}",
-        )
-        spinner_msg = ("Analizando a fondo cada competidor (puede tardar varios segundos)…"
-                        if peers_full else "Cargando datos de competidores…")
-        with st.spinner(spinner_msg):
-            peers_data = (fetch_peer_full_data(peers_tickers) if peers_full
-                          else fetch_peer_data(peers_tickers))
+        with st.spinner("Cargando datos de competidores…"):
+            peers_data = fetch_peer_data(peers_tickers)
+    else:
+        peers_data = []
 
-    render_peers(ticker, y, peers_data, fx_rate, ev, peers_full=peers_full,
-                 signal=signal, vf=vf, mult_data=mult_data,
-                 fcf_quality=company_info.get("fcf_quality") if company_info else None)
+    render_peers(ticker, y, peers_data, fx_rate, ev)
 
     # ════════════════════════════════════════════════════════════════════
     # EXPORTAR ANÁLISIS A PDF
