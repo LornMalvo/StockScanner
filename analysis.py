@@ -2058,10 +2058,13 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_peers(main_ticker: str, main_data: dict, peers_data: list,
-                 fx_rate: float | None, ev: dict):
+                 fx_rate: float | None, ev: dict, peers_full: bool = False,
+                 signal: dict | None = None, vf: dict | None = None,
+                 mult_data: dict | None = None, fcf_quality: float | None = None):
     st.markdown('<div class="section-header">COMPARATIVA FRENTE A COMPETENCIA</div>', unsafe_allow_html=True)
 
-    # Widget de gestión de competidores manuales (siempre visible)
+    # Widget de gestión de competidores manuales (siempre visible) — desde
+    # aquí se pueden añadir o quitar una o más empresas de la comparación.
     render_competitor_manager(main_ticker)
 
     if not peers_data:
@@ -2092,12 +2095,18 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
             col = "#059669" if (val < ref) == low_good else "#dc2626"
         return f'<td style="font-family:\'IBM Plex Mono\',monospace;color:{col};text-align:right;padding:0.3rem 0.5rem;">{val:,.{dec}f}{sfx}</td>'
 
+    def td_text(text, color="#0f172a", size="0.78rem"):
+        if not text:
+            return '<td style="color:#d1d9e0;text-align:right;padding:0.3rem 0.5rem;">—</td>'
+        return (f'<td style="font-size:{size};color:{color};font-weight:600;'
+                f'text-align:right;padding:0.3rem 0.5rem;white-space:nowrap;">{text}</td>')
+
     def make_row(ticker, name, d, is_main=False):
         bg    = "#dbeafe" if is_main else "#ffffff"
         bdr   = "border-left:3px solid #0284c7;" if is_main else ""
         nc    = "#0284c7" if is_main else "#334155"
         badge = '<span style="font-size:0.65rem;background:#dbeafe;color:#0284c7;padding:1px 5px;border-radius:3px;margin-left:0.3rem;">TÚ</span>' if is_main else ""
-        return (
+        row = (
             f'<tr style="background:{bg};{bdr}border-bottom:1px solid #eef1f5;">'
             f'<td style="padding:0.3rem 0.6rem;white-space:nowrap;">'
             f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:700;color:{nc};">{ticker}</span>'
@@ -2109,8 +2118,23 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
             + td_col(d.get("roe"),        low_good=False, ref=12,      sfx="%")
             + td_col(d.get("rev_growth"), low_good=False, ref=5,       sfx="%")
             + f'<td style="font-family:\'IBM Plex Mono\',monospace;color:#64748b;text-align:right;padding:0.3rem 0.5rem;font-size:0.8rem;">{mc_fmt(d.get("market_cap"))}</td>'
-            + '</tr>'
         )
+        if peers_full:
+            row += (
+                td_col(d.get("fcf_quality"), low_good=False, ref=0.9, sfx="x", dec=2)
+                + td_col(d.get("pe_trailing"), low_good=True, ref=pe_ref, sfx="x")
+                + td_col(d.get("pe_sector"),   low_good=True, ref=None,  sfx="x")
+                + td_col(d.get("pe_historico"),low_good=True, ref=None,  sfx="x")
+                + td_col(d.get("health_score"),low_good=False, ref=55,   sfx="", dec=0)
+                + td_text(d.get("piotroski_str"))
+                + td_col(d.get("fair_value"),  low_good=False, ref=None, sfx="", dec=2)
+                + td_text(d.get("diag"),         color=d.get("diag_color") or "#0f172a")
+                + td_text(d.get("signal_level"), color=d.get("signal_color") or "#0f172a")
+                + td_text(f'{d.get("vf_icon","")} {d.get("vf_level","")}'.strip(),
+                          color=d.get("vf_color") or "#0f172a")
+            )
+        row += '</tr>'
+        return row
 
     main_row  = make_row(main_ticker, (main_data.get("company_name","") or "")[:22], {
         "pe_forward": main_data.get("pe_forward"),
@@ -2120,6 +2144,23 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
         "roe":        (main_data.get("roe") or 0) * 100,
         "rev_growth": main_data.get("revenue_yoy"),
         "market_cap": main_data.get("market_cap"),
+        # Nota: para la fila de "TÚ" las métricas avanzadas se pasan ya
+        # calculadas desde más arriba en la página (no se recalculan aquí).
+        "fcf_quality":  fcf_quality,
+        "pe_trailing":  main_data.get("pe_trailing"),
+        "pe_sector":    ev.get("pe_ref"),
+        "pe_historico": (mult_data or {}).get("per_mean"),
+        "health_score": ev.get("health_score"),
+        "piotroski_str": (f"{ev.get('piotroski',{}).get('score')}/{ev.get('piotroski',{}).get('n_evaluable')}"
+                           if ev.get("piotroski", {}).get("n_evaluable", 0) > 0 else "N/A"),
+        "fair_value":   ev.get("fair_value"),
+        "diag":         ev.get("diag"),
+        "diag_color":   ev.get("diag_color"),
+        "signal_level": (signal or {}).get("level"),
+        "signal_color": (signal or {}).get("color"),
+        "vf_level":     (vf or {}).get("level"),
+        "vf_color":     (vf or {}).get("color"),
+        "vf_icon":      (vf or {}).get("icon"),
     }, is_main=True)
 
     peer_rows = "".join(make_row(p["ticker"], p["name"], p) for p in peers_data)
@@ -2140,6 +2181,21 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
             f'</span></th>'
         )
 
+    extra_headers = ""
+    if peers_full:
+        extra_headers = (
+            th("FCF/NI",    "Calidad del beneficio: Free Cash Flow / Beneficio Neto anual. Mide si el beneficio contable se traduce en caja real. ≥0.9× = alta calidad, <0.5× = posibles ajustes contables agresivos.")
+            + th("PER Actual", "PER Trailing: precio dividido entre el beneficio de los últimos 12 meses. Referencia sector: " + f"{pe_ref}×.")
+            + th("PER Sector", "PER 'justo' de referencia para el sector de esta empresa, ajustado por los tipos de interés actuales.")
+            + th("PER Histórico", "Media del PER propio de la empresa en los últimos años (múltiplos históricos), sin comparar con el sector. Sirve para ver si cotiza cara o barata respecto a su propio pasado.")
+            + th("Salud", "Salud Fundamental (0-100): score compuesto de rentabilidad, crecimiento, balance y calidad del beneficio. >70 = sólida, 45-70 = normal, <45 = débil.")
+            + th("Piotroski", "Piotroski F-Score (0-9): 9 criterios de fortaleza financiera (rentabilidad, apalancamiento, liquidez, eficiencia). ≥7 = fuerte, 4-6 = normal, <4 = débil.")
+            + th("Valor Obj.", "Valor objetivo calculado como mediana de varios métodos de valoración ajustados al sector, incluyendo el consenso de analistas si existe.")
+            + th("Diagnóstico", "Diagnóstico General: comparación entre el precio actual y el Valor Objetivo calculado (infravalorada, precio justo, sobrevalorada...).")
+            + th("Señal", "Señal de Entrada: nivel de oportunidad de compra según una combinación de checks técnicos y fundamentales (Entrada Ideal, Posible, Esperar...).")
+            + th("Veredicto", "Veredicto Final: síntesis de Calidad (Salud Fundamental + Piotroski), Precio (Diagnóstico General) y Timing (Señal de Entrada) en una única conclusión accionable.")
+        )
+
     table = (
         '<div style="overflow-x:auto;">'
         '<table style="width:100%;border-collapse:collapse;font-size:0.83rem;">'
@@ -2152,6 +2208,7 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
         + th("ROE",       "Return on Equity: beneficio / patrimonio neto (%). Verde si supera el 12%. Mide eficiencia del capital.")
         + th("Crec.",     "Crecimiento de ingresos YoY (%). Verde si supera el 5%. Indica capacidad de expansión del negocio.")
         + th("Mkt Cap",   "Capitalización bursátil total. T = billones, B = miles de millones, M = millones.")
+        + extra_headers
         + '</tr></thead>'
         f'<tbody>{main_row}{peer_rows}</tbody>'
         '</table></div>'

@@ -7,7 +7,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import yfinance as yf
 import statistics
-from data_fetcher import fetch_balance_sheet_history
+from data_fetcher import fetch_balance_sheet_history, fetch_yahoo_data, fetch_technical_data
 from analysis import (
     calc_entry_signal, calc_trend, fetch_peer_data, get_manual_competitors,
     render_entry_signal, render_trend, render_peers,
@@ -133,6 +133,69 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_ex
         '<div style="font-size:0.68rem;color:#94a3b8;margin-top:-0.5rem;margin-bottom:0.8rem;">'
         '📈 Arrastra para hacer zoom · Doble clic para restablecer · Usa los botones 1M/3M/6M/1A '
         'para cambiar el rango · Pasa el cursor para ver fecha y precio exactos</div>',
+        unsafe_allow_html=True
+    )
+
+
+# ─── Gráfico de MACD (línea MACD, línea de señal, histograma, línea cero) ────
+
+def _render_macd_chart(tech: dict):
+    """
+    Gráfico de MACD bajo el de cotización: histograma de barras (verde/rojo
+    según signo) más las líneas MACD y Señal superpuestas, y una línea cero
+    de referencia. Comparte el mismo tramo temporal que el gráfico de precio.
+    """
+    macd_history = tech.get("macd_history", [])
+    if not macd_history:
+        return
+
+    dates   = [h["date"]   for h in macd_history]
+    macds   = [h["macd"]   for h in macd_history]
+    signals = [h["signal"] for h in macd_history]
+    hists   = [h["hist"]   for h in macd_history]
+    hist_colors = ["#059669" if v >= 0 else "#dc2626" for v in hists]
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        x=dates, y=hists, name="Histograma",
+        marker=dict(color=hist_colors),
+        hovertemplate="<b>%{x}</b><br>Histograma: %{y:.3f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=dates, y=macds, mode="lines", name="MACD",
+        line=dict(color="#0284c7", width=1.6),
+        hovertemplate="<b>%{x}</b><br>MACD: %{y:.3f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=dates, y=signals, mode="lines", name="Señal",
+        line=dict(color="#d97706", width=1.6),
+        hovertemplate="<b>%{x}</b><br>Señal: %{y:.3f}<extra></extra>",
+    ))
+    fig.add_hline(y=0, line=dict(color="#94a3b8", width=1, dash="dot"))
+
+    fig.update_layout(
+        height=200,
+        margin=dict(l=10, r=10, t=24, b=10),
+        plot_bgcolor="#ffffff",
+        paper_bgcolor="#ffffff",
+        font=dict(family="Inter, sans-serif", size=12, color="#1e293b"),
+        hovermode="x unified",
+        bargap=0,
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0,
+                    font=dict(size=11)),
+        xaxis=dict(showgrid=False, showline=True, linecolor="#e2e8f0"),
+        yaxis=dict(showgrid=True, gridcolor="#f1f5f9", showline=True, linecolor="#e2e8f0"),
+    )
+
+    st.plotly_chart(fig, use_container_width=True, config={
+        "displayModeBar": False,
+        "scrollZoom": False,
+    })
+    st.markdown(
+        '<div style="font-size:0.68rem;color:#94a3b8;margin-top:-0.5rem;margin-bottom:0.8rem;">'
+        '📊 MACD (azul) y Señal (naranja) con su Histograma — cruces de las líneas y cambios de signo '
+        'del histograma anticipan giros de tendencia</div>',
         unsafe_allow_html=True
     )
 
@@ -2115,6 +2178,71 @@ def _evaluate(y: dict, bh: dict | None = None, mult_data: dict | None = None) ->
     }
 
 
+def fetch_peer_full_data(peers: list) -> list:
+    """
+    Versión ampliada de fetch_peer_data: ejecuta el mismo pipeline de
+    evaluación completo que se usa para la empresa principal (balance
+    histórico, múltiplos propios, Salud Fundamental, Piotroski, Valor
+    Objetivo, Señal de Entrada y Veredicto Final) para cada competidor.
+
+    Es notablemente más lento que fetch_peer_data (varias llamadas a Yahoo
+    Finance por competidor), por eso se ofrece como opción explícita en el
+    comparador en vez de ser el comportamiento por defecto.
+    """
+    results = []
+    for ticker in peers:
+        try:
+            y_p = fetch_yahoo_data(ticker)
+            if not y_p or not y_p.get("price"):
+                continue
+            tech_p = fetch_technical_data(ticker)
+            bh_p   = fetch_balance_sheet_history(ticker)
+
+            profile_p, _ = _get_sector_profile(y_p.get("sector", ""))
+            mult_data_p  = fetch_historical_multiples(
+                ticker, y_p, sector_pe_fair=profile_p["pe_fair"]
+            )
+            ev_p     = _evaluate(y_p, bh_p, mult_data_p)
+            signal_p = calc_entry_signal(y_p, tech_p, ev_p)
+            vf_p     = calc_valoracion_final(ev_p, signal_p)
+            desc_p   = fetch_company_description(ticker)
+
+            pio_p = ev_p.get("piotroski", {})
+            pio_str = (f"{pio_p['score']}/{pio_p['n_evaluable']}"
+                       if pio_p.get("n_evaluable", 0) > 0 else "N/A")
+
+            results.append({
+                "ticker":       ticker,
+                "name":         (y_p.get("company_name") or ticker)[:22],
+                "price":        y_p.get("price"),
+                "pe_forward":   y_p.get("pe_forward"),
+                "peg":          y_p.get("peg_ratio"),
+                "ev_ebitda":    y_p.get("ev_ebitda"),
+                "profit_m":     (y_p.get("profit_margin") or 0) * 100,
+                "roe":          (y_p.get("roe") or 0) * 100,
+                "rev_growth":   y_p.get("revenue_yoy"),
+                "market_cap":   y_p.get("market_cap"),
+                # ── Métricas ampliadas ──────────────────────────────────
+                "fcf_quality":  desc_p.get("fcf_quality") if desc_p else None,
+                "pe_trailing":  y_p.get("pe_trailing"),
+                "pe_sector":    ev_p.get("pe_ref"),
+                "pe_historico": mult_data_p.get("per_mean") if mult_data_p else None,
+                "health_score": ev_p.get("health_score"),
+                "piotroski_str": pio_str,
+                "fair_value":   ev_p.get("fair_value"),
+                "diag":         ev_p.get("diag"),
+                "diag_color":   ev_p.get("diag_color"),
+                "signal_level": signal_p.get("level"),
+                "signal_color": signal_p.get("color"),
+                "vf_level":     vf_p.get("level"),
+                "vf_color":     vf_p.get("color"),
+                "vf_icon":      vf_p.get("icon"),
+            })
+        except Exception:
+            continue
+    return results
+
+
 
 
 # ─── Render principal ─────────────────────────────────────────────────────────
@@ -2634,6 +2762,7 @@ def render_report(ticker, company_name, y: dict,
 
     if tech and not tech.get("error"):
         _render_price_chart(tech, ticker, currency_y, entry_exit_plan)
+        _render_macd_chart(tech)
 
         # ── Métricas base de cotización: Precio Actual, 52W High/Low, Beta ──
         html_top  = _kv("Precio Actual", _fmt_price(y.get("price"), currency_y, fx_rate))
@@ -3250,13 +3379,25 @@ def render_report(ticker, company_name, y: dict,
     # COMPARATIVA FRENTE A COMPETENCIA
     # ════════════════════════════════════════════════════════════════════
     peers_tickers = get_manual_competitors(ticker)
+    peers_data = []
+    peers_full = False
     if peers_tickers:
-        with st.spinner("Cargando datos de competidores…"):
-            peers_data = fetch_peer_data(peers_tickers)
-    else:
-        peers_data = []
+        peers_full = st.toggle(
+            "📊 Incluir métricas avanzadas en el comparador (Calidad del beneficio, PER actual/sector/"
+            "histórico, Salud Fundamental, Piotroski F-Score, Valor Objetivo, Diagnóstico General, "
+            "Señal de Entrada y Veredicto Final de cada competidor) — más lento",
+            value=st.session_state.get(f"peers_full_{ticker}", False),
+            key=f"peers_full_{ticker}",
+        )
+        spinner_msg = ("Analizando a fondo cada competidor (puede tardar varios segundos)…"
+                        if peers_full else "Cargando datos de competidores…")
+        with st.spinner(spinner_msg):
+            peers_data = (fetch_peer_full_data(peers_tickers) if peers_full
+                          else fetch_peer_data(peers_tickers))
 
-    render_peers(ticker, y, peers_data, fx_rate, ev)
+    render_peers(ticker, y, peers_data, fx_rate, ev, peers_full=peers_full,
+                 signal=signal, vf=vf, mult_data=mult_data,
+                 fcf_quality=company_info.get("fcf_quality") if company_info else None)
 
     # ════════════════════════════════════════════════════════════════════
     # EXPORTAR ANÁLISIS A PDF

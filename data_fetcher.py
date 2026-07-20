@@ -623,6 +623,27 @@ def fetch_technical_data(ticker: str) -> dict:
                           if mm200_series is not None and not mm200_series.isna().iloc[i] else None),
             })
 
+        # ── Serie histórica de MACD/Señal/Histograma para el gráfico ─────
+        # Se recalcula sobre closes_full (2 años) para que el EMA(26) tenga
+        # margen suficiente, y se recorta al mismo tramo que price_history
+        # (~1 año) para que ambos gráficos compartan el mismo eje temporal.
+        ema12_full       = closes_full.ewm(span=12, adjust=False).mean()
+        ema26_full       = closes_full.ewm(span=26, adjust=False).mean()
+        macd_line_full   = ema12_full - ema26_full
+        signal_line_full = macd_line_full.ewm(span=9, adjust=False).mean()
+        hist_line_full   = macd_line_full - signal_line_full
+
+        macd_history = []
+        for i in range(display_start, len(closes_full)):
+            d = hist_full.index[i]
+            date_str = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+            macd_history.append({
+                "date":   date_str,
+                "macd":   round(float(macd_line_full.iloc[i]), 4),
+                "signal": round(float(signal_line_full.iloc[i]), 4),
+                "hist":   round(float(hist_line_full.iloc[i]), 4),
+            })
+
         return {
             "price":        price,
             "rsi":          rsi,
@@ -638,6 +659,7 @@ def fetch_technical_data(ticker: str) -> dict:
             "dist_mm200":   dist_mm200,
             "cross_signal": cross_signal,
             "price_history":price_history,
+            "macd_history": macd_history,
             "macd":         macd_data,
             "adx":          adx_val,
             "obv":          obv_data,
