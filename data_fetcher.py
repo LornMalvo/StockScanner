@@ -661,6 +661,30 @@ def fetch_technical_data(ticker: str) -> dict:
 # YAHOO FINANCE
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _calc_dividend_frequency(t) -> str | None:
+    """
+    Estima la periodicidad del dividendo contando cuántos pagos ha habido
+    en los últimos ~400 días (margen sobre 1 año para no perder un pago
+    por desfase de calendario). No usa un campo directo de Yahoo porque
+    no expone la periodicidad de forma fiable para todos los tickers.
+    """
+    try:
+        divs = t.dividends
+        if divs is None or divs.empty:
+            return None
+        last_ts = divs.index[-1]
+        cutoff  = last_ts - pd.Timedelta(days=400)
+        recent  = divs[divs.index >= cutoff]
+        n = len(recent)
+        if n >= 10: return "Mensual"
+        if n >= 3:  return "Trimestral"
+        if n == 2:  return "Semestral"
+        if n == 1:  return "Anual"
+        return None
+    except Exception:
+        return None
+
+
 def fetch_yahoo_data(ticker: str) -> dict | None:
     """Datos fundamentales de Yahoo Finance con metadatos de frescura y fiabilidad."""
     try:
@@ -876,8 +900,10 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
             "ni_date_prev":   ni_date_prev,
 
             # Dividendos
-            "dividend_yield": _dy_norm,
-            "dividend_rate":  info.get("dividendRate"),
+            "dividend_yield":     _dy_norm,
+            "dividend_rate":      info.get("dividendRate"),
+            "ex_dividend_date":   info.get("exDividendDate"),
+            "dividend_frequency": _calc_dividend_frequency(t),
 
             # Otros
             "short_ratio":            info.get("shortRatio"),

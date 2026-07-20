@@ -1450,11 +1450,13 @@ def render_company_description(company_info: dict, company_name: str):
             '<0 = FCF negativo (la empresa consume más caja de la que genera). '
             'Un ratio persistentemente bajo puede indicar contabilidad agresiva.'
         )
+        tip_fcf_safe = tip_fcf_q.replace('"', '&quot;').replace("'", "&#39;")
         tip_html = (
-            f'<span title="{tip_fcf_q}" style="margin-left:0.3rem;cursor:help;'
-            f'font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
-            f'border-radius:50%;padding:0 3px;font-family:monospace;'
-            f'vertical-align:middle;">?</span>'
+            '<span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;vertical-align:middle;">'
+            '<span style="font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
+            'border-radius:50%;padding:0 3px;font-family:monospace;">?</span>'
+            f'<span class="tooltip-box">{tip_fcf_safe}</span>'
+            '</span>'
         )
         fcf_html = (
             f'<div style="margin-top:0.7rem;padding:0.5rem 0.7rem;background:#f4f6f9;border-radius:6px;'

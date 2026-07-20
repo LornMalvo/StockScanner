@@ -179,13 +179,13 @@ with tab_analisis:
         with col_hdr1:
             st.markdown(f"""
             <div style="margin:1rem 0 0.5rem 0;">
-              <span style="font-family:'IBM Plex Mono',monospace;font-size:0.8rem;color:#0284c7;">TICKER ANALIZADO</span><br>
-              <span style="font-size:1.15rem;font-weight:600;color:#0f172a;">{ticker} → {company_name}</span>
-              <span style="font-size:0.8rem;color:#64748b;margin-left:0.6rem;">{sector_name}</span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:0.85rem;color:#0284c7;">TICKER ANALIZADO</span><br>
+              <span style="font-size:1.9rem;font-weight:700;color:#0f172a;">{ticker} → {company_name}</span>
+              <span style="font-size:1.05rem;color:#64748b;margin-left:0.7rem;">{sector_name}</span>
             </div>
             """, unsafe_allow_html=True)
         with col_hdr2:
-            st.markdown('<div style="margin-top:1.1rem;"></div>', unsafe_allow_html=True)
+            st.markdown('<div style="margin-top:1.4rem;"></div>', unsafe_allow_html=True)
             render_favorite_star(ticker, company_name, sector_name)
 
         render_report(ticker, company_name, yahoo_data, fx_rate, tech_data, fx_meta)

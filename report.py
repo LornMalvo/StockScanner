@@ -95,17 +95,18 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_ex
 
     fig.update_layout(
         height=380,
-        margin=dict(l=10, r=10, t=10, b=10),
+        margin=dict(l=10, r=10, t=32, b=10),
         plot_bgcolor="#ffffff",
         paper_bgcolor="#ffffff",
         font=dict(family="Inter, sans-serif", size=12, color="#1e293b"),
         hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0,
+        legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0.34,
                     font=dict(size=11)),
         xaxis=dict(
             showgrid=False, showline=True, linecolor="#e2e8f0",
             rangeslider=dict(visible=False),
             rangeselector=dict(
+                x=0, y=1.10, xanchor="left", yanchor="bottom",
                 buttons=[
                     dict(count=1, label="1M", step="month", stepmode="backward"),
                     dict(count=3, label="3M", step="month", stepmode="backward"),
@@ -260,7 +261,57 @@ TOOLTIPS = {
     "Distancia MM200":    "% de diferencia entre el precio actual y la MM200. Por debajo = zona de soporte histórico relevante.",
     "Señal MM200":        "Interpretación direccional respecto a la MM200. Alcista si el precio está por encima.",
     "Cruce MM50/MM200":   "Golden Cross (MM50 > MM200) = señal alcista histórica. Death Cross (MM50 < MM200) = señal bajista. Son señales de largo plazo.",
+
+    "Próximo pago (fecha ex-dividendo)": "Fecha ex-dividendo: hay que poseer la acción ANTES de este día para tener derecho al próximo pago. Fuente: Yahoo Finance; puede no estar confirmada oficialmente hasta que se acerque la fecha.",
+    "Periodicidad":       "Frecuencia estimada de pago del dividendo, calculada contando cuántos pagos ha habido en los últimos ~400 días (10+ = mensual, 3-9 = trimestral, 2 = semestral, 1 = anual).",
+
+    "Histograma":         "Diferencia entre el MACD y su línea de señal EMA(9). Positivo y creciente = momentum alcista ganando fuerza. Negativo y decreciente = momentum bajista perdiendo fuerza. El cambio de signo suele anticipar el cruce MACD/señal.",
+    "Señal MACD":         "Interpretación combinada del MACD: cruce alcista/bajista (el MACD cruza su línea de señal) o divergencia alcista (el precio cae pero el histograma sube, señal de agotamiento del impulso bajista).",
+    "Precio 20 días":     "Variación porcentual del precio en las últimas 20 sesiones. Se usa junto al OBV para contrastar si el movimiento reciente de precio está respaldado por volumen real (acumulación/distribución) o es un movimiento sin convicción.",
 }
+
+# Tooltips específicos del Piotroski F-Score (por nombre de criterio)
+PIOTROSKI_TOOLTIPS = {
+    "ROA positivo": "Return on Assets > 0. Mide si la empresa genera beneficio con los activos que tiene, sin entrar en si mejora o empeora año a año.",
+    "Cash Flow Operativo positivo": "El negocio genera caja real desde sus operaciones (antes de inversiones), no solo beneficio contable.",
+    "ROA mejora vs año anterior": "El ROA del año actual es superior al del año anterior — la eficiencia sobre activos está mejorando, no deteriorándose.",
+    "Calidad beneficio (CFO > Beneficio Neto)": "El flujo de caja operativo supera al beneficio contable — señal de que el beneficio declarado es \"caja real\" y no está inflado por partidas no monetarias.",
+    "Apalancamiento reducido": "La deuda a largo plazo respecto a los activos totales ha bajado frente al año anterior — la empresa depende menos de la deuda para financiarse.",
+    "Liquidez mejora": "El Current Ratio (activo corriente / pasivo corriente) del año actual es mayor que el del año anterior — más capacidad de afrontar pagos a corto plazo.",
+    "Sin dilución": "Las acciones en circulación no han aumentado más de un 2% — la empresa no está diluyendo a los accionistas actuales emitiendo acciones nuevas.",
+    "Margen bruto mejora": "El margen bruto (Ingresos − Coste de ventas) del año actual supera al del año anterior — mejor poder de fijación de precios o control de costes.",
+    "Rotación de activos mejora": "Ingresos / Activos totales del año actual supera al del año anterior — la empresa genera más ventas con los mismos activos, señal de mayor eficiencia operativa.",
+}
+
+# Tooltips específicos del desglose de Salud Fundamental (por prefijo del texto)
+HEALTH_TOOLTIPS = {
+    "Margen Neto":         "Beneficio neto / ingresos totales. Mide cuánto de cada euro/dólar de venta se queda como beneficio final.",
+    "ROE":                 "Beneficio neto / patrimonio neto. Eficiencia del capital propio de los accionistas.",
+    "ROIC":                "Return on Invested Capital: beneficio operativo después de impuestos / capital invertido (deuda + patrimonio). Más estricto que el ROE porque incluye toda la financiación, no solo el capital propio.",
+    "Crecimiento ingresos": "Crecimiento de ingresos año sobre año, ponderado por estabilidad (crecimiento errático puntúa menos que crecimiento sostenido aunque el % sea igual).",
+    "PEG":                 "PER / crecimiento esperado de beneficios. Un PEG bajo indica que el precio no está pagando en exceso por el crecimiento futuro.",
+    "Free Cash Flow":      "Caja generada por el negocio tras invertir en mantener/expandir sus operaciones (capex). FCF positivo = negocio autosuficiente.",
+    "Current Ratio":       "Activo corriente / pasivo corriente. Capacidad de pagar obligaciones a corto plazo.",
+    "Quick Ratio":         "Como el Current Ratio pero excluyendo inventario — más estricto, mide liquidez inmediata real.",
+    "Debt/Equity":         "Deuda total / patrimonio neto. Cuánta deuda usa la empresa relativa a su capital propio.",
+    "Net Debt / EBITDA":   "Deuda neta (deuda − caja) / EBITDA. Mide la deuda contra la capacidad real de generar beneficio operativo para pagarla — el ratio que usan los analistas de crédito.",
+    "Dilución":            "Variación de las acciones en circulación frente al año anterior. Más acciones nuevas = cada acción existente vale una porción menor de la empresa.",
+    "Calidad beneficio FCF/NI": "Free Cash Flow / Beneficio Neto anual. Mide si el beneficio contable se traduce en caja real o si es en parte producto de ajustes contables no monetarios.",
+}
+
+
+def _generic_tip(text: str) -> str:
+    """Icono '?' con tooltip para textos que no pasan por _kv (ej. Piotroski, Salud Fundamental)."""
+    if not text:
+        return ""
+    safe = text.replace('"', '&quot;').replace("'", "&#39;")
+    return (
+        '<span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;">'
+        '<span style="font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
+        'border-radius:50%;padding:0 3px;font-family:monospace;">?</span>'
+        f'<span class="tooltip-box">{safe}</span>'
+        '</span>'
+    )
 
 def _kv(label, value, color_class="row-val"):
     """Fila clave-valor con tooltip opcional al pasar el cursor."""
@@ -2270,17 +2321,24 @@ def render_report(ticker, company_name, y: dict,
         html += _kv("Operating Cash Flow", _fmt_big(y.get("operating_cf"),     "$", fx_rate))
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
-        # J · Dividendos y otros
-        _section("DIVIDENDOS Y OTROS &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
+        # J · Dividendos
+        _section("DIVIDENDOS &nbsp;<span style='font-size:0.7rem;'>🟡 Yahoo Finance</span>")
         dy   = y.get("dividend_yield")
         html  = _kv("Dividend Yield",
             _fmt_num((dy or 0)*100,2,suffix="%") if dy else "N/A")
         html += _kv("Dividend Rate",
             _fmt_price(y.get("dividend_rate"),currency_y,fx_rate) if y.get("dividend_rate") else "N/A")
-        html += _kv("Short Ratio",  _fmt_num(y.get("short_ratio"),2))
-        html += _kv("Beta",         _fmt_num(y.get("beta"),2))
-        html += _kv("52W High",     _fmt_price(y.get("52w_high"), currency_y, fx_rate))
-        html += _kv("52W Low",      _fmt_price(y.get("52w_low"),  currency_y, fx_rate))
+
+        ex_div_ts = y.get("ex_dividend_date")
+        ex_div_str = "N/A"
+        if ex_div_ts:
+            try:
+                from datetime import datetime, timezone
+                ex_div_str = datetime.fromtimestamp(ex_div_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+            except Exception:
+                ex_div_str = "N/A"
+        html += _kv("Próximo pago (fecha ex-dividendo)", ex_div_str)
+        html += _kv("Periodicidad", y.get("dividend_frequency") or "N/A")
         st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
 
     # ════════════════════════════════════════════════════════════════════
@@ -2577,6 +2635,13 @@ def render_report(ticker, company_name, y: dict,
     if tech and not tech.get("error"):
         _render_price_chart(tech, ticker, currency_y, entry_exit_plan)
 
+        # ── Métricas base de cotización: Precio Actual, 52W High/Low, Beta ──
+        html_top  = _kv("Precio Actual", _fmt_price(y.get("price"), currency_y, fx_rate))
+        html_top += _kv("52W High",      _fmt_price(y.get("52w_high"), currency_y, fx_rate))
+        html_top += _kv("52W Low",       _fmt_price(y.get("52w_low"),  currency_y, fx_rate))
+        html_top += _kv("Beta",          _fmt_num(y.get("beta"), 2))
+        st.markdown(f'<div class="metric-card">{html_top}</div>', unsafe_allow_html=True)
+
         col_t1, col_t2 = st.columns(2)
 
         with col_t1:
@@ -2860,10 +2925,18 @@ def render_report(ticker, company_name, y: dict,
 
     # Salud fundamental
     bar_col_h = "#059669" if health_score>=70 else "#d97706" if health_score>=45 else "#dc2626"
-    bd_html = "".join(
-        f'<div style="font-size:0.75rem;color:{b_color};padding:0.25rem 0;border-bottom:1px solid #eef1f5;">▸ {b_text}</div>'
-        for b_text, b_color in ev["health_breakdown"]
-    )
+
+    def _health_line(b_text, b_color):
+        tip_txt = ""
+        for prefix, tip in HEALTH_TOOLTIPS.items():
+            if b_text.lstrip("⚠ ").startswith(prefix):
+                tip_txt = tip
+                break
+        tip_html_bd = _generic_tip(tip_txt)
+        return (f'<div style="font-size:0.75rem;color:{b_color};padding:0.25rem 0;'
+                f'border-bottom:1px solid #eef1f5;">▸ {b_text}{tip_html_bd}</div>')
+
+    bd_html = "".join(_health_line(b_text, b_color) for b_text, b_color in ev["health_breakdown"])
     fcf_quality_note = (
         '<div style="margin-top:0.8rem;padding:0.6rem 0.8rem;background:#f4f6f9;border-left:3px solid #94a3b8;'
         'border-radius:4px;font-size:0.72rem;color:#475569;line-height:1.65;">'
@@ -2904,6 +2977,8 @@ def render_report(ticker, company_name, y: dict,
     if pio.get("n_evaluable", 0) > 0:
         pio_rows = ""
         for name, status, detail in pio["criteria"]:
+            tip_txt_pio = PIOTROSKI_TOOLTIPS.get(name, "")
+            tip_html_pio = _generic_tip(tip_txt_pio)
             if status is None:
                 icon, color = "⚪", "#94a3b8"
                 status_txt  = "No evaluable"
@@ -2916,7 +2991,7 @@ def render_report(ticker, company_name, y: dict,
             pio_rows += (
                 f'<div style="display:flex;justify-content:space-between;align-items:center;'
                 f'padding:0.35rem 0;border-bottom:1px solid #eef1f5;font-size:0.78rem;">'
-                f'<span style="color:#334155;">{icon} {name}</span>'
+                f'<span style="color:#334155;">{icon} {name}{tip_html_pio}</span>'
                 f'<span style="color:{color};font-weight:600;text-align:right;">{status_txt}</span>'
                 f'</div>'
                 f'<div style="font-size:0.68rem;color:#94a3b8;padding:0 0 0.4rem 1.2rem;">{detail}</div>'
