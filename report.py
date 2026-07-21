@@ -3221,7 +3221,8 @@ def render_report(ticker, company_name, y: dict,
     # actualiza el campo informativo "PER justo sector" con el valor YA
     # ajustado por tipos de interés (ev.get("pe_ref")), sin volver a pedir
     # datos a Yahoo.
-    mult_data["sector_pe_fair"] = ev.get("pe_ref")
+    if mult_data:
+        mult_data["sector_pe_fair"] = ev.get("pe_ref")
     render_historical_multiples(mult_data)
 
     # ════════════════════════════════════════════════════════════════════
