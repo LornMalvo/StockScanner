@@ -7,7 +7,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import yfinance as yf
 import statistics
-from data_fetcher import fetch_balance_sheet_history, fetch_yahoo_data, fetch_technical_data
+from data_fetcher import fetch_balance_sheet_history
 from analysis import (
     calc_entry_signal, calc_trend, fetch_peer_data, get_manual_competitors,
     render_entry_signal, render_trend, render_peers,
@@ -133,83 +133,6 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_ex
         '<div style="font-size:0.68rem;color:#94a3b8;margin-top:-0.5rem;margin-bottom:0.8rem;">'
         '📈 Arrastra para hacer zoom · Doble clic para restablecer · Usa los botones 1M/3M/6M/1A '
         'para cambiar el rango · Pasa el cursor para ver fecha y precio exactos</div>',
-        unsafe_allow_html=True
-    )
-
-
-# ─── Gráfico de MACD (línea MACD, línea de señal, histograma, línea cero) ────
-
-def _render_macd_chart(tech: dict):
-    """
-    Gráfico de MACD bajo el de cotización: histograma de barras (verde/rojo
-    según signo) más las líneas MACD y Señal superpuestas, y una línea cero
-    de referencia. Comparte el mismo tramo temporal que el gráfico de precio.
-    """
-    macd_history = tech.get("macd_history", [])
-    if not macd_history:
-        return
-
-    dates   = [h["date"]   for h in macd_history]
-    macds   = [h["macd"]   for h in macd_history]
-    signals = [h["signal"] for h in macd_history]
-    hists   = [h["hist"]   for h in macd_history]
-    hist_colors = ["#059669" if v >= 0 else "#dc2626" for v in hists]
-
-    fig = go.Figure()
-
-    fig.add_trace(go.Bar(
-        x=dates, y=hists, name="Histograma",
-        marker=dict(color=hist_colors),
-        hovertemplate="<b>%{x}</b><br>Histograma: %{y:.3f}<extra></extra>",
-    ))
-    fig.add_trace(go.Scatter(
-        x=dates, y=macds, mode="lines", name="MACD",
-        line=dict(color="#0284c7", width=1.6),
-        hovertemplate="<b>%{x}</b><br>MACD: %{y:.3f}<extra></extra>",
-    ))
-    fig.add_trace(go.Scatter(
-        x=dates, y=signals, mode="lines", name="Señal",
-        line=dict(color="#d97706", width=1.6),
-        hovertemplate="<b>%{x}</b><br>Señal: %{y:.3f}<extra></extra>",
-    ))
-    fig.add_hline(y=0, line=dict(color="#94a3b8", width=1, dash="dot"))
-
-    fig.update_layout(
-        height=200,
-        margin=dict(l=10, r=10, t=44, b=10),
-        plot_bgcolor="#ffffff",
-        paper_bgcolor="#ffffff",
-        font=dict(family="Inter, sans-serif", size=12, color="#1e293b"),
-        hovermode="x unified",
-        bargap=0,
-        legend=dict(orientation="h", yanchor="bottom", y=1.22, xanchor="left", x=0.34,
-                    font=dict(size=11)),
-        xaxis=dict(
-            showgrid=False, showline=True, linecolor="#e2e8f0",
-            rangeslider=dict(visible=False),
-            rangeselector=dict(
-                x=0, y=1.22, xanchor="left", yanchor="bottom",
-                buttons=[
-                    dict(count=1, label="1M", step="month", stepmode="backward"),
-                    dict(count=3, label="3M", step="month", stepmode="backward"),
-                    dict(count=6, label="6M", step="month", stepmode="backward"),
-                    dict(step="all", label="1A"),
-                ],
-                bgcolor="#f4f6f9", activecolor="#dbeafe",
-                font=dict(size=10, color="#334155"),
-            ),
-        ),
-        yaxis=dict(showgrid=True, gridcolor="#f1f5f9", showline=True, linecolor="#e2e8f0"),
-    )
-
-    st.plotly_chart(fig, use_container_width=True, config={
-        "displayModeBar": False,
-        "scrollZoom": False,
-    })
-    st.markdown(
-        '<div style="font-size:0.68rem;color:#94a3b8;margin-top:-0.5rem;margin-bottom:0.8rem;">'
-        '📊 MACD (azul) y Señal (naranja) con su Histograma — cruces de las líneas y cambios de signo '
-        'del histograma anticipan giros de tendencia</div>',
         unsafe_allow_html=True
     )
 
@@ -1607,12 +1530,16 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
         if (levels[-1][1] - lvl) / levels[-1][1] >= MIN_GAP:
             levels.append((label, lvl))
 
-    # Si no hay suficientes niveles distintos, completar con % fijos del
-    # precio actual como aproximación razonable (mejor un plan con 3 niveles
-    # aproximados que uno incompleto)
+    # Si no hay suficientes niveles distintos, completar con aproximaciones
+    # calculadas SIEMPRE en descenso respecto al último nivel ya añadido
+    # (no como % fijo del precio actual, que podía dejar una aproximación
+    # por ENCIMA de un nivel real más profundo ya presente en la lista,
+    # rompiendo el orden descendente del plan de entrada)
+    FALLBACK_STEP = 0.06  # 6% por debajo del nivel anterior en cada relleno
     while len(levels) < 3:
-        fallback_pct = [0.97, 0.92, 0.85][len(levels)]
-        levels.append((f"Aproximación (-{(1-fallback_pct)*100:.0f}%)", price * fallback_pct))
+        ref_label, ref_price = levels[-1]
+        fallback_price = ref_price * (1 - FALLBACK_STEP)
+        levels.append((f"Aproximación (-{FALLBACK_STEP*100:.0f}% desde nivel anterior)", fallback_price))
 
     entry_plan = [
         {"label": lbl, "price": round(lvl, 2), "capital_pct": splits[i]}
@@ -2192,63 +2119,6 @@ def _evaluate(y: dict, bh: dict | None = None, mult_data: dict | None = None) ->
     }
 
 
-def fetch_peer_full_data(peers: list) -> list:
-    """
-    Versión ampliada de fetch_peer_data: ejecuta el mismo pipeline de
-    evaluación completo que se usa para la empresa principal (balance
-    histórico, múltiplos propios, Salud Fundamental, Piotroski, Valor
-    Objetivo, Señal de Entrada y Veredicto Final) para cada competidor.
-
-    Es notablemente más lento que fetch_peer_data (varias llamadas a Yahoo
-    Finance por competidor), por eso se ofrece como opción explícita en el
-    comparador en vez de ser el comportamiento por defecto.
-    """
-    results = []
-    for ticker in peers:
-        try:
-            y_p = fetch_yahoo_data(ticker)
-            if not y_p or not y_p.get("price"):
-                continue
-            tech_p = fetch_technical_data(ticker)
-            bh_p   = fetch_balance_sheet_history(ticker)
-
-            profile_p, _ = _get_sector_profile(y_p.get("sector", ""))
-            mult_data_p  = fetch_historical_multiples(
-                ticker, y_p, sector_pe_fair=profile_p["pe_fair"]
-            )
-            ev_p     = _evaluate(y_p, bh_p, mult_data_p)
-            signal_p = calc_entry_signal(y_p, tech_p, ev_p)
-            vf_p     = calc_valoracion_final(ev_p, signal_p)
-            desc_p   = fetch_company_description(ticker)
-
-            pio_p = ev_p.get("piotroski", {})
-            pio_str = (f"{pio_p['score']}/{pio_p['n_evaluable']}"
-                       if pio_p.get("n_evaluable", 0) > 0 else "N/A")
-
-            results.append({
-                **y_p,
-                "ticker": ticker,
-                "name":   (y_p.get("company_name") or ticker)[:22],
-                # ── Métricas ampliadas ──────────────────────────────────
-                "fcf_quality":   desc_p.get("fcf_quality") if desc_p else None,
-                "pe_sector":     ev_p.get("pe_ref"),
-                "pe_historico":  mult_data_p.get("per_mean") if mult_data_p else None,
-                "health_score":  ev_p.get("health_score"),
-                "piotroski_str": pio_str,
-                "fair_value":    ev_p.get("fair_value"),
-                "diag":          ev_p.get("diag"),
-                "diag_color":    ev_p.get("diag_color"),
-                "signal_level":  signal_p.get("level"),
-                "signal_color":  signal_p.get("color"),
-                "vf_level":      vf_p.get("level"),
-                "vf_color":      vf_p.get("color"),
-                "vf_icon":       vf_p.get("icon"),
-            })
-        except Exception:
-            continue
-    return results
-
-
 
 
 # ─── Render principal ─────────────────────────────────────────────────────────
@@ -2768,7 +2638,6 @@ def render_report(ticker, company_name, y: dict,
 
     if tech and not tech.get("error"):
         _render_price_chart(tech, ticker, currency_y, entry_exit_plan)
-        _render_macd_chart(tech)
 
         # ── Métricas base de cotización: Precio Actual, 52W High/Low, Beta ──
         html_top  = _kv("Precio Actual", _fmt_price(y.get("price"), currency_y, fx_rate))
@@ -2776,31 +2645,6 @@ def render_report(ticker, company_name, y: dict,
         html_top += _kv("52W Low",       _fmt_price(y.get("52w_low"),  currency_y, fx_rate))
         html_top += _kv("Beta",          _fmt_num(y.get("beta"), 2))
         st.markdown(f'<div class="metric-card">{html_top}</div>', unsafe_allow_html=True)
-
-        # ── Nuevos indicadores: MACD, ADX, OBV, Fibonacci (extraídos antes
-        # para poder pintar el bloque MACD/ADX junto al de RSI, en vez de
-        # dejarlo una fila más abajo con un hueco visual bajo el RSI) ─────
-        macd_d = tech.get("macd")
-        adx_v  = tech.get("adx")
-        obv_d  = tech.get("obv")
-        fib_d  = tech.get("fibonacci")
-        support_d = tech.get("historical_support")
-
-        def _tip(text):
-            # ANTES usaba el atributo HTML nativo title="..." — funciona con
-            # el ratón en escritorio, pero NO tiene ningún mecanismo de
-            # activación en pantallas táctiles (no existe "hover" al tocar).
-            # Se reescribe para reutilizar el sistema .tooltip-wrap /
-            # .tooltip-box (CSS :hover ya definido en app.py), que sí
-            # responde a un toque en la mayoría de navegadores móviles.
-            safe = text.replace('"', '&quot;').replace("'", "&#39;")
-            return (
-                '<span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;">'
-                '<span style="font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
-                'border-radius:50%;padding:0 3px;font-family:monospace;">?</span>'
-                f'<span class="tooltip-box">{text}</span>'
-                '</span>'
-            )
 
         col_t1, col_t2 = st.columns(2)
 
@@ -2831,27 +2675,6 @@ def render_report(ticker, company_name, y: dict,
             )
 
         with col_t2:
-            html2 = ""
-            if macd_d:
-                macd_sig = ("Cruce alcista" if macd_d["bullish_cross"] else
-                            "Divergencia alcista" if macd_d["bullish_divergence"] else
-                            "Cruce bajista" if macd_d["bearish_cross"] else "Sin señal de giro")
-                macd_col = "green" if (macd_d["bullish_cross"] or macd_d["bullish_divergence"]) else \
-                           "red" if macd_d["bearish_cross"] else ""
-                html2 += _kv(f"MACD{_tip('EMA(12)-EMA(26). El histograma mide la distancia entre el MACD y su línea de señal EMA(9). Un cruce alcista o una divergencia (precio cae, histograma sube) sugiere que el impulso bajista se agota.')}",
-                    f'{macd_d["macd"]:.3f}', "row-val")
-                html2 += _kv("Histograma", f'{macd_d["histogram"]:+.3f}',
-                    "row-val green" if macd_d["histogram"] >= 0 else "row-val red")
-                html2 += _kv("Señal MACD", macd_sig, f"row-val {macd_col}")
-            if adx_v is not None:
-                adx_lbl = "Tendencia fuerte" if adx_v > 25 else "Tendencia débil / lateral"
-                html2 += _kv(f"ADX (14){_tip('Average Directional Index: mide la FUERZA de la tendencia, no su dirección. >25 = tendencia fuerte (alcista o bajista). <20 = mercado sin tendencia clara. Se usa para bloquear Entrada Ideal si hay tendencia bajista fuerte confirmada.')}",
-                    f'{adx_v:.1f} ({adx_lbl})', "row-val")
-            if html2:
-                st.markdown(f'<div class="metric-card">{html2}</div>', unsafe_allow_html=True)
-
-        col_t3, col_t4 = st.columns(2)
-        with col_t3:
             mm50      = tech.get("mm50")
             mm200     = tech.get("mm200")
             d50       = tech.get("dist_mm50")
@@ -2881,6 +2704,50 @@ def render_report(ticker, company_name, y: dict,
                     f'{last_cross["type"]} — {last_cross["date"]}', f"row-val {lc_color}")
 
             st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
+
+        # ── Nuevos indicadores: MACD, ADX, OBV, Fibonacci ────────────────
+        macd_d = tech.get("macd")
+        adx_v  = tech.get("adx")
+        obv_d  = tech.get("obv")
+        fib_d  = tech.get("fibonacci")
+        support_d = tech.get("historical_support")
+
+        def _tip(text):
+            # ANTES usaba el atributo HTML nativo title="..." — funciona con
+            # el ratón en escritorio, pero NO tiene ningún mecanismo de
+            # activación en pantallas táctiles (no existe "hover" al tocar).
+            # Se reescribe para reutilizar el sistema .tooltip-wrap /
+            # .tooltip-box (CSS :hover ya definido en app.py), que sí
+            # responde a un toque en la mayoría de navegadores móviles.
+            safe = text.replace('"', '&quot;').replace("'", "&#39;")
+            return (
+                '<span class="tooltip-wrap" style="margin-left:0.3rem;position:relative;cursor:help;">'
+                '<span style="font-size:0.6rem;color:#94a3b8;border:1px solid #cbd5e1;'
+                'border-radius:50%;padding:0 3px;font-family:monospace;">?</span>'
+                f'<span class="tooltip-box">{text}</span>'
+                '</span>'
+            )
+
+        col_t3, col_t4 = st.columns(2)
+        with col_t3:
+            html2 = ""
+            if macd_d:
+                macd_sig = ("Cruce alcista" if macd_d["bullish_cross"] else
+                            "Divergencia alcista" if macd_d["bullish_divergence"] else
+                            "Cruce bajista" if macd_d["bearish_cross"] else "Sin señal de giro")
+                macd_col = "green" if (macd_d["bullish_cross"] or macd_d["bullish_divergence"]) else \
+                           "red" if macd_d["bearish_cross"] else ""
+                html2 += _kv(f"MACD{_tip('EMA(12)-EMA(26). El histograma mide la distancia entre el MACD y su línea de señal EMA(9). Un cruce alcista o una divergencia (precio cae, histograma sube) sugiere que el impulso bajista se agota.')}",
+                    f'{macd_d["macd"]:.3f}', "row-val")
+                html2 += _kv("Histograma", f'{macd_d["histogram"]:+.3f}',
+                    "row-val green" if macd_d["histogram"] >= 0 else "row-val red")
+                html2 += _kv("Señal MACD", macd_sig, f"row-val {macd_col}")
+            if adx_v is not None:
+                adx_lbl = "Tendencia fuerte" if adx_v > 25 else "Tendencia débil / lateral"
+                html2 += _kv(f"ADX (14){_tip('Average Directional Index: mide la FUERZA de la tendencia, no su dirección. >25 = tendencia fuerte (alcista o bajista). <20 = mercado sin tendencia clara. Se usa para bloquear Entrada Ideal si hay tendencia bajista fuerte confirmada.')}",
+                    f'{adx_v:.1f} ({adx_lbl})', "row-val")
+            if html2:
+                st.markdown(f'<div class="metric-card">{html2}</div>', unsafe_allow_html=True)
 
         with col_t4:
             html3 = ""
@@ -3354,8 +3221,7 @@ def render_report(ticker, company_name, y: dict,
     # actualiza el campo informativo "PER justo sector" con el valor YA
     # ajustado por tipos de interés (ev.get("pe_ref")), sin volver a pedir
     # datos a Yahoo.
-    if mult_data is not None:
-        mult_data["sector_pe_fair"] = ev.get("pe_ref")
+    mult_data["sector_pe_fair"] = ev.get("pe_ref")
     render_historical_multiples(mult_data)
 
     # ════════════════════════════════════════════════════════════════════
