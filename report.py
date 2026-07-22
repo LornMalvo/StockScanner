@@ -3410,8 +3410,12 @@ def render_report(ticker, company_name, y: dict,
     # histórico propio como método del Valor Objetivo) — aquí solo se
     # actualiza el campo informativo "PER justo sector" con el valor YA
     # ajustado por tipos de interés (ev.get("pe_ref")), sin volver a pedir
-    # datos a Yahoo.
-    mult_data["sector_pe_fair"] = ev.get("pe_ref")
+    # datos a Yahoo. mult_data puede ser None (empresas con histórico
+    # insuficiente para 5 años de múltiplos propios, p.ej. recién salidas a
+    # bolsa) — render_historical_multiples ya está preparado para recibir
+    # None y mostrar el aviso correspondiente, así que no se le asigna nada.
+    if mult_data is not None:
+        mult_data["sector_pe_fair"] = ev.get("pe_ref")
     render_historical_multiples(mult_data)
 
     # ════════════════════════════════════════════════════════════════════
