@@ -13,7 +13,7 @@ from analysis import (
     calc_entry_signal, calc_trend, fetch_peer_data, get_manual_competitors,
     render_entry_signal, render_trend, render_peers,
     fetch_company_description, fetch_recent_news, fetch_earnings_analysis,
-    fetch_last_cross_date, render_company_description, render_news,
+    render_company_description, render_news,
     get_sector_benchmarks, fetch_analyst_revisions,
     calc_short_squeeze, render_short_squeeze,
 )
@@ -2940,12 +2940,41 @@ def render_report(ticker, company_name, y: dict,
             c_label, c_css = cross_sig
             mm_card_html += _kv("Cruce MM50/MM200", c_label, f"row-val {c_css}")
 
-        # Último cruce con fecha
-        last_cross = fetch_last_cross_date(ticker)
-        if last_cross.get("date"):
+        # Último cruce MM50/MM200 con fecha — ya calculado en tech, sin
+        # necesidad de una segunda llamada de red al histórico (antes
+        # fetch_last_cross_date() volvía a descargar 2 años de precios)
+        last_cross = tech.get("last_ma_cross")
+        if last_cross and last_cross.get("date"):
             lc_color = "green" if last_cross["type"] == "GOLDEN CROSS" else "red"
-            mm_card_html += _kv("Último cruce (fecha)",
-                f'{last_cross["type"]} — {last_cross["date"]}', f"row-val {lc_color}")
+            mm_card_html += _kv("Último cruce MM50/MM200 (fecha)",
+                f'{last_cross["type"]} — {last_cross["date"]} ({last_cross["days_ago"]} sesiones)',
+                f"row-val {lc_color}")
+
+        # Cruce de PRECIO (no de medias entre sí) sobre MM50/MM200, con el
+        # volumen de esa sesión frente a la media de 20 sesiones — un
+        # cruce con volumen significativo (≥1.5×) es más fiable que uno
+        # con volumen normal (posible "falso cruce")
+        for pc in (tech.get("price_cross_mm50"), tech.get("price_cross_mm200")):
+            if not pc:
+                continue
+            pc_color = "green" if pc["direction"] == "up" else "red"
+            vol_txt = (f' · {pc["volume_ratio"]:.1f}× volumen medio'
+                       + (' (significativo)' if pc["significant_volume"] else '')) \
+                      if pc.get("volume_ratio") is not None else ''
+            mm_card_html += _kv(
+                f'Cruce de precio sobre {pc["ma"]}',
+                f'{"Al alza ↑" if pc["direction"]=="up" else "A la baja ↓"} — {pc["date"]} '
+                f'({pc["days_ago"]} sesiones){vol_txt}',
+                f"row-val {pc_color}"
+            )
+
+        # Alerta de proximidad — informativa, NO puntúa en la Señal de
+        # Entrada (extrapolar cuándo se producirá un cruce no tiene
+        # respaldo estadístico real, solo se avisa de que está cerca)
+        proximity = tech.get("cross_proximity")
+        if proximity and proximity.get("notes"):
+            for note in proximity["notes"]:
+                mm_card_html += _kv("⚠ A vigilar", note, "row-val")
 
         # Un único st.markdown con una rejilla CSS propia (.tech-grid-2, en
         # app.py), en vez de st.columns(2) — st.columns ha cambiado de

@@ -566,6 +566,103 @@ def fetch_relative_strength(closes: pd.Series, period_days: int = 63) -> dict | 
         return None
 
 
+def _calc_ma_cross_recency(closes: pd.Series, dates_str: list) -> dict | None:
+    """
+    Fecha del último Golden/Death Cross (MM50 cruza MM200) y su antigüedad
+    en sesiones. Sustituye a fetch_last_cross_date() (analysis.py), que
+    hacía su propia llamada de red duplicada al histórico de 2 años —
+    aquí se reutiliza el histórico que fetch_technical_data() ya descargó.
+
+    Es un indicador REZAGADO por naturaleza (una media de 200 sesiones
+    tarda en reaccionar): confirma una tendencia ya en marcha, no la
+    predice. Por eso en la Señal de Entrada se pondera de forma moderada,
+    igual que MACD u OBV, no como un factor fundamental.
+    """
+    try:
+        n = len(closes)
+        if n < 200:
+            return None
+        mm50  = closes.rolling(50).mean()
+        mm200 = closes.rolling(200).mean()
+        diff  = mm50 - mm200
+        for i in range(n - 1, 0, -1):
+            d_i, d_im1 = diff.iloc[i], diff.iloc[i-1]
+            if pd.isna(d_i) or pd.isna(d_im1):
+                continue
+            if d_i > 0 and d_im1 <= 0:
+                return {"date": dates_str[i], "type": "GOLDEN CROSS", "days_ago": (n - 1) - i}
+            if d_i < 0 and d_im1 >= 0:
+                return {"date": dates_str[i], "type": "DEATH CROSS", "days_ago": (n - 1) - i}
+        return None
+    except Exception:
+        return None
+
+
+def _calc_price_ma_cross(closes: pd.Series, ma_series: pd.Series, volumes: pd.Series,
+                          dates_str: list, ma_label: str) -> dict | None:
+    """
+    Última vez que el PRECIO (no las medias entre sí) cruzó una media
+    móvil concreta, con el volumen de esa sesión comparado a la media de
+    volumen de las 20 sesiones previas. Un cruce con volumen significativo
+    (≥1.5×) tiene más peso como ruptura real que uno con volumen normal
+    (más probable que sea un "falso cruce" que se revierte enseguida).
+    """
+    try:
+        n = len(closes)
+        if n < 25 or ma_series is None:
+            return None
+        diff = closes - ma_series
+        for i in range(n - 1, 0, -1):
+            d_i, d_im1 = diff.iloc[i], diff.iloc[i-1]
+            if pd.isna(d_i) or pd.isna(d_im1):
+                continue
+            crossed_up   = d_i > 0 and d_im1 <= 0
+            crossed_down = d_i < 0 and d_im1 >= 0
+            if crossed_up or crossed_down:
+                vol_window   = volumes.iloc[max(0, i - 20):i]
+                avg_vol      = float(vol_window.mean()) if len(vol_window) > 0 else None
+                vol_that_day = float(volumes.iloc[i])
+                vol_ratio    = (vol_that_day / avg_vol) if avg_vol and avg_vol > 0 else None
+                return {
+                    "ma":                 ma_label,
+                    "direction":          "up" if crossed_up else "down",
+                    "date":               dates_str[i],
+                    "days_ago":           (n - 1) - i,
+                    "volume_ratio":       round(vol_ratio, 2) if vol_ratio is not None else None,
+                    "significant_volume": bool(vol_ratio is not None and vol_ratio >= 1.5),
+                }
+        return None
+    except Exception:
+        return None
+
+
+def _calc_cross_proximity(mm50: float | None, mm200: float | None, price: float | None) -> dict | None:
+    """
+    Alerta de PROXIMIDAD — no una predicción. Señala cuándo la MM50 y la
+    MM200 están muy próximas entre sí (posible Golden/Death Cross cercano
+    si la tendencia actual continúa) o cuándo el precio está muy cerca de
+    tocar una de las medias. Es puramente informativa: extrapolar CUÁNDO
+    se producirá un cruce a partir de la pendiente reciente no tiene
+    respaldo estadístico real (las tendencias revierten constantemente,
+    sobre todo en mercados laterales) — por eso este dato NO puntúa en la
+    Señal de Entrada, solo se muestra como aviso a vigilar.
+    """
+    if not mm50 or not mm200 or not price:
+        return None
+    NEAR_THRESHOLD = 2.0  # % de margen para considerar "cerca"
+    notes = []
+    gap_ma_pct = abs(mm50 - mm200) / price * 100
+    if gap_ma_pct <= NEAR_THRESHOLD:
+        notes.append(f"MM50 y MM200 muy próximas ({gap_ma_pct:.1f}% de separación) — posible cruce cercano si continúa la tendencia")
+    dist_mm50_pct = abs(price - mm50) / price * 100
+    if dist_mm50_pct <= NEAR_THRESHOLD:
+        notes.append(f"Precio a {dist_mm50_pct:.1f}% de la MM50")
+    dist_mm200_pct = abs(price - mm200) / price * 100
+    if dist_mm200_pct <= NEAR_THRESHOLD:
+        notes.append(f"Precio a {dist_mm200_pct:.1f}% de la MM200")
+    return {"notes": notes} if notes else None
+
+
 def fetch_technical_data(ticker: str) -> dict:
     """RSI(14), MM50, MM200 con metadatos de frescura."""
     try:
@@ -637,6 +734,15 @@ def fetch_technical_data(ticker: str) -> dict:
         mm50_series  = closes_full.rolling(window=50).mean()
         mm200_series = closes_full.rolling(window=200).mean() if len(closes_full) >= 200 else None
 
+        # ── Cruces: Golden/Death Cross reciente + cruce de precio con volumen ──
+        last_ma_cross    = _calc_ma_cross_recency(closes_full, dates_str_full)
+        price_cross_mm50 = _calc_price_ma_cross(closes_full, mm50_series, hist_full["Volume"],
+                                                 dates_str_full, "MM50")
+        price_cross_mm200 = (_calc_price_ma_cross(closes_full, mm200_series, hist_full["Volume"],
+                                                    dates_str_full, "MM200")
+                              if mm200_series is not None else None)
+        cross_proximity = _calc_cross_proximity(mm50, mm200, price)
+
         # Recorte a ~1 año de sesiones (252 aprox.) para el gráfico
         display_start = max(0, len(closes_full) - 252)
 
@@ -670,6 +776,10 @@ def fetch_technical_data(ticker: str) -> dict:
             "mm200_css":    mm200_cls,
             "dist_mm200":   dist_mm200,
             "cross_signal": cross_signal,
+            "last_ma_cross":      last_ma_cross,
+            "price_cross_mm50":   price_cross_mm50,
+            "price_cross_mm200":  price_cross_mm200,
+            "cross_proximity":    cross_proximity,
             "price_history":price_history,
             "macd":         macd_data,
             "adx":          adx_val,

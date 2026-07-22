@@ -908,6 +908,52 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
         checks.append(("Corrección reciente (precio < MM50)", ok,
             f"Precio {'bajo' if ok else 'sobre'} MM50 ({mm50:,.2f})", 1))
 
+    # ── Golden/Death Cross reciente (MM50 cruza MM200) ────────────────────
+    # Indicador REZAGADO por naturaleza (una media de 200 sesiones tarda en
+    # reaccionar): confirma una tendencia ya en marcha, no la predice. Por
+    # eso pondera igual que MACD/OBV (2), no como un factor fundamental.
+    # Ventana de "reciente": 3 sesiones — pasado ese margen deja de puntuar.
+    RECENT_CROSS_WINDOW = 3
+    last_ma_cross = tech.get("last_ma_cross") if tech and not tech.get("error") else None
+    if last_ma_cross and last_ma_cross.get("days_ago") is not None \
+            and last_ma_cross["days_ago"] <= RECENT_CROSS_WINDOW:
+        is_golden = last_ma_cross["type"] == "GOLDEN CROSS"
+        checks.append((
+            "Golden/Death Cross reciente (MM50/MM200)", is_golden,
+            f'{last_ma_cross["type"]} hace {last_ma_cross["days_ago"]} sesión(es) ({last_ma_cross["date"]})', 2
+        ))
+
+    # ── Cruce de precio sobre una media con volumen significativo ─────────
+    # Distinto del Golden/Death Cross de arriba (que compara las medias
+    # ENTRE SÍ): aquí es el PRECIO cruzando su MM50 o MM200, confirmado por
+    # volumen ≥1.5× la media de 20 sesiones — una ruptura/pérdida de nivel
+    # con participación real del mercado, más fiable que un cruce con
+    # volumen normal (más probable que sea un "falso cruce" que revierte).
+    # Solo puntúa si el cruce fue reciente Y con volumen significativo — un
+    # cruce sin confirmación de volumen no se considera lo bastante fiable
+    # para entrar en el cómputo.
+    price_crosses = []
+    if tech and not tech.get("error"):
+        for c in (tech.get("price_cross_mm50"), tech.get("price_cross_mm200")):
+            if c:
+                price_crosses.append(c)
+    recent_significant = [
+        c for c in price_crosses
+        if c.get("days_ago") is not None and c["days_ago"] <= RECENT_CROSS_WINDOW
+        and c.get("significant_volume")
+    ]
+    if recent_significant:
+        # Si ambas medias tuvieron cruce reciente con volumen, prioriza la
+        # MM200 (nivel de más largo plazo, más relevante)
+        chosen = next((c for c in recent_significant if c["ma"] == "MM200"), recent_significant[0])
+        is_bullish = chosen["direction"] == "up"
+        checks.append((
+            "Cruce de precio con volumen significativo",
+            is_bullish,
+            f'Precio cruzó {"al alza" if is_bullish else "a la baja"} la {chosen["ma"]} hace '
+            f'{chosen["days_ago"]} sesión(es), con {chosen["volume_ratio"]:.1f}× el volumen medio', 2
+        ))
+
     # Momentum de revisiones de analistas (30 días)
     revisions = y.get("analyst_revisions")
     if revisions:
@@ -1107,10 +1153,11 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
             desc = "Factores positivos, pero con veto técnico activo — ver aviso arriba."
             adx_veto_applied = True
 
-    MAX_POSSIBLE_CHECKS = 17   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección,
+    MAX_POSSIBLE_CHECKS = 19   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección,
+                               # Golden/Death Cross reciente, cruce de precio con volumen,
                                # revisiones, MACD, OBV, Fibonacci, cerca de mínimos/soporte,
                                # insiders, fuerza relativa, resultados, liquidez
-                               # (17 max; ADX es veto, no check puntuado)
+                               # (19 max; ADX es veto, no check puntuado)
     missing_checks = MAX_POSSIBLE_CHECKS - len(checks)
     reliability_ok = missing_checks <= 3   # tolerable perder hasta 3 checks (datos no siempre disponibles)
 
@@ -1161,6 +1208,20 @@ def calc_trend(y: dict | None) -> dict | None:
     rev_changes = qoq_pct(rev_sorted)
     eps_changes = qoq_pct(eps_sorted)
 
+    # ── Margen neto trimestral (Beneficio neto / Revenue) ─────────────────
+    # net_income_q ya se descarga junto a Revenue (mismo income statement
+    # trimestral de Yahoo) — se empareja por FECHA, no por posición, para
+    # evitar desajustes si a una de las dos series le falta algún trimestre.
+    ni_q = y.get("net_income_q", []) or []
+    ni_by_date = {q.get("date"): q.get("value") for q in ni_q}
+    margin_sorted = []
+    for q in rev_sorted:
+        rev_val = q.get("value")
+        ni_val  = ni_by_date.get(q.get("date"))
+        if rev_val and ni_val is not None and rev_val != 0:
+            margin_sorted.append({"date": q["date"], "value": round(ni_val / rev_val * 100, 2)})
+    margin_changes = qoq_pct(margin_sorted)
+
     # Señal global basada en la tendencia reciente
     def streak_up(changes):
         if not changes: return 0
@@ -1183,8 +1244,10 @@ def calc_trend(y: dict | None) -> dict | None:
     return {
         "rev_quarters":  rev_sorted,
         "eps_quarters":  eps_sorted,
+        "margin_quarters": margin_sorted,
         "rev_changes":   rev_changes,
         "eps_changes":   eps_changes,
+        "margin_changes": margin_changes,
         "rev_streak":    rev_streak,
         "eps_streak":    eps_streak,
         "trend_signal":  sig,
@@ -1196,24 +1259,11 @@ def calc_trend(y: dict | None) -> dict | None:
 # ÚLTIMO CRUCE MM50/MM200
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fetch_last_cross_date(ticker: str) -> dict:
-    try:
-        t    = yf.Ticker(ticker)
-        hist = t.history(period="2y", interval="1d")
-        if hist.empty or len(hist) < 200:
-            return {}
-        closes = hist["Close"]
-        mm50   = closes.rolling(50).mean()
-        mm200  = closes.rolling(200).mean()
-        diff   = mm50 - mm200
-        for i in range(len(diff)-1, 0, -1):
-            if diff.iloc[i] > 0 and diff.iloc[i-1] <= 0:
-                return {"date": _fmt_fecha_es(hist.index[i]), "type": "GOLDEN CROSS"}
-            elif diff.iloc[i] < 0 and diff.iloc[i-1] >= 0:
-                return {"date": _fmt_fecha_es(hist.index[i]), "type": "DEATH CROSS"}
-        return {}
-    except Exception:
-        return {}
+# ─────────────────────────────────────────────────────────────────────────────
+# ÚLTIMO CRUCE MM50/MM200 — ahora calculado en data_fetcher.fetch_technical_data
+# (clave "last_ma_cross"), reutilizando el histórico ya descargado en vez de
+# hacer una segunda llamada de red. Función eliminada de aquí.
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
 # COMPETIDORES MANUALES — gestión y persistencia por ticker
@@ -1937,9 +1987,11 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
     rev_q = trend.get("rev_quarters", [])
     eps_q = trend.get("eps_quarters", [])
 
-    def fmt_val(v, is_eps=False):
+    def fmt_val(v, is_eps=False, is_pct=False):
         """Formatea valores para etiquetas de barra."""
         if v is None: return "—"
+        if is_pct:
+            return f"{v:.1f}%"
         if is_eps:
             return f"${v:.2f}"
         v = float(v)
@@ -1948,7 +2000,7 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
         if abs(v) >= 1e6:  return f"${v/1e6:.0f}M"
         return f"${v:,.0f}"
 
-    def abs_bars(quarters: list, label: str, is_eps: bool = False,
+    def abs_bars(quarters: list, label: str, is_eps: bool = False, is_pct: bool = False,
                  c_up: str = "#059669", c_down: str = "#dc2626",
                  c_neutral: str = "#0284c7") -> str:
         """
@@ -2000,7 +2052,7 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
                 '<div style="display:flex;flex-direction:column;align-items:center;'
                 'gap:0.1rem;flex:1;">'
                 f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.68rem;'
-                f'color:{col};font-weight:600;">{fmt_val(v, is_eps)}</div>'
+                f'color:{col};font-weight:600;">{fmt_val(v, is_eps, is_pct)}</div>'
                 f'{qoq_str}'
                 '<div style="height:80px;display:flex;align-items:flex-end;width:100%;">'
                 f'<div style="width:100%;height:{h}px;background:{col};'
@@ -2020,6 +2072,8 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
 
     rev_bars = abs_bars(rev_q, "🟡 Revenue por trimestre (Yahoo Finance)")
     eps_bars = abs_bars(eps_q, "🟡 EPS por trimestre (Yahoo Finance)", is_eps=True)
+    margin_q = trend.get("margin_quarters", [])
+    margin_bars = abs_bars(margin_q, "🟡 Margen Neto por trimestre (Beneficio neto / Revenue)", is_pct=True)
 
     header = (
         '<div style="display:flex;align-items:center;justify-content:space-between;'
@@ -2049,7 +2103,12 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
         'EPS trimestral no disponible para este ticker en Yahoo Finance.</div>'
     ) if not eps_q else ""
 
-    content = header + rev_bars + (eps_bars or no_eps_note) + legend
+    no_margin_note = (
+        '<div style="font-size:0.75rem;color:#64748b;padding:0.4rem 0;">'
+        'Margen neto trimestral no disponible para este ticker (falta Revenue o Beneficio neto trimestral en Yahoo Finance).</div>'
+    ) if not margin_q else ""
+
+    content = header + rev_bars + (eps_bars or no_eps_note) + (margin_bars or no_margin_note) + legend
     st.markdown(f'<div class="metric-card">{content}</div>', unsafe_allow_html=True)
 
 
