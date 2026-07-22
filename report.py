@@ -5,6 +5,7 @@ Renderiza el informe completo en Streamlit con el diseño claro.
 
 import streamlit as st
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import yfinance as yf
 import statistics
 from data_fetcher import fetch_balance_sheet_history, fetch_yahoo_data, fetch_technical_data
@@ -23,11 +24,14 @@ from dcf import (
 from pdf_export import render_pdf_download_button
 
 
-# ─── Gráfico de cotización con MM50/MM200 ────────────────────────────────────
+# ─── Gráfico de cotización con MM50/MM200 + panel MACD ───────────────────────
 
 def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_exit_plan: dict | None = None):
     """
-    Gráfico interactivo de cotización a 1 año con MM50 y MM200 superpuestas.
+    Gráfico interactivo de cotización a 1 año con MM50 y MM200 superpuestas,
+    con un segundo panel debajo mostrando el histograma MACD, la línea MACD,
+    la línea de señal y la línea cero de referencia (eje X compartido con el
+    gráfico de precio, para poder leer ambos a la vez).
     Zoom, pan y tooltip con fecha + precio al pasar el cursor (nativo de Plotly).
     Opcionalmente puede superponer los niveles del Plan de Entrada y Salida
     Sugerido — desactivado por defecto, activable con un botón, para no
@@ -37,10 +41,14 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_ex
     if not history:
         return
 
-    dates  = [h["date"]  for h in history]
-    closes = [h["close"] for h in history]
-    mm50s  = [h["mm50"]  for h in history]
-    mm200s = [h["mm200"] for h in history]
+    dates      = [h["date"]  for h in history]
+    closes     = [h["close"] for h in history]
+    mm50s      = [h["mm50"]  for h in history]
+    mm200s     = [h["mm200"] for h in history]
+    macd_line  = [h.get("macd")        for h in history]
+    signal_line = [h.get("macd_signal") for h in history]
+    hist_bars  = [h.get("macd_hist")   for h in history]
+    has_macd   = any(v is not None for v in macd_line)
 
     show_plan = False
     if entry_exit_plan:
@@ -51,20 +59,32 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_ex
             key=toggle_key,
         )
 
-    fig = go.Figure()
+    if has_macd:
+        fig = make_subplots(
+            rows=2, cols=1, shared_xaxes=True,
+            row_heights=[0.7, 0.3], vertical_spacing=0.06,
+        )
+    else:
+        fig = go.Figure()
 
-    fig.add_trace(go.Scatter(
+    def _add(trace, row=1):
+        if has_macd:
+            fig.add_trace(trace, row=row, col=1)
+        else:
+            fig.add_trace(trace)
+
+    _add(go.Scatter(
         x=dates, y=closes, mode="lines", name="Precio",
         line=dict(color="#0284c7", width=2),
         hovertemplate="<b>%{x}</b><br>Precio: " + currency + " %{y:.2f}<extra></extra>",
     ))
-    fig.add_trace(go.Scatter(
+    _add(go.Scatter(
         x=dates, y=mm50s, mode="lines", name="MM50",
         line=dict(color="#d97706", width=1.4, dash="solid"),
         hovertemplate="<b>%{x}</b><br>MM50: " + currency + " %{y:.2f}<extra></extra>",
     ))
     if any(v is not None for v in mm200s):
-        fig.add_trace(go.Scatter(
+        _add(go.Scatter(
             x=dates, y=mm200s, mode="lines", name="MM200",
             line=dict(color="#dc2626", width=1.4, dash="solid"),
             hovertemplate="<b>%{x}</b><br>MM200: " + currency + " %{y:.2f}<extra></extra>",
@@ -77,6 +97,7 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_ex
                 annotation_text=f"Entrada {i+1}: {currency} {lvl['price']:,.2f}",
                 annotation_position="top left",
                 annotation=dict(font=dict(size=9, color="#059669")),
+                row=1 if has_macd else None, col=1 if has_macd else None,
             )
         for obj in (entry_exit_plan.get("exit_plan") or []):
             fig.add_hline(
@@ -84,6 +105,7 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_ex
                 annotation_text=f"{obj['label']}: {currency} {obj['price']:,.2f}",
                 annotation_position="top left",
                 annotation=dict(font=dict(size=9, color="#0284c7")),
+                row=1 if has_macd else None, col=1 if has_macd else None,
             )
         if entry_exit_plan.get("stop_loss"):
             fig.add_hline(
@@ -91,15 +113,39 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_ex
                 annotation_text=f"Stop Loss: {currency} {entry_exit_plan['stop_loss']:,.2f}",
                 annotation_position="bottom left",
                 annotation=dict(font=dict(size=9, color="#dc2626")),
+                row=1 if has_macd else None, col=1 if has_macd else None,
             )
 
+    if has_macd:
+        hist_colors = [
+            "#94a3b8" if v is None else ("#059669" if v >= 0 else "#dc2626")
+            for v in hist_bars
+        ]
+        fig.add_trace(go.Bar(
+            x=dates, y=hist_bars, name="Histograma",
+            marker=dict(color=hist_colors),
+            hovertemplate="<b>%{x}</b><br>Histograma: %{y:.3f}<extra></extra>",
+        ), row=2, col=1)
+        fig.add_trace(go.Scatter(
+            x=dates, y=macd_line, mode="lines", name="MACD",
+            line=dict(color="#0284c7", width=1.4),
+            hovertemplate="<b>%{x}</b><br>MACD: %{y:.3f}<extra></extra>",
+        ), row=2, col=1)
+        fig.add_trace(go.Scatter(
+            x=dates, y=signal_line, mode="lines", name="Señal",
+            line=dict(color="#d97706", width=1.4, dash="dot"),
+            hovertemplate="<b>%{x}</b><br>Señal: %{y:.3f}<extra></extra>",
+        ), row=2, col=1)
+        fig.add_hline(y=0, line=dict(color="#94a3b8", width=1, dash="dash"), row=2, col=1)
+
     fig.update_layout(
-        height=380,
+        height=520 if has_macd else 380,
         margin=dict(l=10, r=10, t=32, b=10),
         plot_bgcolor="#ffffff",
         paper_bgcolor="#ffffff",
         font=dict(family="Inter, sans-serif", size=12, color="#1e293b"),
         hovermode="x unified",
+        barmode="relative",
         legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0.34,
                     font=dict(size=11)),
         xaxis=dict(
@@ -122,6 +168,10 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_ex
             tickprefix=f"{currency} ",
         ),
     )
+    if has_macd:
+        fig.update_yaxes(title_text="MACD", row=2, col=1,
+                          showgrid=True, gridcolor="#f1f5f9", showline=True, linecolor="#e2e8f0")
+        fig.update_xaxes(rangeslider=dict(visible=False), row=2, col=1)
 
     st.plotly_chart(fig, use_container_width=True, config={
         "displayModeBar": True,
@@ -2836,64 +2886,71 @@ def render_report(ticker, company_name, y: dict,
         html_top += _kv("Beta",          _fmt_num(y.get("beta"), 2))
         st.markdown(f'<div class="metric-card">{html_top}</div>', unsafe_allow_html=True)
 
-        col_t1, col_t2 = st.columns(2)
+        rsi_val = tech.get("rsi")
+        rsi_lbl = tech.get("rsi_label","N/A")
+        rsi_pct = min(max(rsi_val or 0, 0), 100)
+        bar_col = "#dc2626" if rsi_pct >= 70 else "#059669" if rsi_pct <= 30 else "#0284c7"
+        rsi_css = tech.get("rsi_css","")
+        rsi_card_html = (
+            '<div class="metric-label">RSI (14 períodos)</div>'
+            '<div style="display:flex;align-items:baseline;gap:0.6rem;">'
+            f'<div class="metric-value">{_fmt_num(rsi_val,2)}</div>'
+            f'<span class="row-val {rsi_css}" style="font-size:0.82rem;">{rsi_lbl}</span>'
+            '</div>'
+            '<div class="progress-bar-bg" style="margin-top:0.6rem;">'
+            f'<div style="height:8px;border-radius:4px;background:{bar_col};width:{rsi_pct}%;"></div>'
+            '</div>'
+            '<div style="display:flex;justify-content:space-between;font-size:0.7rem;'
+            'color:#64748b;margin-top:0.2rem;">'
+            '<span>0 — Sobreventa</span><span>50</span><span>Sobrecompra — 100</span>'
+            '</div>'
+            '<div style="margin-top:0.5rem;font-size:0.78rem;color:#64748b;">'
+            '▸ RSI &lt; 30: sobreventa (posible rebote) &nbsp;|&nbsp; RSI &gt; 70: sobrecompra'
+            '</div>'
+        )
 
-        with col_t1:
-            rsi_val = tech.get("rsi")
-            rsi_lbl = tech.get("rsi_label","N/A")
-            rsi_pct = min(max(rsi_val or 0, 0), 100)
-            bar_col = "#dc2626" if rsi_pct >= 70 else "#059669" if rsi_pct <= 30 else "#0284c7"
-            rsi_css = tech.get("rsi_css","")
-            st.markdown(
-                '<div class="metric-card">'
-                '<div class="metric-label">RSI (14 períodos)</div>'
-                '<div style="display:flex;align-items:baseline;gap:0.6rem;">'
-                f'<div class="metric-value">{_fmt_num(rsi_val,2)}</div>'
-                f'<span class="row-val {rsi_css}" style="font-size:0.82rem;">{rsi_lbl}</span>'
-                '</div>'
-                '<div class="progress-bar-bg" style="margin-top:0.6rem;">'
-                f'<div style="height:8px;border-radius:4px;background:{bar_col};width:{rsi_pct}%;"></div>'
-                '</div>'
-                '<div style="display:flex;justify-content:space-between;font-size:0.7rem;'
-                'color:#64748b;margin-top:0.2rem;">'
-                '<span>0 — Sobreventa</span><span>50</span><span>Sobrecompra — 100</span>'
-                '</div>'
-                '<div style="margin-top:0.5rem;font-size:0.78rem;color:#64748b;">'
-                '▸ RSI &lt; 30: sobreventa (posible rebote) &nbsp;|&nbsp; RSI &gt; 70: sobrecompra'
-                '</div></div>',
-                unsafe_allow_html=True
-            )
+        mm50      = tech.get("mm50")
+        mm200     = tech.get("mm200")
+        d50       = tech.get("dist_mm50")
+        d200      = tech.get("dist_mm200")
+        cross_sig = tech.get("cross_signal")
 
-        with col_t2:
-            mm50      = tech.get("mm50")
-            mm200     = tech.get("mm200")
-            d50       = tech.get("dist_mm50")
-            d200      = tech.get("dist_mm200")
-            cross_sig = tech.get("cross_signal")
+        mm_card_html  = _kv("MM50",  _fmt_price(mm50, currency_y, fx_rate), f"row-val {tech.get('mm50_css','')}")
+        mm_card_html += _kv("Distancia MM50",
+            _fmt_num(d50,2,suffix="%") if d50 is not None else "N/A",
+            "row-val green" if (d50 or 0) >= 0 else "row-val red")
+        mm_card_html += _kv("Señal MM50",  tech.get("mm50_signal","N/A"),  f"row-val {tech.get('mm50_css','')}")
+        mm_card_html += _kv("MM200", _fmt_price(mm200,currency_y,fx_rate) if mm200 else "N/A",
+            f"row-val {tech.get('mm200_css','')}")
+        mm_card_html += _kv("Distancia MM200",
+            _fmt_num(d200,2,suffix="%") if d200 is not None else "N/A",
+            "row-val green" if (d200 or 0) >= 0 else "row-val red")
+        mm_card_html += _kv("Señal MM200", tech.get("mm200_signal","N/A"), f"row-val {tech.get('mm200_css','')}")
+        if cross_sig:
+            c_label, c_css = cross_sig
+            mm_card_html += _kv("Cruce MM50/MM200", c_label, f"row-val {c_css}")
 
-            html  = _kv("MM50",  _fmt_price(mm50, currency_y, fx_rate), f"row-val {tech.get('mm50_css','')}")
-            html += _kv("Distancia MM50",
-                _fmt_num(d50,2,suffix="%") if d50 is not None else "N/A",
-                "row-val green" if (d50 or 0) >= 0 else "row-val red")
-            html += _kv("Señal MM50",  tech.get("mm50_signal","N/A"),  f"row-val {tech.get('mm50_css','')}")
-            html += _kv("MM200", _fmt_price(mm200,currency_y,fx_rate) if mm200 else "N/A",
-                f"row-val {tech.get('mm200_css','')}")
-            html += _kv("Distancia MM200",
-                _fmt_num(d200,2,suffix="%") if d200 is not None else "N/A",
-                "row-val green" if (d200 or 0) >= 0 else "row-val red")
-            html += _kv("Señal MM200", tech.get("mm200_signal","N/A"), f"row-val {tech.get('mm200_css','')}")
-            if cross_sig:
-                c_label, c_css = cross_sig
-                html += _kv("Cruce MM50/MM200", c_label, f"row-val {c_css}")
+        # Último cruce con fecha
+        last_cross = fetch_last_cross_date(ticker)
+        if last_cross.get("date"):
+            lc_color = "green" if last_cross["type"] == "GOLDEN CROSS" else "red"
+            mm_card_html += _kv("Último cruce (fecha)",
+                f'{last_cross["type"]} — {last_cross["date"]}', f"row-val {lc_color}")
 
-            # Último cruce con fecha
-            last_cross = fetch_last_cross_date(ticker)
-            if last_cross.get("date"):
-                lc_color = "green" if last_cross["type"] == "GOLDEN CROSS" else "red"
-                html += _kv("Último cruce (fecha)",
-                    f'{last_cross["type"]} — {last_cross["date"]}', f"row-val {lc_color}")
-
-            st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
+        # Un único st.markdown con una rejilla CSS propia (.tech-grid-2, en
+        # app.py), en vez de st.columns(2) — st.columns ha cambiado de
+        # comportamiento entre versiones de Streamlit (ya ocurrió con el
+        # submenú de pestañas) y en algún despliegue reciente dejaba un
+        # hueco en blanco entre estas dos tarjetas. Una rejilla CSS propia
+        # no depende de esa implementación interna y es estable frente a
+        # futuras actualizaciones de Streamlit.
+        st.markdown(
+            '<div class="tech-grid-2">'
+            f'<div class="metric-card">{rsi_card_html}</div>'
+            f'<div class="metric-card">{mm_card_html}</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
 
         # ── Nuevos indicadores: MACD, ADX, OBV, Fibonacci ────────────────
         macd_d = tech.get("macd")
@@ -2918,55 +2975,60 @@ def render_report(ticker, company_name, y: dict,
                 '</span>'
             )
 
-        col_t3, col_t4 = st.columns(2)
-        with col_t3:
-            html2 = ""
-            if macd_d:
-                macd_sig = ("Cruce alcista" if macd_d["bullish_cross"] else
-                            "Divergencia alcista" if macd_d["bullish_divergence"] else
-                            "Cruce bajista" if macd_d["bearish_cross"] else "Sin señal de giro")
-                macd_col = "green" if (macd_d["bullish_cross"] or macd_d["bullish_divergence"]) else \
-                           "red" if macd_d["bearish_cross"] else ""
-                html2 += _kv(f"MACD{_tip('EMA(12)-EMA(26). El histograma mide la distancia entre el MACD y su línea de señal EMA(9). Un cruce alcista o una divergencia (precio cae, histograma sube) sugiere que el impulso bajista se agota.')}",
-                    f'{macd_d["macd"]:.3f}', "row-val")
-                html2 += _kv("Histograma", f'{macd_d["histogram"]:+.3f}',
-                    "row-val green" if macd_d["histogram"] >= 0 else "row-val red")
-                html2 += _kv("Señal MACD", macd_sig, f"row-val {macd_col}")
-            if adx_v is not None:
-                adx_lbl = "Tendencia fuerte" if adx_v > 25 else "Tendencia débil / lateral"
-                html2 += _kv(f"ADX (14){_tip('Average Directional Index: mide la FUERZA de la tendencia, no su dirección. >25 = tendencia fuerte (alcista o bajista). <20 = mercado sin tendencia clara. Se usa para bloquear Entrada Ideal si hay tendencia bajista fuerte confirmada.')}",
-                    f'{adx_v:.1f} ({adx_lbl})', "row-val")
-            if html2:
-                st.markdown(f'<div class="metric-card">{html2}</div>', unsafe_allow_html=True)
+        html2 = ""
+        if macd_d:
+            macd_sig = ("Cruce alcista" if macd_d["bullish_cross"] else
+                        "Divergencia alcista" if macd_d["bullish_divergence"] else
+                        "Cruce bajista" if macd_d["bearish_cross"] else "Sin señal de giro")
+            macd_col = "green" if (macd_d["bullish_cross"] or macd_d["bullish_divergence"]) else \
+                       "red" if macd_d["bearish_cross"] else ""
+            html2 += _kv(f"MACD{_tip('EMA(12)-EMA(26). El histograma mide la distancia entre el MACD y su línea de señal EMA(9). Un cruce alcista o una divergencia (precio cae, histograma sube) sugiere que el impulso bajista se agota.')}",
+                f'{macd_d["macd"]:.3f}', "row-val")
+            html2 += _kv("Histograma", f'{macd_d["histogram"]:+.3f}',
+                "row-val green" if macd_d["histogram"] >= 0 else "row-val red")
+            html2 += _kv("Señal MACD", macd_sig, f"row-val {macd_col}")
+        if adx_v is not None:
+            adx_lbl = "Tendencia fuerte" if adx_v > 25 else "Tendencia débil / lateral"
+            html2 += _kv(f"ADX (14){_tip('Average Directional Index: mide la FUERZA de la tendencia, no su dirección. >25 = tendencia fuerte (alcista o bajista). <20 = mercado sin tendencia clara. Se usa para bloquear Entrada Ideal si hay tendencia bajista fuerte confirmada.')}",
+                f'{adx_v:.1f} ({adx_lbl})', "row-val")
 
-        with col_t4:
-            html3 = ""
-            if obv_d:
-                obv_lbl = ("Posible acumulación" if obv_d["accumulation"] else
-                           "Posible distribución" if obv_d["distribution"] else
-                           "Alcista" if obv_d["obv_trend_up"] else "Bajista")
-                obv_col = "green" if (obv_d["accumulation"] or obv_d["obv_trend_up"]) else "red"
-                html3 += _kv(f"OBV (volumen){_tip('On-Balance Volume: acumula el volumen en días de subida y lo resta en días de bajada. Si el precio cae pero el OBV sube, sugiere que hay compras de manos fuertes pese al precio débil (acumulación). Si el precio sube pero el OBV cae, la subida no está respaldada por volumen real (distribución).')}",
-                    obv_lbl, f"row-val {obv_col}")
-                html3 += _kv("Precio 20 días", f'{obv_d["price_pct_20d"]:+.1f}%',
-                    "row-val green" if obv_d["price_pct_20d"] >= 0 else "row-val red")
-            if fib_d:
-                near = fib_d.get("near_support")
-                fib_lbl = f"En soporte {near}" if near else "Sin soporte Fibonacci cercano"
-                html3 += _kv(f"Fibonacci 52W{_tip('Niveles de retroceso entre el máximo y mínimo de 52 semanas — estructura ESTÁTICA de mercado, a diferencia de las medias móviles (dinámicas). Se marca en soporte si el precio está a menos del 3% de los niveles 61.8% o 78.6%, las zonas de rebote técnico más vigiladas tras una corrección.')}",
-                    fib_lbl, "row-val green" if near else "row-val")
-            if support_d:
-                sup_currency = currency_y
-                sup_price_str = _fmt_price(support_d["level"], sup_currency, fx_rate)
-                html3 += _kv(f"Soporte histórico{_tip('Nivel de precio donde la acción ha rebotado repetidamente en los últimos 2 años (mínimo 2 toques), agrupando mínimos locales dentro de un margen del 2.5%. A diferencia de las medias móviles o Fibonacci, es un nivel REAL donde el mercado ya ha demostrado interés comprador, no un cálculo proporcional o dinámico.')}",
-                    sup_price_str, "row-val")
-                html3 += _kv("Distancia al soporte", f'-{support_d["distance_pct"]:.1f}%', "row-val red")
-                html3 += _kv("Nº de rebotes / último toque",
-                    f'{support_d["touches"]}× · {support_d.get("last_touch_date","N/A")}', "row-val")
-            elif tech and not tech.get("error"):
-                html3 += _kv("Soporte histórico", "Sin soporte estructural claro detectado", "row-val")
-            if html3:
-                st.markdown(f'<div class="metric-card">{html3}</div>', unsafe_allow_html=True)
+        html3 = ""
+        if obv_d:
+            obv_lbl = ("Posible acumulación" if obv_d["accumulation"] else
+                       "Posible distribución" if obv_d["distribution"] else
+                       "Alcista" if obv_d["obv_trend_up"] else "Bajista")
+            obv_col = "green" if (obv_d["accumulation"] or obv_d["obv_trend_up"]) else "red"
+            html3 += _kv(f"OBV (volumen){_tip('On-Balance Volume: acumula el volumen en días de subida y lo resta en días de bajada. Si el precio cae pero el OBV sube, sugiere que hay compras de manos fuertes pese al precio débil (acumulación). Si el precio sube pero el OBV cae, la subida no está respaldada por volumen real (distribución).')}",
+                obv_lbl, f"row-val {obv_col}")
+            html3 += _kv("Precio 20 días", f'{obv_d["price_pct_20d"]:+.1f}%',
+                "row-val green" if obv_d["price_pct_20d"] >= 0 else "row-val red")
+        if fib_d:
+            near = fib_d.get("near_support")
+            fib_lbl = f"En soporte {near}" if near else "Sin soporte Fibonacci cercano"
+            html3 += _kv(f"Fibonacci 52W{_tip('Niveles de retroceso entre el máximo y mínimo de 52 semanas — estructura ESTÁTICA de mercado, a diferencia de las medias móviles (dinámicas). Se marca en soporte si el precio está a menos del 3% de los niveles 61.8% o 78.6%, las zonas de rebote técnico más vigiladas tras una corrección.')}",
+                fib_lbl, "row-val green" if near else "row-val")
+        if support_d:
+            sup_currency = currency_y
+            sup_price_str = _fmt_price(support_d["level"], sup_currency, fx_rate)
+            html3 += _kv(f"Soporte histórico{_tip('Nivel de precio donde la acción ha rebotado repetidamente en los últimos 2 años (mínimo 2 toques), agrupando mínimos locales dentro de un margen del 2.5%. A diferencia de las medias móviles o Fibonacci, es un nivel REAL donde el mercado ya ha demostrado interés comprador, no un cálculo proporcional o dinámico.')}",
+                sup_price_str, "row-val")
+            html3 += _kv("Distancia al soporte", f'-{support_d["distance_pct"]:.1f}%', "row-val red")
+            html3 += _kv("Nº de rebotes / último toque",
+                f'{support_d["touches"]}× · {support_d.get("last_touch_date","N/A")}', "row-val")
+        elif tech and not tech.get("error"):
+            html3 += _kv("Soporte histórico", "Sin soporte estructural claro detectado", "row-val")
+
+        # Igual que arriba: rejilla CSS propia en vez de st.columns(2). Si
+        # alguna de las dos tarjetas queda vacía (p.ej. macd_d y adx_v
+        # ambos ausentes), se omite del todo en vez de dejar un hueco vacío
+        # con el mismo tamaño que su vecina.
+        cards23 = ""
+        if html2:
+            cards23 += f'<div class="metric-card">{html2}</div>'
+        if html3:
+            cards23 += f'<div class="metric-card">{html3}</div>'
+        if cards23:
+            st.markdown(f'<div class="tech-grid-2">{cards23}</div>', unsafe_allow_html=True)
 
     elif tech and tech.get("error"):
         st.markdown(

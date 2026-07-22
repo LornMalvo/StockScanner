@@ -208,6 +208,13 @@ def _calc_macd(closes: pd.Series) -> dict | None:
             "histogram": round(hist_now, 4),
             "bullish_cross": bullish_cross, "bearish_cross": bearish_cross,
             "bullish_divergence": divergence,
+            # Series completas (misma longitud que "closes", sin NaN iniciales
+            # porque ewm con adjust=False arranca en el primer valor) — se
+            # usan para dibujar el panel de histograma MACD bajo el gráfico
+            # de cotización, no solo el último valor puntual.
+            "macd_series":      [round(float(v), 4) for v in macd.tolist()],
+            "signal_series":    [round(float(v), 4) for v in signal.tolist()],
+            "histogram_series": [round(float(v), 4) for v in hist.tolist()],
         }
     except Exception:
         return None
@@ -643,6 +650,9 @@ def fetch_technical_data(ticker: str) -> dict:
                 "mm50":  round(float(mm50_series.iloc[i]), 4) if not mm50_series.isna().iloc[i] else None,
                 "mm200": (round(float(mm200_series.iloc[i]), 4)
                           if mm200_series is not None and not mm200_series.isna().iloc[i] else None),
+                "macd":        macd_data["macd_series"][i]      if macd_data else None,
+                "macd_signal": macd_data["signal_series"][i]    if macd_data else None,
+                "macd_hist":   macd_data["histogram_series"][i] if macd_data else None,
             })
 
         return {

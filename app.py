@@ -21,6 +21,19 @@ st.markdown("""
   .hero h1 { font-family:'Sora',sans-serif; font-size:2.6rem; font-weight:700; color:#0284c7; letter-spacing:-0.02em; margin:0; }
   .hero p  { font-size:0.83rem; color:#64748b; margin:0.25rem 0 0 0; }
   .metric-card { background:#ffffff; border:1px solid #e2e8f0; border-radius:8px; padding:1rem 1.2rem; margin-bottom:0.8rem; }
+  /* Rejilla de 2 columnas para pares de tarjetas (RSI+MM50/200,
+     MACD/ADX+OBV/Fibonacci/Soporte) en vez de st.columns(2) — el
+     comportamiento de st.columns() en modo apilado (móvil) ha cambiado
+     entre versiones de Streamlit y en algún despliegue dejaba un hueco en
+     blanco cuando una tarjeta de la pareja no aparecía. Con CSS Grid
+     propio el hueco no puede aparecer: si falta una tarjeta, la rejilla
+     simplemente ocupa menos espacio. Los .metric-card dentro de la rejilla
+     no llevan su propio margin-bottom (ya lo pone el gap de la rejilla). */
+  .tech-grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:0.8rem; margin-bottom:0.8rem; }
+  .tech-grid-2 .metric-card { margin-bottom:0; }
+  @media (max-width:680px) {
+    .tech-grid-2 { grid-template-columns:1fr; }
+  }
   .metric-label { font-size:0.72rem; color:#64748b; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:0.2rem; }
   .metric-value { font-family:'IBM Plex Mono',monospace; font-size:1.3rem; font-weight:600; color:#0f172a; }
   .section-header { font-family:'IBM Plex Mono',monospace; font-size:0.75rem; color:#0284c7; text-transform:uppercase; letter-spacing:0.12em; padding:0.4rem 0; border-bottom:1px solid #e2e8f0; margin:1.5rem 0 1rem 0; }
