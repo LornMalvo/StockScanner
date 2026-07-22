@@ -7,7 +7,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import yfinance as yf
 import statistics
-from data_fetcher import fetch_balance_sheet_history
+from data_fetcher import fetch_balance_sheet_history, fetch_yahoo_data, fetch_technical_data
 from analysis import (
     calc_entry_signal, calc_trend, fetch_peer_data, get_manual_competitors,
     render_entry_signal, render_trend, render_peers,
@@ -2237,6 +2237,78 @@ def _evaluate(y: dict, bh: dict | None = None, mult_data: dict | None = None) ->
     }
 
 
+
+
+def fetch_peer_full_data(tickers: list) -> list:
+    """
+    Modo "métricas avanzadas" del Comparador (toggle en app.py): ejecuta,
+    por cada ticker, el MISMO pipeline de análisis que un informe
+    individual completo (datos de Yahoo, balance histórico, múltiplos
+    propios, Salud Fundamental, Piotroski, Valor Objetivo, Diagnóstico
+    General, Señal de Entrada y Veredicto Final), en vez del modo básico
+    que solo trae los datos crudos de Yahoo. Por eso es más lento — se
+    avisa de ello en la UI ("puede tardar varios segundos").
+
+    Devuelve una lista de dicts (uno por ticker que se pudo analizar, los
+    que fallen se omiten en silencio para no romper la comparación de los
+    demás), cada uno con todos los campos básicos de fetch_yahoo_data más
+    los campos avanzados que consume la tabla del Comparador: fcf_quality,
+    pe_trailing, pe_sector, pe_historico, health_score, piotroski_str,
+    fair_value, diag, signal_level, vf_icon, vf_level.
+    """
+    results = []
+    for ticker in tickers:
+        try:
+            y = fetch_yahoo_data(ticker)
+            if not y:
+                continue
+
+            tech = fetch_technical_data(ticker)
+            bh   = fetch_balance_sheet_history(ticker)
+
+            _static_profile, _ = _get_sector_profile(y.get("sector", ""))
+            mult_data = fetch_historical_multiples(ticker, y, sector_pe_fair=_static_profile["pe_fair"])
+
+            ev     = _evaluate(y, bh, mult_data)
+            signal = calc_entry_signal(y, tech if tech and not tech.get("error") else None, ev)
+            vf     = calc_valoracion_final(ev, signal)
+
+            piotroski = ev.get("piotroski") or {}
+            piotroski_str = (
+                f'{piotroski["score"]}/{piotroski["n_evaluable"]}'
+                if piotroski.get("n_evaluable") else None
+            )
+
+            # Calidad del beneficio (FCF/Beneficio neto anual) — mismo cálculo
+            # y misma condición de guarda que dentro de _calc_health_score,
+            # pero expuesto aquí como dato propio para la tabla comparadora
+            fcf_raw   = y.get("free_cash_flow")
+            ni_recent = y.get("ni_year_cur")
+            fcf_quality = (
+                fcf_raw / ni_recent
+                if (fcf_raw is not None and ni_recent and ni_recent > 0) else None
+            )
+
+            d = dict(y)
+            d.update({
+                "ticker":        ticker,
+                "fcf_quality":   fcf_quality,
+                "pe_sector":     ev.get("pe_ref"),
+                "pe_historico":  mult_data.get("per_mean") if mult_data else None,
+                "health_score":  ev.get("health_score"),
+                "piotroski_str": piotroski_str,
+                "fair_value":    ev.get("fair_value"),
+                "diag":          ev.get("diag_base"),
+                "signal_level":  signal.get("level"),
+                "vf_icon":       vf.get("icon"),
+                "vf_level":      vf.get("level"),
+            })
+            results.append(d)
+        except Exception:
+            # Un ticker que falle no debe romper la comparación de los demás
+            continue
+
+    return results
 
 
 # ─── Render principal ─────────────────────────────────────────────────────────
