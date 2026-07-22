@@ -1678,22 +1678,32 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
     correction_trigger = _detect_correction_trigger(y, tech, price)
 
     # ── Mapa de Suelos Proyectados (Motor de Confluencia) ────────────────
+    # Nota: zones puede salir vacía cuando el precio ya está por debajo de
+    # TODAS las medias móviles, fuera de la zona de Fibonacci (cerca del
+    # mínimo de 52 semanas) y sin ningún soporte histórico por debajo —
+    # típico de una acción en mínimos nuevos, sin referencia técnica de
+    # soporte por debajo. Antes esto hacía que la función se rindiera del
+    # todo (return None); ahora se sigue generando el plan igualmente,
+    # arrancando la cascada de relleno desde el propio precio actual en
+    # vez de desde una zona real — es precisamente en este escenario
+    # (sin suelo técnico visible) donde un plan escalonado es más útil,
+    # no menos.
     zones = _build_confluence_supports(price, tech)
-    if not zones:
-        return None
 
     levels = zones[:3]
 
-    # Si no hay suficientes zonas de confluencia reales, completar con
-    # niveles de relleno. IMPORTANTE: cada relleno se calcula en relación
-    # al nivel anterior YA COLOCADO (real o relleno), nunca como % fijo del
-    # precio actual — así se garantiza matemáticamente que el plan siga en
-    # descenso sin importar cuán profunda esté la zona real anterior (si
-    # se ancla al precio actual, una zona real ya muy profunda puede dejar
-    # el siguiente relleno POR ENCIMA suyo, rompiendo el orden).
+    # Si no hay suficientes zonas de confluencia reales (o ninguna en
+    # absoluto), completar con niveles de relleno. IMPORTANTE: cada
+    # relleno se calcula en relación al nivel anterior YA COLOCADO (real o
+    # relleno) — o al precio actual si todavía no hay ningún nivel — nunca
+    # como % fijo del precio actual una vez ya hay un nivel colocado, así
+    # se garantiza matemáticamente que el plan siga en descenso sin
+    # importar cuán profunda esté la zona real anterior (si se ancla al
+    # precio actual, una zona real ya muy profunda puede dejar el
+    # siguiente relleno POR ENCIMA suyo, rompiendo el orden).
     FALLBACK_GAP = 0.05
     while len(levels) < 3:
-        prev_price = levels[-1]["price"]
+        prev_price = levels[-1]["price"] if levels else price
         fallback_price = prev_price * (1 - FALLBACK_GAP)
         pct_vs_precio_actual = (1 - fallback_price / price) * 100
         levels.append({
