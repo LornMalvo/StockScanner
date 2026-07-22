@@ -1458,6 +1458,128 @@ def _classify_timing(signal_level: str) -> str:
     return "sin_datos"
 
 
+# Margen de agrupación del Motor de Confluencia: dos niveles de capas
+# distintas que caigan dentro de este ±1.5% se consideran la misma "zona
+# de soporte" (p.ej. un cluster de soporte histórico y la MM200 casi
+# coincidiendo en precio refuerzan la misma idea, no son 2 ideas separadas)
+CONFLUENCE_MARGIN = 0.015
+
+# Nº de capas independientes coincidiendo en una zona -> etiqueta de fiabilidad
+_RELIABILITY_LABELS = {
+    1: "Media (1 indicador)",
+    2: "Alta (2 indicadores)",
+}
+_RELIABILITY_LABEL_3PLUS = "Extrema (3+ indicadores)"
+
+
+def _build_confluence_supports(price: float, tech: dict) -> list:
+    """
+    Motor de Confluencia (Fase 1 — Capas A, C y D; la Capa B de Volume
+    Profile/HVN queda para la Fase 2).
+
+    Combina 3 métodos técnicos independientes que la app ya calcula por
+    separado:
+      Capa A: clusters de soporte histórico (mínimos locales con rebotes reales)
+      Capa C: medias móviles dinámicas (MM50, MM100, MM200)
+      Capa D: retrocesos de Fibonacci (38.2/50/61.8/78.6% del rango 52 semanas)
+
+    y agrupa los niveles que caen dentro de ±1.5% entre sí en una misma
+    "zona de soporte". Cuantas más capas independientes coincidan en la
+    misma zona, mayor la fiabilidad de que el precio encuentre comprador
+    ahí ("Soporte de Alta Fiabilidad").
+
+    Devuelve una lista de zonas por debajo del precio actual, ordenadas de
+    más cercana a más profunda, cada una con: price, distance_pct,
+    indicators (etiquetas de los métodos que confluyen ahí), n_layers
+    (nº de capas distintas) y reliability (etiqueta textual).
+    """
+    raw = []  # (etiqueta, precio, capa)
+
+    mm50, mm100, mm200 = tech.get("mm50"), tech.get("mm100"), tech.get("mm200")
+    if mm50 and mm50 < price:
+        raw.append(("MM50", mm50, "media_movil"))
+    if mm100 and mm100 < price:
+        raw.append(("MM100", mm100, "media_movil"))
+    if mm200 and mm200 < price:
+        raw.append(("MM200", mm200, "media_movil"))
+
+    fib_data = tech.get("fibonacci")
+    if fib_data and fib_data.get("levels"):
+        for label in ("38.2%", "50.0%", "61.8%", "78.6%"):
+            lvl = fib_data["levels"].get(label)
+            if lvl and lvl < price:
+                raw.append((f"Fibonacci {label}", lvl, "fibonacci"))
+
+    support_data = tech.get("historical_support")
+    if support_data and support_data.get("clusters"):
+        for cl in support_data["clusters"]:
+            if cl["level"] < price:
+                raw.append((f"Soporte histórico ({cl['touches']}× rebotes)", cl["level"], "historico"))
+
+    if not raw:
+        return []
+
+    # Agrupar por confluencia: de más cercano al precio a más profundo,
+    # fusionando cada candidato con la zona abierta más reciente si cae
+    # dentro del margen (las capas ya vienen pre-ordenadas por precio
+    # dentro de cada capa, y el orden global por precio agrupa bien las
+    # zonas sin necesitar una búsqueda cuadrática más compleja)
+    raw.sort(key=lambda c: c[1], reverse=True)
+    zones = []
+    for label, lvl, layer in raw:
+        placed = False
+        for z in zones:
+            if abs(lvl - z["_avg"]) / z["_avg"] <= CONFLUENCE_MARGIN:
+                z["_members"].append((label, lvl, layer))
+                z["_avg"] = sum(m[1] for m in z["_members"]) / len(z["_members"])
+                placed = True
+                break
+        if not placed:
+            zones.append({"_avg": lvl, "_members": [(label, lvl, layer)]})
+
+    result = []
+    for z in zones:
+        n_layers = len(set(m[2] for m in z["_members"]))
+        result.append({
+            "price":        round(z["_avg"], 2),
+            "distance_pct": round((z["_avg"] - price) / price * 100, 1),
+            "indicators":   [m[0] for m in z["_members"]],
+            "n_layers":     n_layers,
+            "reliability":  _RELIABILITY_LABELS.get(n_layers, _RELIABILITY_LABEL_3PLUS),
+        })
+
+    result.sort(key=lambda z: z["price"], reverse=True)
+    return result
+
+
+def _detect_correction_trigger(y: dict, tech: dict, price: float) -> dict:
+    """
+    Trigger de caída: señales de que el valor está en fase correctiva, y
+    por tanto tiene sentido consultar el Mapa de Suelos Proyectados en vez
+    de comprar en la primera pequeña bajada (síndrome del "cuchillo
+    cayendo"). Puramente informativo, no bloquea el cálculo del plan.
+    """
+    reasons = []
+    mm50 = tech.get("mm50")
+    if mm50 and price < mm50:
+        reasons.append("precio por debajo de la MM50")
+
+    week52_high = y.get("52w_high")
+    if week52_high and week52_high > 0:
+        dist = (week52_high - price) / week52_high * 100
+        if dist > 10:
+            reasons.append(f"un {dist:.1f}% por debajo del máximo de 52 semanas")
+
+    # Nota: no disponemos de la tendencia histórica del RSI, solo su valor
+    # actual — se usa como proxy razonable de "presión bajista", no como
+    # una detección estricta de "RSI en caída"
+    rsi = tech.get("rsi")
+    if rsi is not None and rsi < 50:
+        reasons.append(f"RSI en zona baja ({rsi:.0f})")
+
+    return {"active": len(reasons) > 0, "reasons": reasons}
+
+
 def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
     """
     Plan de entrada (3 niveles escalonados con % de capital) y plan de
@@ -1478,6 +1600,15 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
     empresas de calidad baja reciben más peso en los niveles inferiores
     (más cautela, se exige más confirmación de que ha tocado suelo antes de
     comprometer capital importante).
+
+    Los 3 niveles de entrada se alimentan del Mapa de Suelos Proyectados
+    (Motor de Confluencia — ver _build_confluence_supports): en vez de
+    tomar el candidato de soporte más cercano de cualquier tipo, agrupa
+    varios métodos técnicos independientes (soporte histórico, medias
+    móviles, Fibonacci) y muestra las 3 zonas de soporte reales más
+    cercanas al precio, señalando cuántos métodos coinciden en cada una —
+    así se evita comprar en la primera pequeña bajada cuando el soporte
+    realmente sólido está más abajo.
     """
     price = y.get("price")
     if not price or not tech or tech.get("error"):
@@ -1494,58 +1625,49 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
     }
     splits = CAPITAL_SPLITS.get(calidad, CAPITAL_SPLITS["media"])
 
-    # ── Recopilar candidatos a soporte, todos por debajo del precio actual
-    candidates = []
-    mm50  = tech.get("mm50")
-    mm200 = tech.get("mm200")
-    if mm50 and mm50 < price:
-        candidates.append(("MM50", mm50))
-    if mm200 and mm200 < price:
-        candidates.append(("MM200", mm200))
+    correction_trigger = _detect_correction_trigger(y, tech, price)
 
-    fib_data = tech.get("fibonacci")
-    if fib_data and fib_data.get("levels"):
-        for label in ("50.0%", "61.8%", "78.6%"):
-            lvl = fib_data["levels"].get(label)
-            if lvl and lvl < price:
-                candidates.append((f"Fibonacci {label}", lvl))
-
-    support_data = tech.get("historical_support")
-    if support_data and support_data.get("level") and support_data["level"] < price:
-        candidates.append((f"Soporte histórico ({support_data['touches']}× rebotes)", support_data["level"]))
-
-    if not candidates:
+    # ── Mapa de Suelos Proyectados (Motor de Confluencia) ────────────────
+    zones = _build_confluence_supports(price, tech)
+    if not zones:
         return None
 
-    # Ordenar de más cercano al precio (mayor) a más profundo (menor)
-    candidates.sort(key=lambda c: c[1], reverse=True)
+    levels = zones[:3]
 
-    # Seleccionar 3 niveles con separación mínima del 2% entre ellos, para
-    # que no queden pegados si varias fuentes coinciden casi en el mismo precio
-    MIN_GAP = 0.02
-    levels = [candidates[0]]
-    for label, lvl in candidates[1:]:
-        if len(levels) >= 3:
-            break
-        if (levels[-1][1] - lvl) / levels[-1][1] >= MIN_GAP:
-            levels.append((label, lvl))
-
-    # Si no hay suficientes niveles distintos, completar con niveles de
-    # relleno. IMPORTANTE: cada relleno se calcula en relación al nivel
-    # anterior YA COLOCADO (real o relleno), nunca como % fijo del precio
-    # actual — así se garantiza matemáticamente que el plan siga en
-    # descenso sin importar cuán profundo esté el candidato real anterior
-    # (si se ancla al precio actual, un candidato real ya muy profundo
-    # puede dejar el siguiente relleno POR ENCIMA suyo, rompiendo el orden).
+    # Si no hay suficientes zonas de confluencia reales, completar con
+    # niveles de relleno. IMPORTANTE: cada relleno se calcula en relación
+    # al nivel anterior YA COLOCADO (real o relleno), nunca como % fijo del
+    # precio actual — así se garantiza matemáticamente que el plan siga en
+    # descenso sin importar cuán profunda esté la zona real anterior (si
+    # se ancla al precio actual, una zona real ya muy profunda puede dejar
+    # el siguiente relleno POR ENCIMA suyo, rompiendo el orden).
     FALLBACK_GAP = 0.05
     while len(levels) < 3:
-        fallback_price = levels[-1][1] * (1 - FALLBACK_GAP)
+        prev_price = levels[-1]["price"]
+        fallback_price = prev_price * (1 - FALLBACK_GAP)
         pct_vs_precio_actual = (1 - fallback_price / price) * 100
-        levels.append((f"Aproximación (-{pct_vs_precio_actual:.0f}%)", fallback_price))
+        levels.append({
+            "price":        round(fallback_price, 2),
+            "distance_pct": round(-pct_vs_precio_actual, 1),
+            "indicators":   [f"Aproximación (-{pct_vs_precio_actual:.0f}%)"],
+            "n_layers":     0,
+            "reliability":  "Baja — sin confluencia de indicadores en esta zona",
+        })
+
+    def _zone_label(z):
+        if len(z["indicators"]) == 1:
+            return z["indicators"][0]
+        return "Confluencia: " + " + ".join(z["indicators"])
 
     entry_plan = [
-        {"label": lbl, "price": round(lvl, 2), "capital_pct": splits[i]}
-        for i, (lbl, lvl) in enumerate(levels[:3])
+        {
+            "label":       _zone_label(z),
+            "price":       z["price"],
+            "capital_pct": splits[i],
+            "reliability": z["reliability"],
+            "n_layers":    z["n_layers"],
+        }
+        for i, z in enumerate(levels[:3])
     ]
 
     # Precio medio de compra si se ejecutan los 3 niveles con el capital
@@ -1580,49 +1702,17 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
                               f"fundamental se considera cumplida.")},
         ]
 
-        # Stop Loss: NO se ancla al "nivel que caiga en 3ª posición por
-        # distancia" (podía ser cualquier tipo de candidato, incluida una
-        # simple media móvil sin memoria de mercado real) — se prioriza
-        # explícitamente por fiabilidad estructural, buscando entre TODOS
-        # los candidatos disponibles (no solo los 3 elegidos para el plan
-        # de entrada) el más fiable que esté a un precio igual o inferior
-        # al Nivel 3, para que el Stop Loss nunca quede por encima de
-        # ningún nivel de entrada planeado (si no, se activaría el stop
-        # antes incluso de alcanzar los niveles de compra más profundos).
-        nivel3_price = entry_plan[2]["price"]
-
-        def _es_soporte_historico(lbl): return lbl.startswith("Soporte histórico")
-        def _es_fibonacci_profundo(lbl): return "78.6%" in lbl or "61.8%" in lbl
-        def _es_mm200(lbl): return lbl == "MM200"
-
-        RELIABILITY_ORDER = [
-            ("Alta — nivel con evidencia de rebotes reales", _es_soporte_historico),
-            ("Media-alta — retroceso técnico profundo reconocido", _es_fibonacci_profundo),
-            ("Moderada — media móvil simple, sin memoria de mercado real", _es_mm200),
-        ]
-
-        sl_source = None
-        for confidence_txt, check in RELIABILITY_ORDER:
-            matches = [(lbl, lvl) for lbl, lvl in candidates if check(lbl) and lvl <= nivel3_price]
-            if matches:
-                # Si hay varios que cumplen, el más profundo (más conservador)
-                sl_source = min(matches, key=lambda x: x[1])
-                stop_loss_confidence = confidence_txt
-                break
-
-        if sl_source is None:
-            # Ningún candidato de mayor fiabilidad disponible por debajo del
-            # Nivel 3 — fallback al comportamiento anterior, pero marcado
-            # honestamente como de menor confianza en vez de presentarlo
-            # igual que un nivel bien fundamentado
-            sl_source = (entry_plan[2]["label"], nivel3_price)
-            stop_loss_confidence = "Moderada — sin soporte estructural más fiable disponible por debajo de este nivel"
-
-        stop_loss_source = sl_source[0]
-        # Margen de seguridad adicional del 5% por debajo, para no saltar
-        # por un simple pico de ruido de un día que perfore el nivel y
-        # rebote enseguida
-        stop_loss = round(sl_source[1] * 0.95, 2)
+        # Stop Loss: anclaje matemático simple, un 5% por debajo del
+        # Soporte 3 (Estructural) detectado por el Motor de Confluencia —
+        # ese margen adicional evita que salte por un simple pico de ruido
+        # de un día que perfore el nivel y rebote enseguida. Al venir
+        # siempre del Nivel 3 (el más profundo de los 3 elegidos para el
+        # plan de entrada), el Stop Loss nunca queda por encima de ningún
+        # nivel de entrada planeado.
+        nivel3 = entry_plan[2]
+        stop_loss_source = nivel3["label"]
+        stop_loss_confidence = nivel3["reliability"]
+        stop_loss = round(nivel3["price"] * 0.95, 2)
 
     return {
         "calidad": calidad,
@@ -1633,6 +1723,7 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
         "stop_loss_source": stop_loss_source,
         "stop_loss_confidence": stop_loss_confidence,
         "current_price": price,
+        "correction_trigger": correction_trigger,
     }
 
 
@@ -1668,6 +1759,16 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD", fx_rate: fl
         unsafe_allow_html=True
     )
 
+    if plan.get("correction_trigger", {}).get("active"):
+        motivos = ", ".join(plan["correction_trigger"]["reasons"])
+        st.markdown(
+            '<div style="padding:0.45rem 0.7rem;background:#fff7ed;border-left:3px solid #ea580c;'
+            'border-radius:4px;margin-bottom:0.6rem;font-size:0.72rem;color:#9a3412;">'
+            f'🔻 <b>Fase correctiva detectada</b> ({motivos}) — consulta el Mapa de Suelos Proyectados '
+            'antes de comprar en la primera bajada.</div>',
+            unsafe_allow_html=True
+        )
+
     st.markdown(
         f'<div style="font-size:0.72rem;color:#64748b;margin-bottom:0.6rem;">'
         f'Reparto de capital ajustado a Calidad <b style="color:#0284c7;">'
@@ -1676,18 +1777,32 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD", fx_rate: fl
         unsafe_allow_html=True
     )
 
-    entry_html = '<div style="font-size:0.7rem;color:#059669;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem;">Plan de Entrada</div>'
+    # Nomenclatura del Mapa de Suelos Proyectados (Motor de Confluencia)
+    _SOPORTE_NOMBRES = ["Soporte 1 (Inmediato)", "Soporte 2 (Fuerte)", "Soporte 3 (Estructural)"]
+    _RELIABILITY_COLORS = {
+        "Media (1 indicador)":       ("#fef3c7", "#92400e"),
+        "Alta (2 indicadores)":      ("#dbeafe", "#1e40af"),
+        "Extrema (3+ indicadores)":  ("#dcfce7", "#166534"),
+    }
+
+    entry_html = '<div style="font-size:0.7rem;color:#059669;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem;">Mapa de Suelos Proyectados — Plan de Entrada</div>'
     for i, lvl in enumerate(plan["entry_plan"]):
         dist_pct = (lvl["price"] - price_now) / price_now * 100
+        reliability_txt = lvl.get("reliability", "")
+        rel_bg, rel_fg = _RELIABILITY_COLORS.get(reliability_txt, ("#f1f5f9", "#475569"))
         entry_html += (
-            '<div style="display:flex;justify-content:space-between;align-items:center;'
-            'padding:0.5rem 0.7rem;background:#f4f6f9;border-radius:6px;margin-bottom:0.4rem;">'
-            f'<div><span style="font-weight:600;color:#0f172a;">Nivel {i+1}</span> '
+            '<div style="padding:0.5rem 0.7rem;background:#f4f6f9;border-radius:6px;margin-bottom:0.4rem;">'
+            '<div style="display:flex;justify-content:space-between;align-items:center;">'
+            f'<div><span style="font-weight:600;color:#0f172a;">{_SOPORTE_NOMBRES[i]}</span> '
             f'<span style="font-size:0.72rem;color:#64748b;">— {lvl["label"]}</span></div>'
             f'<div style="text-align:right;">'
             f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:600;">'
             f'{currency} {lvl["price"]:,.2f}{_eur(lvl["price"])}</span> '
-            f'<span style="font-size:0.72rem;color:#dc2626;">({dist_pct:+.1f}%)</span><br>'
+            f'<span style="font-size:0.72rem;color:#dc2626;">({dist_pct:+.1f}%)</span>'
+            '</div></div>'
+            '<div style="display:flex;justify-content:flex-end;gap:0.4rem;margin-top:0.3rem;">'
+            f'<span style="background:{rel_bg};color:{rel_fg};padding:1px 8px;border-radius:4px;'
+            f'font-size:0.68rem;font-weight:700;">{reliability_txt}</span>'
             f'<span style="background:#d1fae5;color:#059669;padding:1px 8px;border-radius:4px;'
             f'font-size:0.72rem;font-weight:700;">{lvl["capital_pct"]}% capital</span>'
             '</div></div>'
@@ -1741,11 +1856,12 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD", fx_rate: fl
     st.markdown(
         f'<div class="metric-card">{entry_html}{exit_html}'
         '<div style="font-size:0.68rem;color:#94a3b8;margin-top:0.7rem;">'
-        'Plan orientativo derivado de Soporte histórico, Fibonacci y medias móviles ya calculados, '
-        'combinados con el Valor Objetivo. No es una recomendación de inversión. El Stop Loss se '
-        'prioriza por fiabilidad estructural (Soporte histórico > Fibonacci profundo > MM200), no '
-        'por cuál nivel esté simplemente más cerca — la fiabilidad indicada refleja cuánta confianza '
-        'da ese tipo de nivel concreto, no una garantía.</div>'
+        'Plan orientativo generado por el Motor de Confluencia: agrupa Soporte histórico, medias '
+        'móviles (MM50/MM100/MM200) y Fibonacci dentro de un margen del ±1.5% y muestra las 3 zonas '
+        'de soporte más cercanas, indicando cuántos métodos independientes coinciden en cada una '
+        '(a más indicadores, mayor fiabilidad). Combinado con el Valor Objetivo. No es una '
+        'recomendación de inversión. El Stop Loss se ancla un 5% por debajo del Soporte 3 '
+        '(Estructural) como margen de seguridad frente a ruido de mercado de un solo día.</div>'
         '</div>',
         unsafe_allow_html=True
     )

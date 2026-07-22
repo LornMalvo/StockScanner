@@ -326,6 +326,12 @@ def _calc_historical_support(closes: pd.Series, dates: list, price: float) -> di
     con el tiempo) o Fibonacci (niveles proporcionales fijos), esto son
     niveles de precio REALES donde el mercado ya ha demostrado interés
     comprador de forma repetida.
+
+    Además del cluster más fuerte (compatibilidad con el resto de la app,
+    p.ej. Señal de Entrada, que solo necesita "el mejor soporte"), se
+    devuelven también los 3 clusters más relevantes bajo la clave
+    "clusters" — los usa el Motor de Confluencia (Capa A) para construir
+    el Mapa de Suelos Proyectados con varios niveles, no solo uno.
     """
     try:
         vals = closes.values
@@ -359,22 +365,37 @@ def _calc_historical_support(closes: pd.Series, dates: list, price: float) -> di
             if not placed:
                 clusters.append({"avg": v, "touches": [(i, v)]})
 
-        # Cluster más fuerte (más toques) por debajo del precio
-        clusters.sort(key=lambda c: len(c["touches"]), reverse=True)
-        best = clusters[0]
-        if len(best["touches"]) < 2:
-            return None   # exigir al menos 2 toques para considerarlo "soporte" real
+        # Exigir al menos 2 toques para considerarlo "soporte" real
+        valid_clusters = [cl for cl in clusters if len(cl["touches"]) >= 2]
+        if not valid_clusters:
+            return None
 
-        touch_idxs = [t[0] for t in best["touches"]]
-        last_touch_idx = max(touch_idxs)
-        last_touch_date = dates[last_touch_idx] if last_touch_idx < len(dates) else None
-        distance_pct = (price - best["avg"]) / price * 100
+        def _cluster_dict(cl):
+            touch_idxs = [t[0] for t in cl["touches"]]
+            last_touch_idx = max(touch_idxs)
+            last_touch_date = dates[last_touch_idx] if last_touch_idx < len(dates) else None
+            distance_pct = (price - cl["avg"]) / price * 100
+            return {
+                "level":        round(cl["avg"], 2),
+                "touches":      len(cl["touches"]),
+                "distance_pct": round(distance_pct, 1),
+                "last_touch_date": last_touch_date,
+            }
 
+        # Los 3 clusters más relevantes: primero por nº de toques (más
+        # fiable), y a igualdad de toques, el más cercano al precio actual
+        # (más útil como referencia práctica que un mínimo muy lejano)
+        valid_clusters.sort(key=lambda c: (-len(c["touches"]), price - c["avg"]))
+        top_clusters = [_cluster_dict(cl) for cl in valid_clusters[:3]]
+
+        # Para el Motor de Confluencia interesa el orden por cercanía al
+        # precio (de más cercano a más profundo), no por nº de toques
+        clusters_by_proximity = sorted(top_clusters, key=lambda c: c["level"], reverse=True)
+
+        best = top_clusters[0]  # compatibilidad: cluster más fuerte por toques
         return {
-            "level":        round(best["avg"], 2),
-            "touches":      len(best["touches"]),
-            "distance_pct": round(distance_pct, 1),
-            "last_touch_date": last_touch_date,
+            **best,
+            "clusters": clusters_by_proximity,
         }
     except Exception:
         return None
@@ -567,6 +588,7 @@ def fetch_technical_data(ticker: str) -> dict:
 
         rsi   = _calc_rsi(closes_full)
         mm50  = round(float(closes_full.tail(50).mean()), 4)
+        mm100 = round(float(closes_full.tail(100).mean()), 4) if len(closes_full) >= 100 else None
         mm200 = round(float(closes_full.tail(200).mean()), 4) if len(closes_full) >= 200 else None
 
         rsi_lbl, rsi_cls = _rsi_label(rsi)
@@ -623,27 +645,6 @@ def fetch_technical_data(ticker: str) -> dict:
                           if mm200_series is not None and not mm200_series.isna().iloc[i] else None),
             })
 
-        # ── Serie histórica de MACD/Señal/Histograma para el gráfico ─────
-        # Se recalcula sobre closes_full (2 años) para que el EMA(26) tenga
-        # margen suficiente, y se recorta al mismo tramo que price_history
-        # (~1 año) para que ambos gráficos compartan el mismo eje temporal.
-        ema12_full       = closes_full.ewm(span=12, adjust=False).mean()
-        ema26_full       = closes_full.ewm(span=26, adjust=False).mean()
-        macd_line_full   = ema12_full - ema26_full
-        signal_line_full = macd_line_full.ewm(span=9, adjust=False).mean()
-        hist_line_full   = macd_line_full - signal_line_full
-
-        macd_history = []
-        for i in range(display_start, len(closes_full)):
-            d = hist_full.index[i]
-            date_str = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
-            macd_history.append({
-                "date":   date_str,
-                "macd":   round(float(macd_line_full.iloc[i]), 4),
-                "signal": round(float(signal_line_full.iloc[i]), 4),
-                "hist":   round(float(hist_line_full.iloc[i]), 4),
-            })
-
         return {
             "price":        price,
             "rsi":          rsi,
@@ -653,13 +654,13 @@ def fetch_technical_data(ticker: str) -> dict:
             "mm50_signal":  mm50_signal,
             "mm50_css":     mm50_cls,
             "dist_mm50":    dist_mm50,
+            "mm100":        mm100,
             "mm200":        mm200,
             "mm200_signal": mm200_signal,
             "mm200_css":    mm200_cls,
             "dist_mm200":   dist_mm200,
             "cross_signal": cross_signal,
             "price_history":price_history,
-            "macd_history": macd_history,
             "macd":         macd_data,
             "adx":          adx_val,
             "obv":          obv_data,
