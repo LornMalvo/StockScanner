@@ -27,10 +27,14 @@ from datetime import datetime, timezone
 # TIPO LIBRE DE RIESGO — Bono USA 10 años en tiempo real
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fetch_risk_free_rate() -> float:
+def fetch_risk_free_rate() -> float | None:
     """
     Obtiene el rendimiento del bono del Tesoro USA a 10 años en tiempo real.
-    Ticker: ^TNX (expresado en %). Fallback: 4.5% (aproximación actual).
+    Ticker: ^TNX (expresado en %). Devuelve None si no se puede obtener —
+    NO usa un fallback silencioso aquí: cada consumidor (calc_dcf,
+    _adjust_sector_profile en report.py) decide explícitamente cómo
+    reaccionar ante la ausencia de dato, para poder ser honesto en la UI
+    sobre si se está usando un tipo de interés real o uno de respaldo.
     """
     try:
         tnx  = yf.Ticker("^TNX")
@@ -40,7 +44,7 @@ def fetch_risk_free_rate() -> float:
             return rate / 100   # ^TNX viene en %, lo convertimos a decimal
     except Exception:
         pass
-    return 0.045   # fallback 4.5%
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -163,6 +167,10 @@ def calc_dcf(y: dict, rf: float | None = None) -> dict | None:
 
     if rf is None:
         rf = fetch_risk_free_rate()
+    rf_is_fallback = False
+    if rf is None:
+        rf = 0.045   # fallback conservador — se marca explícitamente para
+        rf_is_fallback = True   # que la UI pueda avisar de que no es el tipo real en vivo
 
     wacc_data  = calc_wacc(y, rf)
     wacc       = wacc_data["wacc"]
@@ -226,6 +234,7 @@ def calc_dcf(y: dict, rf: float | None = None) -> dict | None:
         "scenarios":    results,
         "wacc":         wacc_data,
         "rf":           round(rf * 100, 2),
+        "rf_is_fallback": rf_is_fallback,
         "g_terminal":   g_terminal * 100,
         "fcf_base":     fcf,
         "net_cash":     net_cash,
@@ -361,6 +370,15 @@ def render_dcf(dcf: dict | None, currency: str = "USD", fx_rate: float | None = 
             'DCF no disponible — se necesita Free Cash Flow positivo y precio válido.</span></div>',
             unsafe_allow_html=True)
         return
+
+    if dcf.get("rf_is_fallback"):
+        st.markdown(
+            '<div style="padding:0.45rem 0.7rem;background:#fff7ed;border-left:3px solid #ea580c;'
+            'border-radius:4px;margin-bottom:0.6rem;font-size:0.72rem;color:#9a3412;">'
+            '⚠ No se pudo obtener el bono 10Y USA en tiempo real — este DCF usa un tipo libre '
+            'de riesgo de respaldo (4.5%), no el dato en vivo.</div>',
+            unsafe_allow_html=True
+        )
 
     price    = dcf["price"]
     wacc     = dcf["wacc"]

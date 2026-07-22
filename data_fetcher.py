@@ -663,6 +663,109 @@ def _calc_cross_proximity(mm50: float | None, mm200: float | None, price: float 
     return {"notes": notes} if notes else None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# MOTOR DE CONFLUENCIA — zonas de soporte por combinación de métodos
+# ─────────────────────────────────────────────────────────────────────────────
+# Vive aquí (no en report.py, donde se usa para el Plan de Entrada/Salida, ni
+# en analysis.py, donde se usa para la Señal de Entrada) porque ambos módulos
+# necesitan importarla y report.py ya importa de analysis.py — así se evita
+# el import circular manteniendo una única implementación compartida.
+
+CONFLUENCE_MARGIN = 0.015
+
+# Nº de capas independientes coincidiendo en una zona -> etiqueta de fiabilidad
+_RELIABILITY_LABELS = {
+    1: "Media (1 indicador)",
+    2: "Alta (2 indicadores)",
+}
+_RELIABILITY_LABEL_3PLUS = "Extrema (3+ indicadores)"
+
+
+def build_confluence_supports(price: float, tech: dict) -> list:
+    """
+    Motor de Confluencia (Fase 1 — Capas A, C y D; la Capa B de Volume
+    Profile/HVN queda para la Fase 2).
+
+    Combina 3 métodos técnicos independientes que la app ya calcula por
+    separado:
+      Capa A: clusters de soporte histórico (mínimos locales con rebotes reales)
+      Capa C: medias móviles dinámicas (MM50, MM100, MM200)
+      Capa D: retrocesos de Fibonacci (38.2/50/61.8/78.6% del rango 52 semanas)
+
+    y agrupa los niveles que caen dentro de ±1.5% entre sí en una misma
+    "zona de soporte". Cuantas más capas independientes coincidan en la
+    misma zona, mayor la fiabilidad de que el precio encuentre comprador
+    ahí ("Soporte de Alta Fiabilidad").
+
+    Devuelve una lista de zonas por debajo del precio actual, ordenadas de
+    más cercana a más profunda, cada una con: price, distance_pct,
+    indicators (etiquetas de los métodos que confluyen ahí), n_layers
+    (nº de capas distintas) y reliability (etiqueta textual).
+
+    Usada tanto por el Plan de Entrada/Salida (report.py) como por el check
+    "cerca de un soporte" de la Señal de Entrada (analysis.py) — antes eran
+    2 sistemas separados resolviendo la misma pregunta con lógicas
+    distintas; ahora comparten una única implementación.
+    """
+    raw = []  # (etiqueta, precio, capa)
+
+    mm50, mm100, mm200 = tech.get("mm50"), tech.get("mm100"), tech.get("mm200")
+    if mm50 and mm50 < price:
+        raw.append(("MM50", mm50, "media_movil"))
+    if mm100 and mm100 < price:
+        raw.append(("MM100", mm100, "media_movil"))
+    if mm200 and mm200 < price:
+        raw.append(("MM200", mm200, "media_movil"))
+
+    fib_data = tech.get("fibonacci")
+    if fib_data and fib_data.get("levels"):
+        for label in ("38.2%", "50.0%", "61.8%", "78.6%"):
+            lvl = fib_data["levels"].get(label)
+            if lvl and lvl < price:
+                raw.append((f"Fibonacci {label}", lvl, "fibonacci"))
+
+    support_data = tech.get("historical_support")
+    if support_data and support_data.get("clusters"):
+        for cl in support_data["clusters"]:
+            if cl["level"] < price:
+                raw.append((f"Soporte histórico ({cl['touches']}× rebotes)", cl["level"], "historico"))
+
+    if not raw:
+        return []
+
+    # Agrupar por confluencia: de más cercano al precio a más profundo,
+    # fusionando cada candidato con la zona abierta más reciente si cae
+    # dentro del margen (las capas ya vienen pre-ordenadas por precio
+    # dentro de cada capa, y el orden global por precio agrupa bien las
+    # zonas sin necesitar una búsqueda cuadrática más compleja)
+    raw.sort(key=lambda c: c[1], reverse=True)
+    zones = []
+    for label, lvl, layer in raw:
+        placed = False
+        for z in zones:
+            if abs(lvl - z["_avg"]) / z["_avg"] <= CONFLUENCE_MARGIN:
+                z["_members"].append((label, lvl, layer))
+                z["_avg"] = sum(m[1] for m in z["_members"]) / len(z["_members"])
+                placed = True
+                break
+        if not placed:
+            zones.append({"_avg": lvl, "_members": [(label, lvl, layer)]})
+
+    result = []
+    for z in zones:
+        n_layers = len(set(m[2] for m in z["_members"]))
+        result.append({
+            "price":        round(z["_avg"], 2),
+            "distance_pct": round((z["_avg"] - price) / price * 100, 1),
+            "indicators":   [m[0] for m in z["_members"]],
+            "n_layers":     n_layers,
+            "reliability":  _RELIABILITY_LABELS.get(n_layers, _RELIABILITY_LABEL_3PLUS),
+        })
+
+    result.sort(key=lambda z: z["price"], reverse=True)
+    return result
+
+
 def fetch_technical_data(ticker: str) -> dict:
     """RSI(14), MM50, MM200 con metadatos de frescura."""
     try:
@@ -888,6 +991,29 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
                         net_income_q.append({"date": str(date)[:10], "value": val})
                     break
 
+        # ── EBIT e Interest Expense TTM (para Cobertura de Intereses) ──────
+        # interest_expense también lo usa calc_wacc (dcf.py) para el coste
+        # de deuda implícito — antes ese campo nunca se rellenaba desde
+        # aquí, así que WACC siempre caía al fallback (Rf + 1.5pp) aunque
+        # hubiera datos reales disponibles.
+        ebit_ttm = None
+        if income_stmt is not None and not income_stmt.empty:
+            for label in ["EBIT", "Operating Income"]:
+                if label in income_stmt.index:
+                    row = income_stmt.loc[label].dropna()
+                    if len(row) > 0:
+                        ebit_ttm = float(row.iloc[:4].sum())
+                        break
+
+        interest_expense_ttm = None
+        if income_stmt is not None and not income_stmt.empty:
+            for label in ["Interest Expense", "Interest Expense Non Operating"]:
+                if label in income_stmt.index:
+                    row = income_stmt.loc[label].dropna()
+                    if len(row) > 0:
+                        interest_expense_ttm = abs(float(row.iloc[:4].sum()))
+                        break
+
         # ── EPS trimestral ────────────────────────────────────────────────
         eps_q = []
         try:
@@ -1072,6 +1198,8 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
             "net_income_q":    net_income_q,
             "eps_q":           eps_q,
             "ebitda":          info.get("ebitda"),
+            "ebit_ttm":        ebit_ttm,
+            "interest_expense": interest_expense_ttm,
 
             # ── Metadatos de fiabilidad ───────────────────────────────────
             "meta": {
@@ -1127,24 +1255,33 @@ NET_INCOME_CONCEPTS = [
 ]
 
 
+_CIK_MAP_CACHE: dict = {}   # ticker -> CIK, cacheado a nivel de proceso — el
+                             # listado completo de la SEC son varios MB, no
+                             # tiene sentido volver a descargarlo en cada
+                             # análisis si ya lo tenemos de una consulta previa
+
+
 def _get_cik(ticker: str) -> str | None:
-    """Obtiene el CIK de la SEC para un ticker dado."""
-    try:
-        r = requests.get(
-            "https://www.sec.gov/files/company_tickers.json",
-            headers=SEC_HEADERS, timeout=12
-        )
-        if r.status_code != 200:
-            print(f"[SEC CIK] HTTP {r.status_code}")
+    """Obtiene el CIK de la SEC para un ticker dado (con caché de proceso)."""
+    global _CIK_MAP_CACHE
+    if not _CIK_MAP_CACHE:
+        try:
+            r = requests.get(
+                "https://www.sec.gov/files/company_tickers.json",
+                headers=SEC_HEADERS, timeout=12
+            )
+            if r.status_code != 200:
+                print(f"[SEC CIK] HTTP {r.status_code}")
+                return None
+            data = r.json()
+            for entry in data.values():
+                t = entry.get("ticker", "").upper()
+                if t:
+                    _CIK_MAP_CACHE[t] = str(entry["cik_str"]).zfill(10)
+        except Exception as e:
+            print(f"[SEC CIK] Error: {e}")
             return None
-        data = r.json()
-        for entry in data.values():
-            if entry.get("ticker", "").upper() == ticker.upper():
-                cik = str(entry["cik_str"]).zfill(10)
-                return cik
-    except Exception as e:
-        print(f"[SEC CIK] Error: {e}")
-    return None
+    return _CIK_MAP_CACHE.get(ticker.upper())
 
 
 def _get_concept(cik: str, concept: str, unit: str = "USD") -> list:

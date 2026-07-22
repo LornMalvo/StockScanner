@@ -8,7 +8,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import yfinance as yf
 import statistics
-from data_fetcher import fetch_balance_sheet_history, fetch_yahoo_data, fetch_technical_data
+from data_fetcher import (
+    fetch_balance_sheet_history, fetch_yahoo_data, fetch_technical_data,
+    fetch_sec_data, verify_cross_data, build_confluence_supports,
+)
 from analysis import (
     calc_entry_signal, calc_trend, fetch_peer_data, get_manual_competitors,
     render_entry_signal, render_trend, render_peers,
@@ -20,6 +23,9 @@ from analysis import (
 from dcf import (
     fetch_historical_multiples,
     render_historical_multiples,
+    fetch_risk_free_rate,
+    calc_dcf,
+    render_dcf,
 )
 from pdf_export import render_pdf_download_button
 
@@ -510,23 +516,6 @@ _ADJ_MIN     = 0.75    # cota inferior del factor de ajuste (máx -25%)
 _ADJ_MAX     = 1.25    # cota superior del factor de ajuste (máx +25%)
 
 
-def fetch_risk_free_rate() -> float | None:
-    """
-    Rendimiento del bono del Tesoro USA a 10 años en tiempo real (^TNX).
-    Devuelve None si no se puede obtener — en ese caso no se ajustan los
-    benchmarks y se usan los valores estáticos originales.
-    """
-    try:
-        t    = yf.Ticker("^TNX")
-        info = t.info
-        rate = info.get("regularMarketPrice") or info.get("previousClose")
-        if rate and 0 < rate < 20:
-            return rate / 100
-    except Exception as e:
-        print(f"[RiskFreeRate] Error: {e}")
-    return None
-
-
 def _adjust_sector_profile(profile: dict, rf_current: float | None) -> tuple[dict, dict | None]:
     """
     Ajusta pe_fair, pe_high y ev_ebitda_fair según el tipo libre de riesgo
@@ -595,7 +584,8 @@ def _robust_aggregate(weighted: list[float]) -> float:
     return statistics.median(weighted)
 
 
-def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None, mult_data: dict | None = None) -> tuple[float | None, list[str], tuple[float, float] | None, float | None]:
+def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None, mult_data: dict | None = None,
+                      dcf_data: dict | None = None) -> tuple[float | None, list[str], tuple[float, float] | None, float | None, str | None]:
     """
     Calcula el valor objetivo usando los métodos relevantes para el sector.
     Devuelve (fair_value, lista_de_métodos_usados, rango_min_max).
@@ -730,6 +720,39 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None, mult_data: 
                     f"(precio objetivo medio) → {target_mean:,.2f}"
                 )
 
+    DCF_MAX_SPREAD = 0.80   # puerta de confianza: si (optimista-pesimista)/base
+                             # supera este spread, el DCF es demasiado sensible a
+                             # los supuestos de crecimiento como para fiarse del
+                             # número — se excluye de la mediana del Valor
+                             # Objetivo pero se sigue mostrando como referencia
+                             # en su propia sección de 3 escenarios
+    dcf_excluded_reason = None
+
+    def _add_dcf():
+        nonlocal dcf_excluded_reason
+        if not dcf_data:
+            return
+        sc = dcf_data.get("scenarios", {})
+        base = sc.get("base", {}).get("price_target")
+        pess = sc.get("pessimistic", {}).get("price_target")
+        opt  = sc.get("optimistic", {}).get("price_target")
+        if not base or base <= 0 or pess is None or opt is None:
+            return
+        spread = (opt - pess) / base
+        if spread <= DCF_MAX_SPREAD:
+            targets.append(base)
+            weighted.append(base)
+            weighted_single.append(base)
+            methods_used.append(
+                f"DCF (escenario base, WACC {dcf_data['wacc']['wacc']*100:.1f}%) → {base:,.2f}"
+            )
+        else:
+            dcf_excluded_reason = (
+                f"DCF excluido del Valor Objetivo por alta dispersión entre escenarios "
+                f"(pesimista {pess:,.2f} — optimista {opt:,.2f}, spread {spread*100:.0f}% > {DCF_MAX_SPREAD*100:.0f}%) "
+                f"— consulta la sección DCF como referencia, no como parte del consenso."
+            )
+
     # ── FALLBACK HYPER-GROWTH: EV/Sales cuando PER/PEG no aplican ──────────
     is_eps_negative = (eps_fwd is None or eps_fwd <= 0) and (eps_ttm is None or eps_ttm <= 0)
     is_hyper_growth = is_eps_negative and rev_yoy is not None and rev_yoy > 25
@@ -747,14 +770,16 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None, mult_data: 
                 f"÷ {ev_revenue:.1f} (EV/Sales actual) ] , Rev YoY {rev_yoy:.0f}% > 25% ) → {val:,.2f}"
             )
         # En modo hyper-growth NO se usan PER/PEG aunque el sector los liste,
-        # porque el EPS negativo los invalida por definición.
+        # porque el EPS negativo los invalida por definición. El DCF SÍ puede
+        # aplicar si hay FCF positivo pese al EPS negativo (cargos no-caja).
         _add_consensus()
+        _add_dcf()
         if not weighted:
-            return None, [], None, None
+            return None, [], None, None, None
         fair_value = _robust_aggregate(weighted)
         fair_value_single = _robust_aggregate(weighted_single)
         rng = (min(targets), max(targets)) if len(targets) >= 2 else None
-        return fair_value, methods_used, rng, fair_value_single
+        return fair_value, methods_used, rng, fair_value_single, dcf_excluded_reason
 
     for method in profile["methods"]:
 
@@ -903,14 +928,15 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None, mult_data: 
                 )
 
     _add_consensus()
+    _add_dcf()
 
     if not weighted:
-        return None, [], None, None
+        return None, [], None, None, None
 
     fair_value = _robust_aggregate(weighted)
     fair_value_single = _robust_aggregate(weighted_single)
     rng = (min(targets), max(targets)) if len(targets) >= 2 else None
-    return fair_value, methods_used, rng, fair_value_single
+    return fair_value, methods_used, rng, fair_value_single, dcf_excluded_reason
 
 
 # ─── Salud fundamental ajustada al sector ────────────────────────────────────
@@ -1328,9 +1354,9 @@ def _calc_health_score(y: dict, profile: dict, bh: dict | None = None) -> tuple[
         score += pts
         breakdown.append((f"PEG {peg:.2f} (ref. sector <{peg_ok}): +{pts:.1f}/12", _pts_color(pts, 12)))
 
-    # -- Balance y Liquidez ampliado (0-20 pts) --------------------------
-    # 6 sub-métricas: FCF, Current Ratio, Quick Ratio, Debt/Equity,
-    # Net Debt/EBITDA y Dilución (NUEVA).
+    # -- Balance y Liquidez ampliado (0-23 pts) --------------------------
+    # 7 sub-métricas: FCF, Current Ratio, Quick Ratio, Debt/Equity,
+    # Net Debt/EBITDA, Cobertura de Intereses (NUEVA) y Dilución.
     b_pts = 0
 
     # FCF positivo, con desglose CFO/CAPEX (0-3)
@@ -1403,6 +1429,29 @@ def _calc_health_score(y: dict, profile: dict, bh: dict | None = None) -> tuple[
         ))
     else:
         missing_fields.append("Net Debt/EBITDA")
+
+    # Cobertura de intereses: EBIT / Gasto en intereses (0-3, NUEVO) --
+    # Antes se miraba Deuda/Equity y Net Debt/EBITDA (cuánta deuda tiene la
+    # empresa), pero no si puede PAGAR los intereses de esa deuda con el
+    # beneficio operativo actual — que es donde suelen aparecer los
+    # problemas de liquidez reales antes de una crisis, incluso en
+    # empresas con ratios de apalancamiento aparentemente razonables.
+    ebit_ttm = y.get("ebit_ttm")
+    interest_expense = y.get("interest_expense")
+    if ebit_ttm is not None and interest_expense and interest_expense > 0:
+        interest_coverage = ebit_ttm / interest_expense
+        if interest_coverage >= 6:      ic_pts = 3
+        elif interest_coverage >= 3:    ic_pts = 2
+        elif interest_coverage >= 1.5:  ic_pts = 1
+        elif interest_coverage > 0:     ic_pts = 0.3
+        else:                            ic_pts = 0
+        b_pts += ic_pts
+        breakdown.append((
+            f"Cobertura de intereses (EBIT/Gasto intereses) {interest_coverage:.1f}×: +{ic_pts:.1f}/3",
+            _pts_color(ic_pts, 3)
+        ))
+    else:
+        missing_fields.append("Cobertura de intereses (EBIT/Gasto en intereses)")
 
     # Dilución (0-4, NUEVO) -- variación de acciones en circulación vs año
     # anterior. Emitir acciones nuevas para financiar pérdidas diluye a los
@@ -1512,96 +1561,6 @@ def _classify_timing(signal_level: str) -> str:
 # distintas que caigan dentro de este ±1.5% se consideran la misma "zona
 # de soporte" (p.ej. un cluster de soporte histórico y la MM200 casi
 # coincidiendo en precio refuerzan la misma idea, no son 2 ideas separadas)
-CONFLUENCE_MARGIN = 0.015
-
-# Nº de capas independientes coincidiendo en una zona -> etiqueta de fiabilidad
-_RELIABILITY_LABELS = {
-    1: "Media (1 indicador)",
-    2: "Alta (2 indicadores)",
-}
-_RELIABILITY_LABEL_3PLUS = "Extrema (3+ indicadores)"
-
-
-def _build_confluence_supports(price: float, tech: dict) -> list:
-    """
-    Motor de Confluencia (Fase 1 — Capas A, C y D; la Capa B de Volume
-    Profile/HVN queda para la Fase 2).
-
-    Combina 3 métodos técnicos independientes que la app ya calcula por
-    separado:
-      Capa A: clusters de soporte histórico (mínimos locales con rebotes reales)
-      Capa C: medias móviles dinámicas (MM50, MM100, MM200)
-      Capa D: retrocesos de Fibonacci (38.2/50/61.8/78.6% del rango 52 semanas)
-
-    y agrupa los niveles que caen dentro de ±1.5% entre sí en una misma
-    "zona de soporte". Cuantas más capas independientes coincidan en la
-    misma zona, mayor la fiabilidad de que el precio encuentre comprador
-    ahí ("Soporte de Alta Fiabilidad").
-
-    Devuelve una lista de zonas por debajo del precio actual, ordenadas de
-    más cercana a más profunda, cada una con: price, distance_pct,
-    indicators (etiquetas de los métodos que confluyen ahí), n_layers
-    (nº de capas distintas) y reliability (etiqueta textual).
-    """
-    raw = []  # (etiqueta, precio, capa)
-
-    mm50, mm100, mm200 = tech.get("mm50"), tech.get("mm100"), tech.get("mm200")
-    if mm50 and mm50 < price:
-        raw.append(("MM50", mm50, "media_movil"))
-    if mm100 and mm100 < price:
-        raw.append(("MM100", mm100, "media_movil"))
-    if mm200 and mm200 < price:
-        raw.append(("MM200", mm200, "media_movil"))
-
-    fib_data = tech.get("fibonacci")
-    if fib_data and fib_data.get("levels"):
-        for label in ("38.2%", "50.0%", "61.8%", "78.6%"):
-            lvl = fib_data["levels"].get(label)
-            if lvl and lvl < price:
-                raw.append((f"Fibonacci {label}", lvl, "fibonacci"))
-
-    support_data = tech.get("historical_support")
-    if support_data and support_data.get("clusters"):
-        for cl in support_data["clusters"]:
-            if cl["level"] < price:
-                raw.append((f"Soporte histórico ({cl['touches']}× rebotes)", cl["level"], "historico"))
-
-    if not raw:
-        return []
-
-    # Agrupar por confluencia: de más cercano al precio a más profundo,
-    # fusionando cada candidato con la zona abierta más reciente si cae
-    # dentro del margen (las capas ya vienen pre-ordenadas por precio
-    # dentro de cada capa, y el orden global por precio agrupa bien las
-    # zonas sin necesitar una búsqueda cuadrática más compleja)
-    raw.sort(key=lambda c: c[1], reverse=True)
-    zones = []
-    for label, lvl, layer in raw:
-        placed = False
-        for z in zones:
-            if abs(lvl - z["_avg"]) / z["_avg"] <= CONFLUENCE_MARGIN:
-                z["_members"].append((label, lvl, layer))
-                z["_avg"] = sum(m[1] for m in z["_members"]) / len(z["_members"])
-                placed = True
-                break
-        if not placed:
-            zones.append({"_avg": lvl, "_members": [(label, lvl, layer)]})
-
-    result = []
-    for z in zones:
-        n_layers = len(set(m[2] for m in z["_members"]))
-        result.append({
-            "price":        round(z["_avg"], 2),
-            "distance_pct": round((z["_avg"] - price) / price * 100, 1),
-            "indicators":   [m[0] for m in z["_members"]],
-            "n_layers":     n_layers,
-            "reliability":  _RELIABILITY_LABELS.get(n_layers, _RELIABILITY_LABEL_3PLUS),
-        })
-
-    result.sort(key=lambda z: z["price"], reverse=True)
-    return result
-
-
 def _detect_correction_trigger(y: dict, tech: dict, price: float) -> dict:
     """
     Trigger de caída: señales de que el valor está en fase correctiva, y
@@ -1652,7 +1611,7 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
     comprometer capital importante).
 
     Los 3 niveles de entrada se alimentan del Mapa de Suelos Proyectados
-    (Motor de Confluencia — ver _build_confluence_supports): en vez de
+    (Motor de Confluencia — ver build_confluence_supports en data_fetcher.py): en vez de
     tomar el candidato de soporte más cercano de cualquier tipo, agrupa
     varios métodos técnicos independientes (soporte histórico, medias
     móviles, Fibonacci) y muestra las 3 zonas de soporte reales más
@@ -1688,7 +1647,7 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
     # vez de desde una zona real — es precisamente en este escenario
     # (sin suelo técnico visible) donde un plan escalonado es más útil,
     # no menos.
-    zones = _build_confluence_supports(price, tech)
+    zones = build_confluence_supports(price, tech)
 
     levels = zones[:3]
 
@@ -2112,8 +2071,14 @@ def _evaluate(y: dict, bh: dict | None = None, mult_data: dict | None = None) ->
     # financiera — no se mezcla en el score de Salud Fundamental) ─────────
     piotroski = calc_piotroski_score(y, bh)
 
+    # ── DCF (3 escenarios) — reutiliza el mismo Rf ya cacheado en sesión,
+    # calc_dcf gestiona internamente el caso rf_current=None (fallback
+    # marcado como tal, ver fetch_risk_free_rate/calc_dcf en dcf.py)
+    dcf_data = calc_dcf(y, rf=rf_current)
+
     # ── Valor objetivo ───────────────────────────────────────────────────
-    fair_value, methods_used, targets_range, fair_value_single = _calc_fair_value(y, profile, bh, mult_data)
+    fair_value, methods_used, targets_range, fair_value_single, dcf_excluded_reason = \
+        _calc_fair_value(y, profile, bh, mult_data, dcf_data)
 
     # Flag informativo: ¿se usó el fallback hyper-growth (EV/Sales)?
     is_hyper_growth = any("hyper-growth" in m for m in methods_used)
@@ -2272,6 +2237,8 @@ def _evaluate(y: dict, bh: dict | None = None, mult_data: dict | None = None) ->
         "fair_value":      fair_value,
         "fair_value_single": fair_value_single,
         "methods_used":    methods_used,
+        "dcf_data":          dcf_data,
+        "dcf_excluded_reason": dcf_excluded_reason,
         "upside":          upside,
         "diag":            diag,
         "diag_color":      diag_color,
@@ -2373,6 +2340,48 @@ def fetch_peer_full_data(tickers: list) -> list:
 
 # ─── Render principal ─────────────────────────────────────────────────────────
 
+def _render_sec_verification(sec_data: dict | None, cross: dict | None, currency: str = "USD"):
+    """
+    Verificación cruzada del Revenue TTM de Yahoo Finance contra SEC EDGAR
+    (fuente regulatoria oficial, no un agregador). Se omite en silencio si
+    no hay CIK disponible (extranjeras, ADRs) o si SEC EDGAR no respondió —
+    no es un dato crítico, es una capa de confianza adicional.
+    """
+    if not sec_data or not cross or cross.get("status") == "NO_DATA":
+        return   # sin CIK / sin datos SEC / API no disponible — no molestar con un aviso
+
+    status = cross["status"]
+    pct    = cross["pct"]
+    sec_ttm   = cross["sec_ttm"]
+    yahoo_ttm = cross["yahoo_ttm"]
+
+    STATUS_STYLE = {
+        "OK":    ("#059669", "#f0fdf4", "✅", "Revenue TTM verificado — coincide con SEC EDGAR"),
+        "WARN":  ("#d97706", "#fffbeb", "⚠",  "Pequeña discrepancia entre Yahoo y SEC EDGAR"),
+        "ERROR": ("#dc2626", "#fef2f2", "❌", "Discrepancia significativa entre Yahoo y SEC EDGAR"),
+    }
+    color, bg, icon, label = STATUS_STYLE.get(status, STATUS_STYLE["WARN"])
+
+    def _fmt_big(v):
+        if not v: return "N/A"
+        v = float(v)
+        if abs(v) >= 1e9: return f"{currency} {v/1e9:.2f}B"
+        if abs(v) >= 1e6: return f"{currency} {v/1e6:.0f}M"
+        return f"{currency} {v:,.0f}"
+
+    meta = sec_data.get("meta", {})
+    st.markdown(
+        f'<div style="padding:0.6rem 0.8rem;background:{bg};border-left:3px solid {color};'
+        f'border-radius:4px;margin-bottom:0.8rem;font-size:0.78rem;color:{color};">'
+        f'<b>{icon} {label}</b> ({pct:.1f}% de diferencia)<br>'
+        f'<span style="color:#475569;font-size:0.74rem;">'
+        f'Yahoo Finance: {_fmt_big(yahoo_ttm)} · SEC EDGAR: {_fmt_big(sec_ttm)} · '
+        f'{meta.get("source","")}</span>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+
+
 def render_report(ticker, company_name, y: dict,
                   fx_rate: float | None = None, tech: dict | None = None,
                   fx_meta: dict | None = None):
@@ -2384,6 +2393,40 @@ def render_report(ticker, company_name, y: dict,
     meta_tech  = {}
     if tech and not tech.get("error"):
         meta_tech = {k: tech.get(k) for k in ("last_date","days_old","freshness","trust","source")}
+
+    # ── Fuentes y confianza de los datos ──────────────────────────────────
+    # El sistema TRUST (OFICIAL/AGREGADO/CALCULADO/ESTIMADO) ya se calcula
+    # para cada grupo de métricas desde fetch_yahoo_data, pero hasta ahora
+    # no se mostraba en ningún sitio — es la transparencia que necesita el
+    # usuario para saber cuánto fiarse de cada cifra concreta del informe.
+    trust_fields = [
+        ("Precio",              meta_y.get("trust_price")),
+        ("Fundamentales",       meta_y.get("trust_fundamentals")),
+        ("Consenso analistas",  meta_y.get("trust_consensus")),
+        ("Crecimiento YoY",     meta_y.get("trust_growth")),
+        ("TTM (Revenue/EPS)",   meta_y.get("trust_ttm")),
+    ]
+    trust_fields = [(lbl, t) for lbl, t in trust_fields if t]
+    if trust_fields:
+        with st.expander("ℹ️ Fuentes y confianza de los datos"):
+            badges = "".join(
+                f'<div style="display:flex;align-items:center;justify-content:space-between;'
+                f'padding:0.35rem 0;border-bottom:1px solid #eef1f5;font-size:0.8rem;">'
+                f'<span style="color:#475569;">{lbl}</span>'
+                f'<span style="background:{t["color"]}33;color:#334155;'
+                f'padding:2px 10px;border-radius:12px;font-weight:600;">{t["icon"]} {t["label"]}</span>'
+                f'</div>'
+                for lbl, t in trust_fields
+            )
+            st.markdown(
+                f'<div>{badges}'
+                '<div style="font-size:0.7rem;color:#94a3b8;margin-top:0.6rem;">'
+                '🟢 Oficial SEC — dato regulatorio verificado &nbsp;·&nbsp; '
+                '🟡 Yahoo Finance — agregador de mercado &nbsp;·&nbsp; '
+                '🟠 Calculado por la app a partir de datos brutos &nbsp;·&nbsp; '
+                '🔴 Estimación de analistas o dato no verificable oficialmente</div></div>',
+                unsafe_allow_html=True
+            )
 
     from analysis import get_sector_benchmarks
     sbm = get_sector_benchmarks(y.get("sector",""))
@@ -2714,6 +2757,18 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     trend = calc_trend(y)
     render_trend(trend)
+
+    # ════════════════════════════════════════════════════════════════════
+    # VERIFICACIÓN CRUZADA SEC EDGAR — contraste independiente del Revenue
+    # TTM de Yahoo contra la fuente regulatoria oficial (SEC EDGAR XBRL),
+    # no un agregador. Se degrada en silencio si el ticker no tiene CIK
+    # (extranjeros, ADRs sin registro directo en SEC) o si la API de SEC
+    # no responde — nunca bloquea el resto del informe.
+    # ════════════════════════════════════════════════════════════════════
+    with st.spinner("Verificando datos contra SEC EDGAR…"):
+        sec_data = fetch_sec_data(ticker)
+    cross = verify_cross_data(sec_data, y) if sec_data else None
+    _render_sec_verification(sec_data, cross, currency_y)
 
     # ════════════════════════════════════════════════════════════════════
     # CONSULTA DE RESULTADOS
@@ -3518,6 +3573,22 @@ def render_report(ticker, company_name, y: dict,
     if mult_data is not None:
         mult_data["sector_pe_fair"] = ev.get("pe_ref")
     render_historical_multiples(mult_data)
+
+    # ════════════════════════════════════════════════════════════════════
+    # VALORACIÓN DCF — TRES ESCENARIOS
+    # ════════════════════════════════════════════════════════════════════
+    # dcf_data ya se calculó antes de _evaluate (para poder incluir su
+    # escenario base en el Valor Objetivo si pasa la puerta de confianza —
+    # ver _add_dcf en _calc_fair_value). Aquí solo se renderiza el desglose
+    # completo de los 3 escenarios como referencia adicional.
+    render_dcf(ev.get("dcf_data"), currency_y, fx_rate)
+    if ev.get("dcf_excluded_reason"):
+        st.markdown(
+            '<div style="padding:0.5rem 0.7rem;background:#fff7ed;border-left:3px solid #ea580c;'
+            'border-radius:4px;margin:-0.3rem 0 0.8rem 0;font-size:0.75rem;color:#9a3412;">'
+            f'ℹ️ {ev["dcf_excluded_reason"]}</div>',
+            unsafe_allow_html=True
+        )
 
     # ════════════════════════════════════════════════════════════════════
     # SEÑAL DE ENTRADA

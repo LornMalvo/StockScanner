@@ -11,6 +11,7 @@ import time
 import json
 import os
 from datetime import datetime, timezone, timedelta
+from data_fetcher import build_confluence_supports
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BENCHMARKS DE SECTOR — medias de mercado por métrica
@@ -870,9 +871,20 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
 
     checks = []
 
+    # ── Rebalanceo peso técnico vs fundamental ─────────────────────────────
+    # Con la incorporación de Golden/Death Cross y cruce de precio con
+    # volumen, el bloque técnico había crecido a ~10 checks de peso 2 (20
+    # puntos posibles) frente a un núcleo fundamental de solo 3 checks de
+    # peso 3 (9 puntos) — de forma que el timing podía dominar el % final
+    # de un sistema pensado como "calidad + valor + timing", en ese orden.
+    # Se suben los 2 checks más puramente de VALOR/CALIDAD (antes 3, ahora
+    # 4) y se sube PEG (antes 2, ahora 3) — y más abajo se baja el peso de
+    # "Precio bajo MM200" porque se solapa con Golden/Death Cross y con el
+    # cruce de precio con volumen (los 3 miden esencialmente lo mismo:
+    # posición del precio respecto a sus propias medias móviles).
     if upside is not None:
         checks.append(("Margen de seguridad (upside > 10%)", upside >= 10,
-            f"Upside estimado: {upside:+.1f}%", 3))
+            f"Upside estimado: {upside:+.1f}%", 4))
 
     if week52_high and price:
         dist = (week52_high - price) / week52_high * 100
@@ -887,17 +899,22 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
 
     if mm200 is not None and price:
         ok = price < mm200
+        # Peso bajado de 2 a 1: se solapa con Golden/Death Cross y con el
+        # cruce de precio con volumen (ambos más abajo) — los 3 miden
+        # esencialmente la misma idea (posición del precio respecto a sus
+        # propias medias móviles) desde ángulos distintos; puntuar los 3 a
+        # peso pleno contaría la misma señal casi tres veces.
         checks.append(("Precio bajo MM200 (posible rebote)", ok,
-            f"Precio {'bajo' if ok else 'sobre'} MM200 ({mm200:,.2f})", 2))
+            f"Precio {'bajo' if ok else 'sobre'} MM200 ({mm200:,.2f})", 1))
 
     checks.append(("Salud fundamental sólida (>55/100)", health >= 55,
-        f"Score fundamental: {health}/100", 3))
+        f"Score fundamental: {health}/100", 4))
 
     peg     = y.get("peg_ratio")
     peg_ref = ev.get("peg_ok", 1.5)
     if peg is not None:
         checks.append((f"PEG atractivo (< {peg_ref})", peg < peg_ref,
-            f"PEG actual: {peg:.2f}", 2))
+            f"PEG actual: {peg:.2f}", 3))
 
     fcf = y.get("free_cash_flow") or 0
     checks.append(("Free Cash Flow positivo", fcf > 0,
@@ -1003,37 +1020,46 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
                       else "Precio fuera de zonas de soporte Fibonacci clave (61.8%/78.6%)")
         checks.append(("Cerca de soporte estructural (Fibonacci)", fib_ok, fib_detail, 2))
 
-    # ── Cerca de mínimos anuales o soporte histórico con rebotes previos ──
-    # Distinto del check de Fibonacci (que usa niveles proporcionales
-    # calculados matemáticamente): aquí se comprueba si el precio está
-    # literalmente cerca del mínimo real de 52 semanas, o de un nivel donde
-    # la acción ya ha rebotado varias veces de verdad (Soporte histórico,
-    # con evidencia empírica de interés comprador en ese precio concreto).
-    NEAR_LOW_THRESHOLD = 0.05   # 5% de margen sobre el mínimo/soporte
-    price_now   = y.get("price")
-    week52_low  = y.get("52w_low")
-    support_data = tech.get("historical_support") if tech and not tech.get("error") else None
-
-    near_low_reasons = []
+    # ── Cerca del mínimo de 52 semanas ────────────────────────────────────
+    # Señal simple y aislada: literalmente cerca del precio más bajo del
+    # último año, sin pasar por ningún método de confluencia.
+    NEAR_LOW_THRESHOLD = 0.05   # 5% de margen sobre el mínimo
+    price_now  = y.get("price")
+    week52_low = y.get("52w_low")
     if price_now and week52_low and week52_low > 0:
         dist_to_low = (price_now - week52_low) / week52_low
-        if 0 <= dist_to_low <= NEAR_LOW_THRESHOLD:
-            near_low_reasons.append(f"a {dist_to_low*100:.1f}% del mínimo anual ({week52_low:,.2f})")
-
-    if support_data and support_data.get("distance_pct") is not None:
-        if 0 <= support_data["distance_pct"] <= NEAR_LOW_THRESHOLD * 100:
-            near_low_reasons.append(
-                f"a {support_data['distance_pct']:.1f}% de soporte histórico con "
-                f"{support_data['touches']} rebotes previos ({support_data['level']:,.2f})"
-            )
-
-    if price_now and (week52_low or support_data):
-        near_low_ok = len(near_low_reasons) > 0
+        near_low_ok = 0 <= dist_to_low <= NEAR_LOW_THRESHOLD
         near_low_detail = (
-            "Precio " + " y ".join(near_low_reasons) if near_low_ok
-            else "Precio alejado tanto del mínimo anual como de soportes históricos con rebotes previos"
+            f"Precio a {dist_to_low*100:.1f}% del mínimo anual ({week52_low:,.2f})" if near_low_ok
+            else f"Precio a {dist_to_low*100:.1f}% del mínimo anual — fuera del margen del 5%"
         )
-        checks.append(("Cerca de mínimos anuales o soporte con rebotes previos", near_low_ok, near_low_detail, 2))
+        checks.append(("Cerca del mínimo de 52 semanas", near_low_ok, near_low_detail, 1))
+
+    # ── Cerca de zona de soporte (Motor de Confluencia) ───────────────────
+    # ANTES había aquí un check separado que combinaba mínimo 52w + soporte
+    # histórico con su propia lógica ad-hoc, distinta e independiente del
+    # Motor de Confluencia que ya usa el Plan de Entrada/Salida (que
+    # combina soporte histórico + medias móviles + Fibonacci con un margen
+    # de agrupación del 1.5%). Dos sistemas resolviendo la misma pregunta
+    # de formas distintas — ahora comparten la misma implementación
+    # (build_confluence_supports, en data_fetcher.py), más completa que
+    # cualquiera de los dos por separado.
+    if tech and not tech.get("error") and price_now:
+        zones = build_confluence_supports(price_now, tech)
+        if zones:
+            closest  = zones[0]   # ya vienen ordenadas de más cercana a más profunda
+            dist_pct = abs(closest["distance_pct"])
+            near_support_ok = dist_pct <= NEAR_LOW_THRESHOLD * 100
+            if near_support_ok:
+                near_support_detail = (
+                    f"Precio a {dist_pct:.1f}% de zona de soporte — fiabilidad {closest['reliability']}: "
+                    f"{' + '.join(closest['indicators'])}"
+                )
+            else:
+                near_support_detail = (
+                    f"Zona de soporte más cercana a {dist_pct:.1f}% — fuera del margen del 5%"
+                )
+            checks.append(("Cerca de zona de soporte (Motor de Confluencia)", near_support_ok, near_support_detail, 2))
 
     # ── Transacciones de insiders (compras/ventas de directivos) ─────────
     # Dato con buen track record académico: los insiders compran cuando
@@ -1153,11 +1179,12 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
             desc = "Factores positivos, pero con veto técnico activo — ver aviso arriba."
             adx_veto_applied = True
 
-    MAX_POSSIBLE_CHECKS = 19   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección,
+    MAX_POSSIBLE_CHECKS = 20   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección,
                                # Golden/Death Cross reciente, cruce de precio con volumen,
-                               # revisiones, MACD, OBV, Fibonacci, cerca de mínimos/soporte,
-                               # insiders, fuerza relativa, resultados, liquidez
-                               # (19 max; ADX es veto, no check puntuado)
+                               # revisiones, MACD, OBV, Fibonacci, mínimo 52 semanas,
+                               # zona de soporte (Motor de Confluencia), insiders,
+                               # fuerza relativa, resultados, liquidez
+                               # (20 max; ADX es veto, no check puntuado)
     missing_checks = MAX_POSSIBLE_CHECKS - len(checks)
     reliability_ok = missing_checks <= 3   # tolerable perder hasta 3 checks (datos no siempre disponibles)
 
