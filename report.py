@@ -720,12 +720,22 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None, mult_data: 
                     f"(precio objetivo medio) → {target_mean:,.2f}"
                 )
 
-    DCF_MAX_SPREAD = 0.80   # puerta de confianza: si (optimista-pesimista)/base
+    DCF_MAX_SPREAD = 0.80   # puerta de confianza Nº1: si (optimista-pesimista)/base
                              # supera este spread, el DCF es demasiado sensible a
                              # los supuestos de crecimiento como para fiarse del
-                             # número — se excluye de la mediana del Valor
-                             # Objetivo pero se sigue mostrando como referencia
-                             # en su propia sección de 3 escenarios
+                             # número — se excluye de la mediana del Valor Objetivo
+    DCF_MAX_PEER_DEVIATION = 0.50   # puerta de confianza Nº2: aunque los 3
+                             # escenarios del DCF concuerden razonablemente entre
+                             # sí (pase la Nº1), pueden seguir estando los 3 de
+                             # acuerdo en algo poco realista — típico en "story
+                             # stocks" (p.ej. Tesla) cuya valoración depende de
+                             # una narrativa de futuro (robotaxi, IA...) que un
+                             # DCF mecánico, basado solo en crecimiento pasado,
+                             # no puede capturar. Por eso se compara ADEMÁS
+                             # contra la mediana de los otros métodos ya
+                             # reunidos (PER, PEG, EV/EBITDA, consenso...): si
+                             # se desvía demasiado de lo que dice el resto de
+                             # métodos independientes, se excluye igualmente.
     dcf_excluded_reason = None
 
     def _add_dcf():
@@ -738,20 +748,34 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None, mult_data: 
         opt  = sc.get("optimistic", {}).get("price_target")
         if not base or base <= 0 or pess is None or opt is None:
             return
+
         spread = (opt - pess) / base
-        if spread <= DCF_MAX_SPREAD:
-            targets.append(base)
-            weighted.append(base)
-            weighted_single.append(base)
-            methods_used.append(
-                f"DCF (escenario base, WACC {dcf_data['wacc']['wacc']*100:.1f}%) → {base:,.2f}"
-            )
-        else:
+        if spread > DCF_MAX_SPREAD:
             dcf_excluded_reason = (
                 f"DCF excluido del Valor Objetivo por alta dispersión entre escenarios "
                 f"(pesimista {pess:,.2f} — optimista {opt:,.2f}, spread {spread*100:.0f}% > {DCF_MAX_SPREAD*100:.0f}%) "
                 f"— consulta la sección DCF como referencia, no como parte del consenso."
             )
+            return
+
+        peer_median = _robust_aggregate(targets) if targets else None
+        if peer_median and peer_median > 0:
+            deviation = abs(base - peer_median) / peer_median
+            if deviation > DCF_MAX_PEER_DEVIATION:
+                dcf_excluded_reason = (
+                    f"DCF excluido del Valor Objetivo por desviarse demasiado del resto de métodos "
+                    f"(DCF base {base:,.2f} vs mediana de otros métodos {peer_median:,.2f}, "
+                    f"desviación {deviation*100:.0f}% > {DCF_MAX_PEER_DEVIATION*100:.0f}%) — "
+                    f"consulta la sección DCF como referencia, no como parte del consenso."
+                )
+                return
+
+        targets.append(base)
+        weighted.append(base)
+        weighted_single.append(base)
+        methods_used.append(
+            f"DCF (escenario base, WACC {dcf_data['wacc']['wacc']*100:.1f}%) → {base:,.2f}"
+        )
 
     # ── FALLBACK HYPER-GROWTH: EV/Sales cuando PER/PEG no aplican ──────────
     is_eps_negative = (eps_fwd is None or eps_fwd <= 0) and (eps_ttm is None or eps_ttm <= 0)
@@ -2340,48 +2364,6 @@ def fetch_peer_full_data(tickers: list) -> list:
 
 # ─── Render principal ─────────────────────────────────────────────────────────
 
-def _render_sec_verification(sec_data: dict | None, cross: dict | None, currency: str = "USD"):
-    """
-    Verificación cruzada del Revenue TTM de Yahoo Finance contra SEC EDGAR
-    (fuente regulatoria oficial, no un agregador). Se omite en silencio si
-    no hay CIK disponible (extranjeras, ADRs) o si SEC EDGAR no respondió —
-    no es un dato crítico, es una capa de confianza adicional.
-    """
-    if not sec_data or not cross or cross.get("status") == "NO_DATA":
-        return   # sin CIK / sin datos SEC / API no disponible — no molestar con un aviso
-
-    status = cross["status"]
-    pct    = cross["pct"]
-    sec_ttm   = cross["sec_ttm"]
-    yahoo_ttm = cross["yahoo_ttm"]
-
-    STATUS_STYLE = {
-        "OK":    ("#059669", "#f0fdf4", "✅", "Revenue TTM verificado — coincide con SEC EDGAR"),
-        "WARN":  ("#d97706", "#fffbeb", "⚠",  "Pequeña discrepancia entre Yahoo y SEC EDGAR"),
-        "ERROR": ("#dc2626", "#fef2f2", "❌", "Discrepancia significativa entre Yahoo y SEC EDGAR"),
-    }
-    color, bg, icon, label = STATUS_STYLE.get(status, STATUS_STYLE["WARN"])
-
-    def _fmt_big(v):
-        if not v: return "N/A"
-        v = float(v)
-        if abs(v) >= 1e9: return f"{currency} {v/1e9:.2f}B"
-        if abs(v) >= 1e6: return f"{currency} {v/1e6:.0f}M"
-        return f"{currency} {v:,.0f}"
-
-    meta = sec_data.get("meta", {})
-    st.markdown(
-        f'<div style="padding:0.6rem 0.8rem;background:{bg};border-left:3px solid {color};'
-        f'border-radius:4px;margin-bottom:0.8rem;font-size:0.78rem;color:{color};">'
-        f'<b>{icon} {label}</b> ({pct:.1f}% de diferencia)<br>'
-        f'<span style="color:#475569;font-size:0.74rem;">'
-        f'Yahoo Finance: {_fmt_big(yahoo_ttm)} · SEC EDGAR: {_fmt_big(sec_ttm)} · '
-        f'{meta.get("source","")}</span>'
-        f'</div>',
-        unsafe_allow_html=True
-    )
-
-
 def render_report(ticker, company_name, y: dict,
                   fx_rate: float | None = None, tech: dict | None = None,
                   fx_meta: dict | None = None):
@@ -2394,39 +2376,12 @@ def render_report(ticker, company_name, y: dict,
     if tech and not tech.get("error"):
         meta_tech = {k: tech.get(k) for k in ("last_date","days_old","freshness","trust","source")}
 
-    # ── Fuentes y confianza de los datos ──────────────────────────────────
-    # El sistema TRUST (OFICIAL/AGREGADO/CALCULADO/ESTIMADO) ya se calcula
-    # para cada grupo de métricas desde fetch_yahoo_data, pero hasta ahora
-    # no se mostraba en ningún sitio — es la transparencia que necesita el
-    # usuario para saber cuánto fiarse de cada cifra concreta del informe.
-    trust_fields = [
-        ("Precio",              meta_y.get("trust_price")),
-        ("Fundamentales",       meta_y.get("trust_fundamentals")),
-        ("Consenso analistas",  meta_y.get("trust_consensus")),
-        ("Crecimiento YoY",     meta_y.get("trust_growth")),
-        ("TTM (Revenue/EPS)",   meta_y.get("trust_ttm")),
-    ]
-    trust_fields = [(lbl, t) for lbl, t in trust_fields if t]
-    if trust_fields:
-        with st.expander("ℹ️ Fuentes y confianza de los datos"):
-            badges = "".join(
-                f'<div style="display:flex;align-items:center;justify-content:space-between;'
-                f'padding:0.35rem 0;border-bottom:1px solid #eef1f5;font-size:0.8rem;">'
-                f'<span style="color:#475569;">{lbl}</span>'
-                f'<span style="background:{t["color"]}33;color:#334155;'
-                f'padding:2px 10px;border-radius:12px;font-weight:600;">{t["icon"]} {t["label"]}</span>'
-                f'</div>'
-                for lbl, t in trust_fields
-            )
-            st.markdown(
-                f'<div>{badges}'
-                '<div style="font-size:0.7rem;color:#94a3b8;margin-top:0.6rem;">'
-                '🟢 Oficial SEC — dato regulatorio verificado &nbsp;·&nbsp; '
-                '🟡 Yahoo Finance — agregador de mercado &nbsp;·&nbsp; '
-                '🟠 Calculado por la app a partir de datos brutos &nbsp;·&nbsp; '
-                '🔴 Estimación de analistas o dato no verificable oficialmente</div></div>',
-                unsafe_allow_html=True
-            )
+    # Verificación SEC EDGAR — se calcula aquí (antes de "FIABILIDAD Y
+    # FRESCURA DE DATOS", justo debajo) para poder integrarla en esa misma
+    # tabla en vez de mostrarla en una sección aparte y redundante.
+    with st.spinner("Verificando datos contra SEC EDGAR…"):
+        sec_data = fetch_sec_data(ticker)
+    cross = verify_cross_data(sec_data, y) if sec_data else None
 
     from analysis import get_sector_benchmarks
     sbm = get_sector_benchmarks(y.get("sector",""))
@@ -2477,6 +2432,27 @@ def render_report(ticker, company_name, y: dict,
                 f'<div style="color:#64748b;font-size:0.71rem;margin-top:0.15rem;">'
                 f'Verifica este dato en la fuente original antes de operar.</div></div>'
             )
+
+    # Discrepancias TTM Yahoo vs SEC EDGAR (Revenue y/o Beneficio Neto)
+    _CROSS_LABELS = {"revenue": "REVENUE TTM", "net_income": "BENEFICIO NETO TTM"}
+    def _fmt_big(v):
+        v = float(v or 0)
+        return f"{v/1e9:.2f}B" if abs(v) >= 1e9 else f"{v/1e6:.0f}M" if abs(v) >= 1e6 else f"{v:,.0f}"
+    if cross and cross.get("checks"):
+        for key, chk in cross["checks"].items():
+            if chk["status"] not in ("WARN", "ERROR"):
+                continue
+            col = "#dc2626" if chk["status"] == "ERROR" else "#d97706"
+            alert_rows += (
+                f'<div style="background:#fffbeb;border:1px solid {col};border-left:4px solid {col};'
+                f'border-radius:6px;padding:0.5rem 0.8rem;margin-bottom:0.4rem;font-size:0.8rem;">'
+                f'<span style="color:{col};font-weight:700;">⚠ {_CROSS_LABELS.get(key,key.upper())}: YAHOO VS SEC EDGAR</span>'
+                f'<span style="color:#64748b;margin-left:0.5rem;">{chk["pct"]:.1f}% de diferencia</span>'
+                f'<div style="color:#64748b;font-size:0.71rem;margin-top:0.15rem;">'
+                f'Yahoo: {currency_y} {_fmt_big(chk["yahoo_val"])} · SEC EDGAR: {currency_y} {_fmt_big(chk["sec_val"])} — '
+                f'verifica en el 10-K/10-Q original antes de operar.</div></div>'
+            )
+
     if alert_rows:
         st.markdown(alert_rows, unsafe_allow_html=True)
 
@@ -2500,10 +2476,24 @@ def render_report(ticker, company_name, y: dict,
     TRUST_Y    = {"icon":"🟡","label":"Yahoo Finance", "color":"#d97706"}
     TRUST_CALC = {"icon":"🟠","label":"Calculado app", "color":"#ea580c"}
     TRUST_ESTI = {"icon":"🔴","label":"Estimado",      "color":"#dc2626"}
+    TRUST_SEC  = {"icon":"🟢","label":"SEC EDGAR",     "color":"#059669"}
+
+    sec_row = ""
+    if cross and cross.get("checks"):
+        sec_meta = (sec_data or {}).get("meta", {})
+        row_labels = {"revenue": "Revenue TTM (verificado)", "net_income": "Beneficio Neto TTM (verificado)"}
+        for key, chk in cross["checks"].items():
+            status_lbl = {"OK": "coincide con Yahoo", "WARN": f'{chk["pct"]:.1f}% de diferencia',
+                          "ERROR": f'{chk["pct"]:.1f}% de diferencia ⚠'}[chk["status"]]
+            sec_row += _source_row(
+                row_labels.get(key, key), TRUST_SEC,
+                f'{sec_meta.get("latest_end","N/A")} · {status_lbl}', {}
+            )
 
     rows = (
         _source_row("Precio actual",               TRUST_Y,    meta_y.get("price_date","N/A"),    pf)
       + _source_row("Fundamentales (ratios/margen)",TRUST_Y,    meta_y.get("earnings_date","N/A"), ff)
+      + sec_row
       + _source_row("Consenso analistas",           TRUST_ESTI, "Sin fecha exacta en Yahoo",       {})
       + _source_row("Crecimiento YoY / TTM",        TRUST_CALC, meta_y.get("earnings_date","N/A"), {})
       + (_source_row("Técnico — RSI, MM50/200",     TRUST_Y,    meta_tech.get("last_date","N/A"),  tf) if meta_tech else "")
@@ -2519,7 +2509,8 @@ def render_report(ticker, company_name, y: dict,
     )
     legend = (
         '<div style="margin-top:0.6rem;font-size:0.71rem;color:#64748b;">'
-        '🟡 Yahoo Finance &nbsp;·&nbsp; 🟠 Calculado por la app &nbsp;·&nbsp; 🔴 Estimación analistas</div>'
+        '🟢 SEC EDGAR (oficial) &nbsp;·&nbsp; 🟡 Yahoo Finance &nbsp;·&nbsp; 🟠 Calculado por la app '
+        '&nbsp;·&nbsp; 🔴 Estimación analistas</div>'
         '<div style="margin-top:0.4rem;font-size:0.7rem;color:#94a3b8;line-height:1.55;">'
         '⚠ Yahoo Finance agrega datos de múltiples proveedores. Para cifras críticas, '
         'verifica directamente en los informes trimestrales (10-K/10-Q en SEC EDGAR).</div>'
@@ -2757,18 +2748,6 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     trend = calc_trend(y)
     render_trend(trend)
-
-    # ════════════════════════════════════════════════════════════════════
-    # VERIFICACIÓN CRUZADA SEC EDGAR — contraste independiente del Revenue
-    # TTM de Yahoo contra la fuente regulatoria oficial (SEC EDGAR XBRL),
-    # no un agregador. Se degrada en silencio si el ticker no tiene CIK
-    # (extranjeros, ADRs sin registro directo en SEC) o si la API de SEC
-    # no responde — nunca bloquea el resto del informe.
-    # ════════════════════════════════════════════════════════════════════
-    with st.spinner("Verificando datos contra SEC EDGAR…"):
-        sec_data = fetch_sec_data(ticker)
-    cross = verify_cross_data(sec_data, y) if sec_data else None
-    _render_sec_verification(sec_data, cross, currency_y)
 
     # ════════════════════════════════════════════════════════════════════
     # CONSULTA DE RESULTADOS

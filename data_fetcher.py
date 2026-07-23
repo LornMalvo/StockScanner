@@ -1311,7 +1311,10 @@ def _get_concept(cik: str, concept: str, unit: str = "USD") -> list:
 
 def _last_4_quarters(series: list) -> list:
     """
-    Extrae los 4 últimos trimestres estancos.
+    Extrae los 4 últimos trimestres 10-Q estancos disponibles (sin
+    derivar el que falte). Se mantiene como fallback y para listar
+    trimestres individuales en la UI — el cálculo real del TTM usa
+    _calc_ttm_from_sec(), más robusto (ver docstring de esa función).
     Acepta períodos 60-135 días para cubrir calendarios fiscales atípicos.
     Excluye 10-K (acumulados anuales) — solo usa 10-Q estancos.
     """
@@ -1336,6 +1339,100 @@ def _last_4_quarters(series: list) -> list:
     return quarterly
 
 
+def _calc_ttm_from_sec(series: list) -> tuple | None:
+    """
+    Calcula el TTM de forma robusta: último 10-K (año fiscal completo) +
+    trimestres 10-Q presentados DESPUÉS de ese cierre anual − los mismos
+    trimestres de hace un año (que ahora "salen" de la ventana de 12 meses).
+
+    Por qué no basta con sumar "los últimos 4 10-Q": el último trimestre
+    del año fiscal (normalmente Q4) casi nunca existe como hecho XBRL
+    trimestral aislado — va embebido dentro del 10-K anual, no se presenta
+    un 10-Q separado para él. Exigir 4 trimestres 10-Q consecutivos hace
+    que ese trimestre se salte silenciosamente y se coja uno de hace más
+    de un año para completar el cupo de 4 — desalineando la ventana de 12
+    meses (a veces cubriendo 15+ meses, o dejando fuera trimestres
+    recientes) y produciendo TTMs sistemáticamente distintos del TTM real
+    de Yahoo, que si conoce el Q4 directamente. Este método evita
+    depender de ese dato inexistente: usa el total anual ya conocido y
+    solo necesita trimestres 10-Q normales (que sí existen siempre) para
+    ajustar hacia adelante y hacia atrás.
+
+    Devuelve (valor_ttm, fecha_fin_más_reciente, fecha_filing_más_reciente)
+    o None si no hay datos suficientes.
+    """
+    from datetime import datetime as dt, timedelta
+
+    def _dur(a, b):
+        return (dt.strptime(b, "%Y-%m-%d") - dt.strptime(a, "%Y-%m-%d")).days
+
+    quarterly, seen_q = [], set()
+    for item in series:
+        start, end, form = item.get("start", ""), item.get("end", ""), item.get("form", "")
+        if not start or not end or form != "10-Q" or end in seen_q:
+            continue
+        try:
+            days = _dur(start, end)
+        except Exception:
+            continue
+        if 60 <= days <= 135:
+            quarterly.append(item)
+            seen_q.add(end)
+    quarterly.sort(key=lambda x: x["end"], reverse=True)
+
+    annuals, seen_a = [], set()
+    for item in series:
+        start, end, form = item.get("start", ""), item.get("end", ""), item.get("form", "")
+        if not start or not end or form != "10-K" or end in seen_a:
+            continue
+        try:
+            days = _dur(start, end)
+        except Exception:
+            continue
+        if 300 <= days <= 380:
+            annuals.append(item)
+            seen_a.add(end)
+    annuals.sort(key=lambda x: x["end"], reverse=True)
+
+    if not annuals:
+        # Sin 10-K disponible (poco común): fallback al método anterior,
+        # asumiendo el riesgo de trimestres no consecutivos
+        if len(quarterly) >= 4:
+            q4 = quarterly[:4]
+            return sum(q["val"] for q in q4), q4[0]["end"], q4[0].get("filed", "")
+        return None
+
+    latest_fy = annuals[0]
+    fy_end    = latest_fy["end"]
+
+    new_quarters = sorted(
+        (q for q in quarterly if q["end"] > fy_end),
+        key=lambda x: x["end"]
+    )
+
+    if not new_quarters:
+        # El 10-K más reciente YA es la ventana de 12 meses más actual
+        return latest_fy["val"], fy_end, latest_fy.get("filed", "")
+
+    ttm = latest_fy["val"]
+    for nq in new_quarters:
+        ttm += nq["val"]
+        # Restar el trimestre equivalente de hace 1 año (ya incluido en el
+        # 10-K), buscando el 10-Q cuyo inicio esté a ~365 días del nuevo
+        target_start = dt.strptime(nq["start"], "%Y-%m-%d") - timedelta(days=365)
+        year_ago = min(
+            quarterly,
+            key=lambda q: abs((dt.strptime(q["start"], "%Y-%m-%d") - target_start).days),
+            default=None
+        )
+        if year_ago and abs((dt.strptime(year_ago["start"], "%Y-%m-%d") - target_start).days) <= 20:
+            ttm -= year_ago["val"]
+        # Si no se encuentra el trimestre exacto de hace un año, se deja
+        # sin restar — mejor una ligera sobreestimación que perder el dato
+
+    return ttm, new_quarters[-1]["end"], new_quarters[-1].get("filed", "")
+
+
 def _fetch_first_concept(cik: str, concepts: list) -> list:
     """Prueba conceptos en orden y devuelve el primero con datos."""
     for concept in concepts:
@@ -1352,15 +1449,21 @@ def fetch_sec_data(ticker: str) -> dict | None:
         return None
 
     rev_series = _fetch_first_concept(cik, REVENUE_CONCEPTS)
-    rev_q      = _last_4_quarters(rev_series)
-    ni_series  = _fetch_first_concept(cik, NET_INCOME_CONCEPTS)
-    ni_q       = _last_4_quarters(ni_series)
-
-    if not rev_q:
+    if not rev_series:
         return None
+    rev_ttm_result = _calc_ttm_from_sec(rev_series)
+    if not rev_ttm_result:
+        return None
+    ttm_revenue, latest_end, latest_filed = rev_ttm_result
 
-    ttm_revenue    = sum(q.get("val", 0) for q in rev_q)
-    ttm_net_income = sum(q.get("val", 0) for q in ni_q) if ni_q else None
+    ni_series = _fetch_first_concept(cik, NET_INCOME_CONCEPTS)
+    ni_ttm_result = _calc_ttm_from_sec(ni_series) if ni_series else None
+    ttm_net_income = ni_ttm_result[0] if ni_ttm_result else None
+
+    # Trimestres 10-Q individuales, solo para mostrar el desglose en la UI
+    # (el TTM real ya se calculó arriba con el método robusto)
+    rev_q = _last_4_quarters(rev_series)
+    ni_q  = _last_4_quarters(ni_series) if ni_series else []
 
     quarters_fmt = [
         {"date": q["end"], "value": q["val"], "filed": q.get("filed",""), "form": q.get("form","")}
@@ -1371,8 +1474,6 @@ def fetch_sec_data(ticker: str) -> dict | None:
         for q in ni_q
     ] if ni_q else []
 
-    latest_end   = rev_q[0].get("end",   "") if rev_q else ""
-    latest_filed = rev_q[0].get("filed", "") if rev_q else ""
     days_end     = _days_since(latest_end)
     days_filed   = _days_since(latest_filed)
     sec_freshness = _freshness_status(days_end, STALE_SEC)
@@ -1403,28 +1504,60 @@ def fetch_sec_data(ticker: str) -> dict | None:
 # VERIFICACIÓN CRUZADA
 # ─────────────────────────────────────────────────────────────────────────────
 
-def verify_cross_data(sec: dict, yahoo: dict) -> dict:
-    if not sec or not yahoo:
-        return {"status": "NO_DATA", "diff": None, "pct": None}
-
-    sec_ttm   = sec.get("ttm_revenue",   0) or 0
-    yahoo_ttm = yahoo.get("ttm_revenue", 0) or 0
-
-    if sec_ttm == 0 and yahoo_ttm == 0:
-        return {"status": "NO_DATA", "diff": None, "pct": None}
-
-    diff = abs(sec_ttm - yahoo_ttm)
-    base = max(sec_ttm, yahoo_ttm)
+def _cross_check(sec_val, yahoo_val) -> dict:
+    """Contraste genérico de un valor TTM entre SEC EDGAR y Yahoo Finance."""
+    if sec_val is None or yahoo_val is None:
+        return {"status": "NO_DATA", "diff": None, "pct": None, "sec_val": sec_val, "yahoo_val": yahoo_val}
+    if sec_val == 0 and yahoo_val == 0:
+        return {"status": "NO_DATA", "diff": None, "pct": None, "sec_val": None, "yahoo_val": None}
+    diff = abs(sec_val - yahoo_val)
+    base = max(abs(sec_val), abs(yahoo_val))
     pct  = (diff / base * 100) if base else 0
-
-    if pct < 2:   status = "OK"
+    if pct < 2:    status = "OK"
     elif pct < 10: status = "WARN"
     else:          status = "ERROR"
+    return {"status": status, "diff": diff, "pct": pct, "sec_val": sec_val, "yahoo_val": yahoo_val}
+
+
+_STATUS_RANK = {"OK": 0, "WARN": 1, "ERROR": 2, "NO_DATA": -1}
+
+
+def verify_cross_data(sec: dict, yahoo: dict) -> dict:
+    """
+    Contraste cruzado SEC EDGAR vs Yahoo Finance. Compara TODOS los datos
+    TTM que ya se descargan de SEC EDGAR (antes solo se comparaba Revenue,
+    aunque el Beneficio Neto TTM ya se calculaba y se dejaba sin usar).
+
+    Devuelve tanto los campos "planos" de Revenue (compatibilidad con el
+    código existente: status/diff/pct/sec_ttm/yahoo_ttm) como un desglose
+    completo en "checks" con cada contraste por separado, y un
+    "overall_status" que es el peor de todos los contrastes disponibles
+    (para un badge-resumen de un vistazo).
+    """
+    if not sec or not yahoo:
+        return {"status": "NO_DATA", "diff": None, "pct": None, "overall_status": "NO_DATA", "checks": {}}
+
+    rev_check = _cross_check(sec.get("ttm_revenue"), yahoo.get("ttm_revenue"))
+    ni_check  = _cross_check(sec.get("ttm_net_income"), yahoo.get("ttm_net_income"))
+
+    checks = {}
+    if rev_check["status"] != "NO_DATA":
+        checks["revenue"] = rev_check
+    if ni_check["status"] != "NO_DATA":
+        checks["net_income"] = ni_check
+
+    if not checks:
+        return {"status": "NO_DATA", "diff": None, "pct": None, "overall_status": "NO_DATA", "checks": {}}
+
+    overall_status = max(checks.values(), key=lambda c: _STATUS_RANK[c["status"]])["status"]
 
     return {
-        "status":    status,
-        "diff":      diff,
-        "pct":       pct,
-        "sec_ttm":   sec_ttm,
-        "yahoo_ttm": yahoo_ttm,
+        # Compatibilidad: estos 4 campos siguen siendo el contraste de Revenue
+        "status":    rev_check["status"],
+        "diff":      rev_check["diff"],
+        "pct":       rev_check["pct"],
+        "sec_ttm":   rev_check["sec_val"],
+        "yahoo_ttm": rev_check["yahoo_val"],
+        "overall_status": overall_status,
+        "checks": checks,
     }
