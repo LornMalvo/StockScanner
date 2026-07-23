@@ -123,13 +123,31 @@ def _growth_scenarios(y: dict) -> dict:
     else:
         base_raw = 0.05   # fallback conservador 5%
 
-    # Acotar a rangos razonables
-    base = max(-0.05, min(base_raw, 0.35))
+    # Cada escenario se acota de forma INDEPENDIENTE a partir de la tasa
+    # BRUTA (base_raw), no del valor de "base" ya acotado con su propio
+    # suelo del -5% — si pesimista y optimista se derivaran del "base" ya
+    # topado, ambos podían colapsar en el mismo número cuando la empresa
+    # ya tiene un crecimiento TTM muy deprimido (p.ej. una fase de fuerte
+    # inversión con beneficios temporalmente muy negativos): "base" se
+    # quedaba anclado en el suelo del -5% y "pesimista = base − 10pp"
+    # topaba en ese MISMO suelo, dando Pesimista = Base idénticos.
+    base        = max(-0.05, min(base_raw,       0.35))
+    pessimistic = max(-0.25, min(base_raw - 0.10, 0.25))
+    optimistic  = max(-0.05, min(base_raw + 0.10, 0.40))
+
+    # Salvaguarda final: garantizar SIEMPRE pesimista < base < optimista
+    # con una separación mínima de 3pp entre escenarios consecutivos,
+    # incluso en casos límite donde los suelos/techos independientes de
+    # arriba pudieran cruzarse entre sí
+    if pessimistic >= base - 0.03:
+        pessimistic = base - 0.03
+    if optimistic <= base + 0.03:
+        optimistic = base + 0.03
 
     return {
-        "pessimistic": max(-0.05, base - 0.10),   # -10pp vs base
+        "pessimistic": pessimistic,
         "base":        base,
-        "optimistic":  min(0.40,  base + 0.10),   # +10pp vs base
+        "optimistic":  optimistic,
     }
 
 
