@@ -2435,7 +2435,7 @@ def render_report(ticker, company_name, y: dict,
 
     # Discrepancias TTM Yahoo vs SEC EDGAR (Revenue y/o Beneficio Neto)
     _CROSS_LABELS = {"revenue": "REVENUE TTM", "net_income": "BENEFICIO NETO TTM"}
-    def _fmt_big(v):
+    def _fmt_ttm_compact(v):
         v = float(v or 0)
         return f"{v/1e9:.2f}B" if abs(v) >= 1e9 else f"{v/1e6:.0f}M" if abs(v) >= 1e6 else f"{v:,.0f}"
     if cross and cross.get("checks"):
@@ -2449,7 +2449,7 @@ def render_report(ticker, company_name, y: dict,
                 f'<span style="color:{col};font-weight:700;">⚠ {_CROSS_LABELS.get(key,key.upper())}: YAHOO VS SEC EDGAR</span>'
                 f'<span style="color:#64748b;margin-left:0.5rem;">{chk["pct"]:.1f}% de diferencia</span>'
                 f'<div style="color:#64748b;font-size:0.71rem;margin-top:0.15rem;">'
-                f'Yahoo: {currency_y} {_fmt_big(chk["yahoo_val"])} · SEC EDGAR: {currency_y} {_fmt_big(chk["sec_val"])} — '
+                f'Yahoo: {currency_y} {_fmt_ttm_compact(chk["yahoo_val"])} · SEC EDGAR: {currency_y} {_fmt_ttm_compact(chk["sec_val"])} — '
                 f'verifica en el 10-K/10-Q original antes de operar.</div></div>'
             )
 
