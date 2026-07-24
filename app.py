@@ -14,7 +14,7 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@300;400;600&family=Sora:wght@600;700&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@300;400;600&family=Sora:wght@600;700&family=Quicksand:wght@600;700&display=swap');
   html, body, [class*="css"] { font-family:'Inter',sans-serif; background-color:#f8fafc; color:#1e293b; }
   .stApp { background-color:#f8fafc; }
   .hero { padding:2rem 0 1rem 0; border-bottom:1px solid #e2e8f0; margin-bottom:1.5rem; }
@@ -52,11 +52,12 @@ st.markdown("""
   .tooltip-wrap { display:inline-block; vertical-align:middle; }
   .tooltip-box { visibility:hidden; opacity:0; background:#1e293b; color:#f8fafc; font-size:0.75rem; line-height:1.5; border:1px solid #e2e8f0; border-radius:6px; padding:0.5rem 0.75rem; position:absolute; z-index:9999; bottom:125%; left:50%; transform:translateX(-50%); width:260px; pointer-events:none; transition:opacity 0.15s; font-family:'Inter',sans-serif; font-weight:400; text-transform:none; letter-spacing:0; box-shadow:0 4px 12px rgba(0,0,0,0.15); }
   .tooltip-wrap:hover .tooltip-box { visibility:visible; opacity:1; }
-  .stTabs [data-baseweb="tab-list"] { background:#f8fafc; border-bottom:1px solid #e2e8f0; gap:0; }
-  .stTabs [data-baseweb="tab"] { font-family:'IBM Plex Mono',monospace; font-size:0.8rem; color:#64748b; padding:0.6rem 1.4rem; border-bottom:2px solid transparent; }
-  .stTabs [aria-selected="true"] { color:#0284c7 !important; border-bottom:2px solid #0284c7 !important; background:transparent !important; }
+  .stTabs [data-baseweb="tab-list"] { background:#f1f5f9; border-bottom:none; gap:8px; padding:0.5rem; border-radius:14px; }
+  .stTabs [data-baseweb="tab"] { font-family:'Quicksand',sans-serif; font-weight:700; font-size:0.9rem; color:#64748b !important; padding:0.65rem 1.2rem; border-bottom:none; border-radius:20px; background:#ffffff !important; opacity:1 !important; transition:background 0.15s, color 0.15s; }
+  .stTabs [data-baseweb="tab"] p { color:inherit !important; font-size:0.9rem !important; opacity:1 !important; }
+  .stTabs [aria-selected="true"] { color:#ffffff !important; background:#0284c7 !important; border-bottom:none !important; }
+  .stTabs [aria-selected="true"] p { color:#ffffff !important; }
   /* Comparación lado a lado */
-  .compare-divider { border:none; border-left:1px solid #e2e8f0; margin:0 0.5rem; }
 
   /* Icono de estrella de favoritos — junto al ticker analizado.
      Se aplica vía st.container(key=...), que Streamlit expone como
@@ -81,9 +82,12 @@ st.markdown("""
     color: #eab308 !important; transform: scale(1.1);
   }
 
-  /* Estrella dorada en la pestaña FAVORITOS (5º tab, la estrella es
-     el primer carácter de la etiqueta) */
-  .stTabs [data-baseweb="tab-list"] button:nth-child(5) p::first-letter {
+  /* Estrella dorada en la pestaña FAVORITOS (5º tab). Se inyecta vía
+     ::before en vez de ::first-letter, porque ★ es un carácter de
+     categoría Símbolo (no Letra) y ::first-letter no lo trata de forma
+     fiable entre navegadores — por eso no se veía en amarillo. */
+  .stTabs [data-baseweb="tab-list"] button:nth-child(5) p::before {
+    content: "★  ";
     color: #eab308 !important;
   }
 </style>
@@ -99,16 +103,16 @@ st.markdown("""
       <path d="M15.5 8H19.5V12" stroke="#0284c7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
   </div>
-  <p>Yahoo Finance · Análisis técnico · Portfolio Tracker · Comparador</p>
+  <p>Yahoo Finance · Análisis técnico · Gestión de Cartera</p>
 </div>
 """, unsafe_allow_html=True)
 
-tab_analisis, tab_compare, tab_scanner, tab_portfolio, tab_favorites = st.tabs([
+tab_analisis, tab_scanner, tab_portfolio, tab_papertrading, tab_favorites = st.tabs([
     "📊  ANÁLISIS",
-    "⚖️  COMPARADOR",
     "🔍  RASTREADOR",
-    "💼  PORTFOLIO",
-    "★  FAVORITOS",
+    "💼  GESTIÓN DE CARTERA",
+    "🎯  PAPER TRADING",
+    "  FAVORITOS",
 ])
 
 # ── Tipo de cambio compartido ──────────────────────────────────────────────
@@ -195,170 +199,38 @@ with tab_analisis:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PESTAÑA 2 — MODO COMPARACIÓN DIRECTA
-# ══════════════════════════════════════════════════════════════════════════════
-with tab_compare:
-    st.markdown("""
-    <div style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">
-    Analiza dos empresas en paralelo para comparar sus métricas clave directamente.
-    </div>
-    """, unsafe_allow_html=True)
-
-    cc1, cc2, cc3, cc4 = st.columns([3, 1, 3, 1])
-    with cc1:
-        ticker_a = st.text_input("Ticker A", placeholder="AAPL",
-                                  label_visibility="collapsed", key="cmp_a").strip().upper()
-    with cc2:
-        btn_cmp  = st.button("COMPARAR →", key="btn_compare")
-    with cc3:
-        ticker_b = st.text_input("Ticker B", placeholder="MSFT",
-                                  label_visibility="collapsed", key="cmp_b").strip().upper()
-    with cc4:
-        st.write("")  # spacer
-
-    if btn_cmp and ticker_a and ticker_b:
-        if ticker_a == ticker_b:
-            st.warning("Introduce dos tickers distintos.")
-        else:
-            with st.spinner(f"Cargando {ticker_a} y {ticker_b}…"):
-                data_a = fetch_yahoo_data(ticker_a)
-                data_b = fetch_yahoo_data(ticker_b)
-
-            if not data_a:
-                st.error(f"No se encontró {ticker_a}")
-            elif not data_b:
-                st.error(f"No se encontró {ticker_b}")
-            else:
-                # Tabla comparativa de métricas clave
-                def _cmp_row(label, val_a, val_b, fmt="{:.2f}", low_good=False, suffix=""):
-                    """Fila de comparación — verde la mejor."""
-                    def fv(v):
-                        if v is None: return "N/A"
-                        try:    return fmt.format(v) + suffix
-                        except: return str(v)
-                    col_a = col_b = "#0f172a"
-                    if val_a is not None and val_b is not None:
-                        try:
-                            if low_good:
-                                col_a = "#059669" if val_a < val_b else "#dc2626"
-                                col_b = "#059669" if val_b < val_a else "#dc2626"
-                            else:
-                                col_a = "#059669" if val_a > val_b else "#dc2626"
-                                col_b = "#059669" if val_b > val_a else "#dc2626"
-                        except Exception:
-                            pass
-                    return (
-                        f'<tr style="border-bottom:1px solid #eef1f5;">'
-                        f'<td style="padding:0.32rem 0.6rem;font-size:0.8rem;color:#64748b;">{label}</td>'
-                        f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;'
-                        f'padding:0.32rem 0.6rem;color:{col_a};font-weight:600;">{fv(val_a)}</td>'
-                        f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;'
-                        f'padding:0.32rem 0.6rem;color:{col_b};font-weight:600;">{fv(val_b)}</td>'
-                        f'</tr>'
-                    )
-
-                def _big(v):
-                    if not v: return None
-                    v = float(v)
-                    if abs(v) >= 1e12: return f"${v/1e12:.2f}T"
-                    if abs(v) >= 1e9:  return f"${v/1e9:.2f}B"
-                    if abs(v) >= 1e6:  return f"${v/1e6:.1f}M"
-                    return f"${v:,.0f}"
-
-                na, nb = data_a.get("company_name",ticker_a)[:22], data_b.get("company_name",ticker_b)[:22]
-                hs = "padding:0.35rem 0.6rem;font-size:0.75rem;color:#0284c7;text-align:right;border-bottom:1px solid #e2e8f0;"
-
-                rows = (
-                    _cmp_row("Precio actual",   data_a.get("price"),         data_b.get("price"),        fmt="${:,.2f}", low_good=False)
-                  + _cmp_row("Market Cap",      _big(data_a.get("market_cap")), _big(data_b.get("market_cap")), fmt="{}", low_good=False)
-                  + "<tr><td colspan='3' style='padding:0.2rem;background:#f8fafc;font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>VALORACIÓN</td></tr>"
-                  + _cmp_row("PER Forward",     data_a.get("pe_forward"),    data_b.get("pe_forward"),   fmt="{:.1f}×", low_good=True)
-                  + _cmp_row("PEG Ratio",       data_a.get("peg_ratio"),     data_b.get("peg_ratio"),    fmt="{:.2f}",  low_good=True)
-                  + _cmp_row("EV/EBITDA",       data_a.get("ev_ebitda"),     data_b.get("ev_ebitda"),    fmt="{:.1f}×", low_good=True)
-                  + _cmp_row("Price/Sales",     data_a.get("price_sales"),   data_b.get("price_sales"),  fmt="{:.2f}×", low_good=True)
-                  + "<tr><td colspan='3' style='padding:0.2rem;background:#f8fafc;font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>RENTABILIDAD</td></tr>"
-                  + _cmp_row("Margen neto",     (data_a.get("profit_margin") or 0)*100,  (data_b.get("profit_margin") or 0)*100,  fmt="{:.1f}%", low_good=False)
-                  + _cmp_row("Margen operativo",(data_a.get("operating_margin") or 0)*100,(data_b.get("operating_margin") or 0)*100,fmt="{:.1f}%",low_good=False)
-                  + _cmp_row("ROE",             (data_a.get("roe") or 0)*100,            (data_b.get("roe") or 0)*100,            fmt="{:.1f}%", low_good=False)
-                  + _cmp_row("ROA",             (data_a.get("roa") or 0)*100,            (data_b.get("roa") or 0)*100,            fmt="{:.1f}%", low_good=False)
-                  + "<tr><td colspan='3' style='padding:0.2rem;background:#f8fafc;font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>CRECIMIENTO</td></tr>"
-                  + _cmp_row("Revenue YoY",     data_a.get("revenue_yoy"),   data_b.get("revenue_yoy"),  fmt="{:+.1f}%",low_good=False)
-                  + _cmp_row("Earnings YoY",    data_a.get("earnings_yoy"),  data_b.get("earnings_yoy"), fmt="{:+.1f}%",low_good=False)
-                  + _cmp_row("EPS TTM",         data_a.get("eps_ttm"),       data_b.get("eps_ttm"),      fmt="${:.2f}", low_good=False)
-                  + "<tr><td colspan='3' style='padding:0.2rem;background:#f8fafc;font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>BALANCE</td></tr>"
-                  + _cmp_row("Free Cash Flow",  _big(data_a.get("free_cash_flow")), _big(data_b.get("free_cash_flow")), fmt="{}", low_good=False)
-                  + _cmp_row("Deuda/Equity",    data_a.get("debt_equity"),   data_b.get("debt_equity"),  fmt="{:.1f}%", low_good=True)
-                  + _cmp_row("Current Ratio",   data_a.get("current_ratio"), data_b.get("current_ratio"),fmt="{:.2f}×", low_good=False)
-                  + "<tr><td colspan='3' style='padding:0.2rem;background:#f8fafc;font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>TÉCNICO</td></tr>"
-                  + _cmp_row("Beta",            data_a.get("beta"),          data_b.get("beta"),         fmt="{:.2f}",  low_good=True)
-                  + _cmp_row("Short Ratio",     data_a.get("short_ratio"),   data_b.get("short_ratio"),  fmt="{:.1f}d", low_good=True)
-                  + _cmp_row("Div. Yield",      (data_a.get("dividend_yield") or 0)*100,(data_b.get("dividend_yield") or 0)*100, fmt="{:.2f}%", low_good=False)
-                )
-
-                st.markdown(
-                    '<div class="metric-card" style="padding:0.5rem;">'
-                    '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">'
-                    '<thead><tr style="background:#f8fafc;">'
-                    f'<th style="{hs}text-align:left;color:#64748b;">Métrica</th>'
-                    f'<th style="{hs}color:#0284c7;">{ticker_a} — {na}</th>'
-                    f'<th style="{hs}color:#d97706;">{ticker_b} — {nb}</th>'
-                    f'</tr></thead><tbody>{rows}</tbody></table></div>'
-                    '<div style="font-size:0.7rem;color:#64748b;margin-top:0.5rem;">'
-                    'Verde = mejor valor entre los dos · Rojo = peor</div>'
-                    '</div>',
-                    unsafe_allow_html=True
-                )
-
-                # Análisis técnico de ambos
-                st.markdown('<div style="margin-top:1rem;"></div>', unsafe_allow_html=True)
-                col_ta, col_tb = st.columns(2)
-                with col_ta:
-                    with st.spinner(f"Técnico {ticker_a}…"):
-                        tech_a = fetch_technical_data(ticker_a)
-                    if tech_a and not tech_a.get("error"):
-                        rsi_a = tech_a.get("rsi","N/A")
-                        mm50_a, mm200_a = tech_a.get("mm50"), tech_a.get("mm200")
-                        price_a = data_a.get("price", 0)
-                        st.markdown(
-                            f'<div class="metric-card"><div class="metric-label">{ticker_a} — Técnico</div>'
-                            f'RSI: <b style="color:#0f172a;">{rsi_a}</b> &nbsp;·&nbsp; '
-                            f'MM50: <b style="color:{"#059669" if mm50_a and price_a > mm50_a else "#dc2626"};">'
-                            f'{"▲" if mm50_a and price_a > mm50_a else "▼"}</b> &nbsp;·&nbsp; '
-                            f'MM200: <b style="color:{"#059669" if mm200_a and price_a > mm200_a else "#dc2626"};">'
-                            f'{"▲" if mm200_a and price_a > mm200_a else "▼"}</b></div>',
-                            unsafe_allow_html=True)
-                with col_tb:
-                    with st.spinner(f"Técnico {ticker_b}…"):
-                        tech_b = fetch_technical_data(ticker_b)
-                    if tech_b and not tech_b.get("error"):
-                        rsi_b = tech_b.get("rsi","N/A")
-                        mm50_b, mm200_b = tech_b.get("mm50"), tech_b.get("mm200")
-                        price_b = data_b.get("price", 0)
-                        st.markdown(
-                            f'<div class="metric-card"><div class="metric-label">{ticker_b} — Técnico</div>'
-                            f'RSI: <b style="color:#0f172a;">{rsi_b}</b> &nbsp;·&nbsp; '
-                            f'MM50: <b style="color:{"#059669" if mm50_b and price_b > mm50_b else "#dc2626"};">'
-                            f'{"▲" if mm50_b and price_b > mm50_b else "▼"}</b> &nbsp;·&nbsp; '
-                            f'MM200: <b style="color:{"#059669" if mm200_b and price_b > mm200_b else "#dc2626"};">'
-                            f'{"▲" if mm200_b and price_b > mm200_b else "▼"}</b></div>',
-                            unsafe_allow_html=True)
-
-    elif btn_cmp:
-        st.warning("Introduce los dos tickers para comparar.")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PESTAÑA 3 — RASTREADOR DE GANGAS
+# PESTAÑA 2 — RASTREADOR DE GANGAS
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_scanner:
     render_scanner(fx_rate=fx_rate)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PESTAÑA 4 — PORTFOLIO TRACKER
+# PESTAÑA 3 — GESTIÓN DE CARTERA
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_portfolio:
     render_portfolio(fx_rate=fx_rate)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PESTAÑA 4 — PAPER TRADING (SIMULADOR)
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_papertrading:
+    st.markdown("""
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:0.75rem;color:#0284c7;
+                text-transform:uppercase;letter-spacing:0.1em;padding:1rem 0 0.5rem 0;">
+    🎯 PAPER TRADING
+    </div>
+    <div style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">
+    Simula operaciones a partir del plan de entrada/salida generado en Análisis Individual,
+    sin arriesgar capital real.
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.info(
+        "🚧 Sección en construcción. Próximamente podrás ejecutar el plan de entrada/salida "
+        "de cualquier análisis directamente desde aquí y hacer seguimiento de su rendimiento."
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

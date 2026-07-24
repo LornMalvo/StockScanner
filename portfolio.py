@@ -92,7 +92,7 @@ def render_portfolio(fx_rate: float | None = None):
     st.markdown("""
     <div style="font-family:'IBM Plex Mono',monospace;font-size:0.75rem;color:#0284c7;
                 text-transform:uppercase;letter-spacing:0.1em;padding:1rem 0 0.5rem 0;">
-    💼 PORTFOLIO TRACKER
+    💼 GESTIÓN DE CARTERA
     </div>
     <div style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">
     Registra tus posiciones y sigue su evolución en tiempo real.
