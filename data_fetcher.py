@@ -9,8 +9,6 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 
-import db
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # NIVELES DE FIABILIDAD
@@ -432,23 +430,6 @@ def _find_row(df: pd.DataFrame, candidates: list):
 
 def fetch_balance_sheet_history(ticker: str) -> dict:
     """
-    Balance histórico multi-año con caché persistente en Supabase
-    (data_type='balance_sheet', TTL 48h — solo cambia tras cada filing
-    trimestral, no tiene sentido pedirlo a Yahoo en cada carga).
-    """
-    ticker = ticker.upper().strip()
-    cached = db.cache_get(ticker, "balance_sheet")
-    if cached is not None:
-        return cached
-
-    result = _fetch_balance_sheet_history_live(ticker)
-    if result and not result.get("error"):
-        db.cache_set(ticker, "balance_sheet", result)
-    return result
-
-
-def _fetch_balance_sheet_history_live(ticker: str) -> dict:
-    """
     Extrae del balance e income statement ANUAL (hasta 4 años disponibles,
     lo que Yahoo exponga) todos los campos necesarios para Piotroski
     F-Score, ROIC, el chequeo de dilución, y el crecimiento de beneficios
@@ -702,14 +683,19 @@ _RELIABILITY_LABEL_3PLUS = "Extrema (3+ indicadores)"
 
 def build_confluence_supports(price: float, tech: dict) -> list:
     """
-    Motor de Confluencia (Fase 1 — Capas A, C y D; la Capa B de Volume
-    Profile/HVN queda para la Fase 2).
+    Motor de Confluencia (Fase 1 — Capas A, C y D, más gaps de precio sin
+    llenar; la Capa B de Volume Profile/HVN queda para la Fase 2).
 
-    Combina 3 métodos técnicos independientes que la app ya calcula por
+    Combina los métodos técnicos independientes que la app ya calcula por
     separado:
       Capa A: clusters de soporte histórico (mínimos locales con rebotes reales)
       Capa C: medias móviles dinámicas (MM50, MM100, MM200)
       Capa D: retrocesos de Fibonacci (38.2/50/61.8/78.6% del rango 52 semanas)
+      Gaps: huecos de precio sin rellenar (ver _detect_unfilled_gaps) — zonas
+            donde el mercado "saltó" sin negociar, que tienden a actuar como
+            imán y, cuando quedan por debajo del precio actual, como soporte
+            real (no calculado, sino literalmente un hueco vacío en el propio
+            historial de cotización)
 
     y agrupa los niveles que caen dentro de ±1.5% entre sí en una misma
     "zona de soporte". Cuantas más capas independientes coincidan en la
@@ -749,6 +735,13 @@ def build_confluence_supports(price: float, tech: dict) -> list:
             if cl["level"] < price:
                 raw.append((f"Soporte histórico ({cl['touches']}× rebotes)", cl["level"], "historico"))
 
+    unfilled_gaps = tech.get("unfilled_gaps")
+    if unfilled_gaps:
+        for g in unfilled_gaps:
+            if g["level"] < price:
+                direction_lbl = "alcista" if g["direction"] == "up" else "bajista"
+                raw.append((f"Gap {direction_lbl} sin llenar ({g['gap_pct']:+.1f}%, {g['date']})", g["level"], "gap"))
+
     if not raw:
         return []
 
@@ -785,24 +778,99 @@ def build_confluence_supports(price: float, tech: dict) -> list:
     return result
 
 
+def _calc_atr(hist_full: pd.DataFrame, period: int = 14) -> float | None:
+    """
+    Average True Range (14 sesiones): mide la volatilidad reciente en
+    unidades de PRECIO (no en %), usando el rango real de cada sesión —
+    True Range = máximo entre (high-low), |high-prev_close|, |low-prev_close|.
+
+    Se usa como capa adicional de validación del Stop Loss (no como
+    sustituto de la lógica por fiabilidad de fuente que ya tiene el
+    Motor de Confluencia): un Stop Loss demasiado cerca del precio actual
+    en términos de ATR es más propenso a saltar por simple ruido normal
+    del mercado que por una señal real de ruptura de soporte.
+    """
+    try:
+        high, low, close = hist_full["High"], hist_full["Low"], hist_full["Close"]
+        prev_close = close.shift(1)
+        tr = pd.concat([
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ], axis=1).max(axis=1)
+        atr_val = tr.rolling(window=period).mean().iloc[-1]
+        return round(float(atr_val), 4) if pd.notna(atr_val) else None
+    except Exception:
+        return None
+
+
+GAP_THRESHOLD = 0.03   # apertura vs cierre anterior: mínimo 3% para considerarse un gap relevante
+
+
+def _detect_unfilled_gaps(hist_full: pd.DataFrame, price: float) -> list:
+    """
+    Detecta gaps de precio (la apertura de una sesión muy distinta al
+    cierre de la sesión anterior — el mercado "salta" sin negociar en ese
+    tramo) que el precio NUNCA ha vuelto a recorrer desde entonces. Estas
+    zonas suelen actuar como imán (el mercado tiende a "cerrar" huecos
+    abiertos) y, cuando quedan por debajo del precio actual, como zona de
+    soporte real — no calculada a partir de un indicador, sino literalmente
+    un hueco vacío en el propio historial de cotización donde no hay
+    vendedores que ya hayan "probado" ese precio.
+
+    Solo mira gaps de la última ventana de ~1 año (gaps muy antiguos son
+    menos relevantes como referencia de trading), pero comprueba si se
+    han rellenado usando TODO el histórico posterior disponible.
+    """
+    try:
+        opens, closes = hist_full["Open"], hist_full["Close"]
+        lows, highs   = hist_full["Low"],  hist_full["High"]
+        n = len(closes)
+        if n < 30:
+            return []
+
+        gaps = []
+        start = max(1, n - 252)
+        for i in range(start, n):
+            prev_close = closes.iloc[i-1]
+            today_open = opens.iloc[i]
+            if not prev_close or prev_close <= 0:
+                continue
+            gap_pct = (today_open - prev_close) / prev_close
+            if abs(gap_pct) < GAP_THRESHOLD:
+                continue
+
+            gap_low, gap_high = min(prev_close, today_open), max(prev_close, today_open)
+
+            # ¿Se ha rellenado desde entonces? (el precio ha vuelto a
+            # cotizar dentro del rango del hueco en alguna sesión posterior
+            # — comprobado desde el día SIGUIENTE al del gap, nunca el
+            # propio día, ya que ese día casi siempre solapa por definición)
+            filled = False
+            for j in range(i + 1, n):
+                if lows.iloc[j] <= gap_high and highs.iloc[j] >= gap_low:
+                    filled = True
+                    break
+            if filled:
+                continue
+
+            gaps.append({
+                "date":      str(closes.index[i])[:10],
+                "gap_low":   round(float(gap_low), 2),
+                "gap_high":  round(float(gap_high), 2),
+                "level":     round(float((gap_low + gap_high) / 2), 2),
+                "direction": "up" if gap_pct > 0 else "down",
+                "gap_pct":   round(gap_pct * 100, 1),
+                "days_ago":  (n - 1) - i,
+            })
+
+        gaps.sort(key=lambda g: g["date"], reverse=True)
+        return gaps
+    except Exception:
+        return []
+
+
 def fetch_technical_data(ticker: str) -> dict:
-    """
-    Indicadores técnicos con caché persistente en Supabase
-    (data_type='technical', TTL 60 min — se recalcula sobre cierres
-    diarios, no hace falta pedirlo a Yahoo más a menudo que eso).
-    """
-    ticker = ticker.upper().strip()
-    cached = db.cache_get(ticker, "technical")
-    if cached is not None:
-        return cached
-
-    result = _fetch_technical_data_live(ticker)
-    if result and not result.get("error"):
-        db.cache_set(ticker, "technical", result)
-    return result
-
-
-def _fetch_technical_data_live(ticker: str) -> dict:
     """RSI(14), MM50, MM200 con metadatos de frescura."""
     try:
         t = yf.Ticker(ticker)
@@ -882,6 +950,10 @@ def _fetch_technical_data_live(ticker: str) -> dict:
                               if mm200_series is not None else None)
         cross_proximity = _calc_cross_proximity(mm50, mm200, price)
 
+        # ── ATR (validación de Stop Loss) y gaps de precio sin llenar ──────
+        atr_val       = _calc_atr(hist_full)
+        unfilled_gaps = _detect_unfilled_gaps(hist_full, price)
+
         # Recorte a ~1 año de sesiones (252 aprox.) para el gráfico
         display_start = max(0, len(closes_full) - 252)
 
@@ -919,6 +991,8 @@ def _fetch_technical_data_live(ticker: str) -> dict:
             "price_cross_mm50":   price_cross_mm50,
             "price_cross_mm200":  price_cross_mm200,
             "cross_proximity":    cross_proximity,
+            "atr":                atr_val,
+            "unfilled_gaps":      unfilled_gaps,
             "price_history":price_history,
             "macd":         macd_data,
             "adx":          adx_val,
@@ -967,61 +1041,7 @@ def _calc_dividend_frequency(t) -> str | None:
         return None
 
 
-def _fetch_live_price(ticker: str) -> float | None:
-    """
-    Precio actual SIN caché, usando fast_info en vez de .info completo.
-    fast_info es un endpoint mucho más ligero en yfinance (no trae
-    fundamentales, solo cotización) — es intencionadamente barato de
-    llamar en cada análisis, por eso no necesita pasar por Supabase.
-    """
-    try:
-        fi = yf.Ticker(ticker).fast_info
-        price = fi.get("lastPrice") if hasattr(fi, "get") else getattr(fi, "last_price", None)
-        return float(price) if price else None
-    except Exception as e:
-        print(f"[fetch_live_price] Error ({ticker}): {e}")
-        return None
-
-
 def fetch_yahoo_data(ticker: str) -> dict | None:
-    """
-    Datos fundamentales de Yahoo Finance. Los fundamentales pesados (TTM,
-    márgenes, balance, growth...) se cachean en Supabase 24h — apenas
-    cambian entre trimestres, no tiene sentido pedirlos en cada carga.
-
-    El PRECIO, en cambio, se pide siempre fresco con una llamada aparte y
-    ligera (fast_info), independientemente de si el resto viene de caché
-    o no. Así el precio nunca tiene más de unos segundos de antigüedad,
-    sin sacrificar el ahorro de la parte pesada.
-    """
-    ticker = ticker.upper().strip()
-
-    cached = db.cache_get(ticker, "yahoo_data")
-    if cached is not None:
-        result = cached
-    else:
-        result = _fetch_yahoo_data_live(ticker)
-        if result is not None:
-            db.cache_set(ticker, "yahoo_data", result)
-
-    if result is None:
-        return None
-
-    live_price = _fetch_live_price(ticker)
-    if live_price:
-        result = dict(result)  # copia — no mutar el objeto que pueda estar cacheado en memoria
-        result["price"] = live_price
-        result["meta"] = dict(result.get("meta") or {})
-        result["meta"]["price_date"]      = "En vivo (ahora)"
-        result["meta"]["price_days_old"]  = 0
-        result["meta"]["price_freshness"] = {"ok": True, "label": "Precio en vivo", "color": "#6ee7b7", "icon": "✅"}
-    # Si fast_info falla, se sirve el precio del bloque cacheado/recién pedido como fallback — degradación
-    # razonable en vez de romper el análisis.
-
-    return result
-
-
-def _fetch_yahoo_data_live(ticker: str) -> dict | None:
     """Datos fundamentales de Yahoo Finance con metadatos de frescura y fiabilidad."""
     try:
         t    = yf.Ticker(ticker)
@@ -1103,6 +1123,40 @@ def _fetch_yahoo_data_live(ticker: str) -> dict | None:
                     if len(row) > 0:
                         interest_expense_ttm = abs(float(row.iloc[:4].sum()))
                         break
+
+        # ── FCF trimestral (últimos 4 trimestres) — para Tendencia y
+        # Evolución Trimestral, igual que Revenue/EPS/Margen Neto. Yahoo a
+        # veces ya expone "Free Cash Flow" directamente en el cashflow
+        # trimestral; si no, se calcula como OCF − |CapEx| por trimestre.
+        fcf_q = []
+        try:
+            cashflow_stmt = t.quarterly_cashflow
+        except Exception:
+            cashflow_stmt = None
+        if cashflow_stmt is not None and not cashflow_stmt.empty:
+            if "Free Cash Flow" in cashflow_stmt.index:
+                row = cashflow_stmt.loc["Free Cash Flow"].dropna()
+                for i, (date, val) in enumerate(row.items()):
+                    if i >= 4: break
+                    fcf_q.append({"date": str(date)[:10], "value": float(val)})
+            else:
+                ocf_row, capex_row = None, None
+                for label in ["Operating Cash Flow", "Total Cash From Operating Activities",
+                              "Cash Flow From Continuing Operating Activities"]:
+                    if label in cashflow_stmt.index:
+                        ocf_row = cashflow_stmt.loc[label]
+                        break
+                for label in ["Capital Expenditure", "Capital Expenditures", "Purchase Of PPE"]:
+                    if label in cashflow_stmt.index:
+                        capex_row = cashflow_stmt.loc[label]
+                        break
+                if ocf_row is not None and capex_row is not None:
+                    for i, date in enumerate(ocf_row.index):
+                        if i >= 4: break
+                        ocf_val   = ocf_row.iloc[i]
+                        capex_val = capex_row.iloc[i] if i < len(capex_row) else None
+                        if ocf_val == ocf_val and capex_val == capex_val:   # descarta NaN
+                            fcf_q.append({"date": str(date)[:10], "value": float(ocf_val) - abs(float(capex_val))})
 
         # ── EPS trimestral ────────────────────────────────────────────────
         eps_q = []
@@ -1287,6 +1341,7 @@ def _fetch_yahoo_data_live(ticker: str) -> dict | None:
             "ttm_net_income":  ttm_net_income,
             "net_income_q":    net_income_q,
             "eps_q":           eps_q,
+            "fcf_q":           fcf_q,
             "ebitda":          info.get("ebitda"),
             "ebit_ttm":        ebit_ttm,
             "interest_expense": interest_expense_ttm,
@@ -1401,7 +1456,10 @@ def _get_concept(cik: str, concept: str, unit: str = "USD") -> list:
 
 def _last_4_quarters(series: list) -> list:
     """
-    Extrae los 4 últimos trimestres estancos.
+    Extrae los 4 últimos trimestres 10-Q estancos disponibles (sin
+    derivar el que falte). Se mantiene como fallback y para listar
+    trimestres individuales en la UI — el cálculo real del TTM usa
+    _calc_ttm_from_sec(), más robusto (ver docstring de esa función).
     Acepta períodos 60-135 días para cubrir calendarios fiscales atípicos.
     Excluye 10-K (acumulados anuales) — solo usa 10-Q estancos.
     """
@@ -1426,6 +1484,100 @@ def _last_4_quarters(series: list) -> list:
     return quarterly
 
 
+def _calc_ttm_from_sec(series: list) -> tuple | None:
+    """
+    Calcula el TTM de forma robusta: último 10-K (año fiscal completo) +
+    trimestres 10-Q presentados DESPUÉS de ese cierre anual − los mismos
+    trimestres de hace un año (que ahora "salen" de la ventana de 12 meses).
+
+    Por qué no basta con sumar "los últimos 4 10-Q": el último trimestre
+    del año fiscal (normalmente Q4) casi nunca existe como hecho XBRL
+    trimestral aislado — va embebido dentro del 10-K anual, no se presenta
+    un 10-Q separado para él. Exigir 4 trimestres 10-Q consecutivos hace
+    que ese trimestre se salte silenciosamente y se coja uno de hace más
+    de un año para completar el cupo de 4 — desalineando la ventana de 12
+    meses (a veces cubriendo 15+ meses, o dejando fuera trimestres
+    recientes) y produciendo TTMs sistemáticamente distintos del TTM real
+    de Yahoo, que si conoce el Q4 directamente. Este método evita
+    depender de ese dato inexistente: usa el total anual ya conocido y
+    solo necesita trimestres 10-Q normales (que sí existen siempre) para
+    ajustar hacia adelante y hacia atrás.
+
+    Devuelve (valor_ttm, fecha_fin_más_reciente, fecha_filing_más_reciente)
+    o None si no hay datos suficientes.
+    """
+    from datetime import datetime as dt, timedelta
+
+    def _dur(a, b):
+        return (dt.strptime(b, "%Y-%m-%d") - dt.strptime(a, "%Y-%m-%d")).days
+
+    quarterly, seen_q = [], set()
+    for item in series:
+        start, end, form = item.get("start", ""), item.get("end", ""), item.get("form", "")
+        if not start or not end or form != "10-Q" or end in seen_q:
+            continue
+        try:
+            days = _dur(start, end)
+        except Exception:
+            continue
+        if 60 <= days <= 135:
+            quarterly.append(item)
+            seen_q.add(end)
+    quarterly.sort(key=lambda x: x["end"], reverse=True)
+
+    annuals, seen_a = [], set()
+    for item in series:
+        start, end, form = item.get("start", ""), item.get("end", ""), item.get("form", "")
+        if not start or not end or form != "10-K" or end in seen_a:
+            continue
+        try:
+            days = _dur(start, end)
+        except Exception:
+            continue
+        if 300 <= days <= 380:
+            annuals.append(item)
+            seen_a.add(end)
+    annuals.sort(key=lambda x: x["end"], reverse=True)
+
+    if not annuals:
+        # Sin 10-K disponible (poco común): fallback al método anterior,
+        # asumiendo el riesgo de trimestres no consecutivos
+        if len(quarterly) >= 4:
+            q4 = quarterly[:4]
+            return sum(q["val"] for q in q4), q4[0]["end"], q4[0].get("filed", "")
+        return None
+
+    latest_fy = annuals[0]
+    fy_end    = latest_fy["end"]
+
+    new_quarters = sorted(
+        (q for q in quarterly if q["end"] > fy_end),
+        key=lambda x: x["end"]
+    )
+
+    if not new_quarters:
+        # El 10-K más reciente YA es la ventana de 12 meses más actual
+        return latest_fy["val"], fy_end, latest_fy.get("filed", "")
+
+    ttm = latest_fy["val"]
+    for nq in new_quarters:
+        ttm += nq["val"]
+        # Restar el trimestre equivalente de hace 1 año (ya incluido en el
+        # 10-K), buscando el 10-Q cuyo inicio esté a ~365 días del nuevo
+        target_start = dt.strptime(nq["start"], "%Y-%m-%d") - timedelta(days=365)
+        year_ago = min(
+            quarterly,
+            key=lambda q: abs((dt.strptime(q["start"], "%Y-%m-%d") - target_start).days),
+            default=None
+        )
+        if year_ago and abs((dt.strptime(year_ago["start"], "%Y-%m-%d") - target_start).days) <= 20:
+            ttm -= year_ago["val"]
+        # Si no se encuentra el trimestre exacto de hace un año, se deja
+        # sin restar — mejor una ligera sobreestimación que perder el dato
+
+    return ttm, new_quarters[-1]["end"], new_quarters[-1].get("filed", "")
+
+
 def _fetch_first_concept(cik: str, concepts: list) -> list:
     """Prueba conceptos en orden y devuelve el primero con datos."""
     for concept in concepts:
@@ -1436,38 +1588,27 @@ def _fetch_first_concept(cik: str, concepts: list) -> list:
 
 
 def fetch_sec_data(ticker: str) -> dict | None:
-    """
-    Datos de SEC EDGAR con caché persistente en Supabase (data_type=
-    'sec_data', TTL 48h — un filing SEC no cambia entre trimestres, así
-    que no tiene sentido golpear la API de SEC EDGAR más a menudo).
-    """
-    ticker = ticker.upper().strip()
-    cached = db.cache_get(ticker, "sec_data")
-    if cached is not None:
-        return cached
-
-    result = _fetch_sec_data_live(ticker)
-    if result is not None:
-        db.cache_set(ticker, "sec_data", result)
-    return result
-
-
-def _fetch_sec_data_live(ticker: str) -> dict | None:
     """Ingresos y beneficio neto TTM desde SEC EDGAR con metadatos de frescura."""
     cik = _get_cik(ticker)
     if not cik:
         return None
 
     rev_series = _fetch_first_concept(cik, REVENUE_CONCEPTS)
-    rev_q      = _last_4_quarters(rev_series)
-    ni_series  = _fetch_first_concept(cik, NET_INCOME_CONCEPTS)
-    ni_q       = _last_4_quarters(ni_series)
-
-    if not rev_q:
+    if not rev_series:
         return None
+    rev_ttm_result = _calc_ttm_from_sec(rev_series)
+    if not rev_ttm_result:
+        return None
+    ttm_revenue, latest_end, latest_filed = rev_ttm_result
 
-    ttm_revenue    = sum(q.get("val", 0) for q in rev_q)
-    ttm_net_income = sum(q.get("val", 0) for q in ni_q) if ni_q else None
+    ni_series = _fetch_first_concept(cik, NET_INCOME_CONCEPTS)
+    ni_ttm_result = _calc_ttm_from_sec(ni_series) if ni_series else None
+    ttm_net_income = ni_ttm_result[0] if ni_ttm_result else None
+
+    # Trimestres 10-Q individuales, solo para mostrar el desglose en la UI
+    # (el TTM real ya se calculó arriba con el método robusto)
+    rev_q = _last_4_quarters(rev_series)
+    ni_q  = _last_4_quarters(ni_series) if ni_series else []
 
     quarters_fmt = [
         {"date": q["end"], "value": q["val"], "filed": q.get("filed",""), "form": q.get("form","")}
@@ -1478,8 +1619,6 @@ def _fetch_sec_data_live(ticker: str) -> dict | None:
         for q in ni_q
     ] if ni_q else []
 
-    latest_end   = rev_q[0].get("end",   "") if rev_q else ""
-    latest_filed = rev_q[0].get("filed", "") if rev_q else ""
     days_end     = _days_since(latest_end)
     days_filed   = _days_since(latest_filed)
     sec_freshness = _freshness_status(days_end, STALE_SEC)
@@ -1510,28 +1649,60 @@ def _fetch_sec_data_live(ticker: str) -> dict | None:
 # VERIFICACIÓN CRUZADA
 # ─────────────────────────────────────────────────────────────────────────────
 
-def verify_cross_data(sec: dict, yahoo: dict) -> dict:
-    if not sec or not yahoo:
-        return {"status": "NO_DATA", "diff": None, "pct": None}
-
-    sec_ttm   = sec.get("ttm_revenue",   0) or 0
-    yahoo_ttm = yahoo.get("ttm_revenue", 0) or 0
-
-    if sec_ttm == 0 and yahoo_ttm == 0:
-        return {"status": "NO_DATA", "diff": None, "pct": None}
-
-    diff = abs(sec_ttm - yahoo_ttm)
-    base = max(sec_ttm, yahoo_ttm)
+def _cross_check(sec_val, yahoo_val) -> dict:
+    """Contraste genérico de un valor TTM entre SEC EDGAR y Yahoo Finance."""
+    if sec_val is None or yahoo_val is None:
+        return {"status": "NO_DATA", "diff": None, "pct": None, "sec_val": sec_val, "yahoo_val": yahoo_val}
+    if sec_val == 0 and yahoo_val == 0:
+        return {"status": "NO_DATA", "diff": None, "pct": None, "sec_val": None, "yahoo_val": None}
+    diff = abs(sec_val - yahoo_val)
+    base = max(abs(sec_val), abs(yahoo_val))
     pct  = (diff / base * 100) if base else 0
-
-    if pct < 2:   status = "OK"
+    if pct < 2:    status = "OK"
     elif pct < 10: status = "WARN"
     else:          status = "ERROR"
+    return {"status": status, "diff": diff, "pct": pct, "sec_val": sec_val, "yahoo_val": yahoo_val}
+
+
+_STATUS_RANK = {"OK": 0, "WARN": 1, "ERROR": 2, "NO_DATA": -1}
+
+
+def verify_cross_data(sec: dict, yahoo: dict) -> dict:
+    """
+    Contraste cruzado SEC EDGAR vs Yahoo Finance. Compara TODOS los datos
+    TTM que ya se descargan de SEC EDGAR (antes solo se comparaba Revenue,
+    aunque el Beneficio Neto TTM ya se calculaba y se dejaba sin usar).
+
+    Devuelve tanto los campos "planos" de Revenue (compatibilidad con el
+    código existente: status/diff/pct/sec_ttm/yahoo_ttm) como un desglose
+    completo en "checks" con cada contraste por separado, y un
+    "overall_status" que es el peor de todos los contrastes disponibles
+    (para un badge-resumen de un vistazo).
+    """
+    if not sec or not yahoo:
+        return {"status": "NO_DATA", "diff": None, "pct": None, "overall_status": "NO_DATA", "checks": {}}
+
+    rev_check = _cross_check(sec.get("ttm_revenue"), yahoo.get("ttm_revenue"))
+    ni_check  = _cross_check(sec.get("ttm_net_income"), yahoo.get("ttm_net_income"))
+
+    checks = {}
+    if rev_check["status"] != "NO_DATA":
+        checks["revenue"] = rev_check
+    if ni_check["status"] != "NO_DATA":
+        checks["net_income"] = ni_check
+
+    if not checks:
+        return {"status": "NO_DATA", "diff": None, "pct": None, "overall_status": "NO_DATA", "checks": {}}
+
+    overall_status = max(checks.values(), key=lambda c: _STATUS_RANK[c["status"]])["status"]
 
     return {
-        "status":    status,
-        "diff":      diff,
-        "pct":       pct,
-        "sec_ttm":   sec_ttm,
-        "yahoo_ttm": yahoo_ttm,
+        # Compatibilidad: estos 4 campos siguen siendo el contraste de Revenue
+        "status":    rev_check["status"],
+        "diff":      rev_check["diff"],
+        "pct":       rev_check["pct"],
+        "sec_ttm":   rev_check["sec_val"],
+        "yahoo_ttm": rev_check["yahoo_val"],
+        "overall_status": overall_status,
+        "checks": checks,
     }

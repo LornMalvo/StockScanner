@@ -13,7 +13,7 @@ from data_fetcher import (
     fetch_sec_data, verify_cross_data, build_confluence_supports,
 )
 from analysis import (
-    calc_entry_signal, calc_trend, fetch_peer_data, get_manual_competitors,
+    calc_entry_signal, calc_trend, get_manual_competitors,
     render_entry_signal, render_trend, render_peers,
     fetch_company_description, fetch_recent_news, fetch_earnings_analysis,
     render_company_description, render_news,
@@ -1757,6 +1757,32 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
         stop_loss_confidence = nivel3["reliability"]
         stop_loss = round(nivel3["price"] * 0.95, 2)
 
+    # ── Sanity-check del ATR sobre el Stop Loss ────────────────────────────
+    # Capa ADICIONAL de validación, no un sustituto de la lógica por
+    # fiabilidad de fuente de arriba: comprueba si la distancia del Stop
+    # Loss al precio actual es razonable en términos de la volatilidad
+    # REAL reciente de la acción (ATR de 14 sesiones), en vez de solo en %
+    # fijo. Un Stop Loss que en % parece razonable puede en la práctica
+    # estar demasiado ajustado para una acción muy volátil (saltaría por
+    # simple ruido normal del día a día), o innecesariamente amplio para
+    # una acción tranquila.
+    stop_loss_atr_multiple = None
+    stop_loss_atr_warning  = None
+    atr_val = tech.get("atr") if tech and not tech.get("error") else None
+    if atr_val and atr_val > 0 and stop_loss and price:
+        stop_loss_atr_multiple = round((price - stop_loss) / atr_val, 1)
+        if stop_loss_atr_multiple < 1.5:
+            stop_loss_atr_warning = (
+                f"⚠ El Stop Loss está a solo {stop_loss_atr_multiple}× el ATR (14 sesiones) de distancia "
+                f"— más ajustado de lo habitual para la volatilidad reciente de esta acción. Un movimiento "
+                f"normal de un solo día podría activarlo sin que sea una señal real de ruptura de soporte."
+            )
+        elif stop_loss_atr_multiple > 8:
+            stop_loss_atr_warning = (
+                f"ℹ️ El Stop Loss está a {stop_loss_atr_multiple}× el ATR de distancia — bastante más amplio "
+                f"de lo habitual. Revisa que el riesgo asumido por operación siga siendo el que quieres."
+            )
+
     return {
         "calidad": calidad,
         "entry_plan": entry_plan,
@@ -1765,6 +1791,8 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
         "stop_loss": stop_loss,
         "stop_loss_source": stop_loss_source,
         "stop_loss_confidence": stop_loss_confidence,
+        "stop_loss_atr_multiple": stop_loss_atr_multiple,
+        "stop_loss_atr_warning": stop_loss_atr_warning,
         "current_price": price,
         "correction_trigger": correction_trigger,
     }
@@ -1884,6 +1912,9 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD", fx_rate: fl
             sl_dist = (plan["stop_loss"] - price_now) / price_now * 100
             sl_source_txt = plan.get("stop_loss_source", "")
             sl_confidence_txt = plan.get("stop_loss_confidence", "")
+            sl_atr_mult = plan.get("stop_loss_atr_multiple")
+            sl_atr_txt  = f' · {sl_atr_mult}× ATR' if sl_atr_mult is not None else ''
+            sl_atr_warning = plan.get("stop_loss_atr_warning")
             exit_html += (
                 '<div style="padding:0.5rem 0.7rem;background:#fee2e2;border-radius:6px;margin-top:0.3rem;">'
                 '<div style="display:flex;justify-content:space-between;align-items:center;">'
@@ -1892,8 +1923,10 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD", fx_rate: fl
                 f'{currency} {plan["stop_loss"]:,.2f}{_eur(plan["stop_loss"])} ({sl_dist:+.1f}%)</span>'
                 '</div>'
                 f'<div style="font-size:0.68rem;color:#991b1b;margin-top:0.3rem;">'
-                f'Anclado a: <b>{sl_source_txt}</b> (con 5% de margen adicional) · Fiabilidad: {sl_confidence_txt}</div>'
-                '</div>'
+                f'Anclado a: <b>{sl_source_txt}</b> (con 5% de margen adicional) · Fiabilidad: {sl_confidence_txt}{sl_atr_txt}</div>'
+                + (f'<div style="font-size:0.68rem;color:#9a3412;margin-top:0.35rem;padding-top:0.35rem;'
+                   f'border-top:1px solid #fca5a5;">{sl_atr_warning}</div>' if sl_atr_warning else '')
+                + '</div>'
             )
 
     st.markdown(
@@ -2090,6 +2123,11 @@ def _evaluate(y: dict, bh: dict | None = None, mult_data: dict | None = None) ->
 
     # ── Salud fundamental (incluye ROIC y Dilución si hay balance histórico)
     health_score, health_breakdown, health_missing = _calc_health_score(y, profile, bh)
+    # roic_val ya se calcula DENTRO de _calc_health_score, pero no se
+    # devuelve por separado — se recalcula aquí (cómputo puro, sin fetch de
+    # red nuevo, bh ya está en memoria) para poder exponerlo en ev y usarlo
+    # en la tabla de Comparativa frente a Competencia.
+    roic_val, _ = _calc_roic(y, bh)
 
     # ── Piotroski F-Score (0-9, herramienta independiente de fortaleza
     # financiera — no se mezcla en el score de Salud Fundamental) ─────────
@@ -2257,6 +2295,7 @@ def _evaluate(y: dict, bh: dict | None = None, mult_data: dict | None = None) ->
 
     return {
         "health_score":    health_score,
+        "roic":            roic_val,
         "health_breakdown": health_breakdown,
         "fair_value":      fair_value,
         "fair_value_single": fair_value_single,
@@ -2330,6 +2369,13 @@ def fetch_peer_full_data(tickers: list) -> list:
                 if piotroski.get("n_evaluable") else None
             )
 
+            # ROIC real (no la aproximación de 1 período que usa fetch_peer_data
+            # a secas) — bh (balance histórico) ya está en memoria aquí, así
+            # que sale "gratis" usar el mismo _calc_roic riguroso que Salud
+            # Fundamental, con 2 años de balance real en vez de estimarlo
+            # solo a partir de info.
+            roic_val, _ = _calc_roic(y, bh)
+
             # Calidad del beneficio (FCF/Beneficio neto anual) — mismo cálculo
             # y misma condición de guarda que dentro de _calc_health_score,
             # pero expuesto aquí como dato propio para la tabla comparadora
@@ -2344,6 +2390,7 @@ def fetch_peer_full_data(tickers: list) -> list:
             d.update({
                 "ticker":        ticker,
                 "fcf_quality":   fcf_quality,
+                "roic":          roic_val,
                 "pe_sector":     ev.get("pe_ref"),
                 "pe_historico":  mult_data.get("per_mean") if mult_data else None,
                 "health_score":  ev.get("health_score"),
@@ -3598,10 +3645,15 @@ def render_report(ticker, company_name, y: dict,
     # ════════════════════════════════════════════════════════════════════
     # COMPARATIVA FRENTE A COMPETENCIA
     # ════════════════════════════════════════════════════════════════════
+    # fetch_peer_full_data (no fetch_peer_data): esta tabla ahora también
+    # muestra Piotroski y % vs Valor Objetivo, que necesitan el pipeline
+    # completo (balance histórico + valoración), no solo info de Yahoo —
+    # es la misma función que ya usa el modo "métricas avanzadas" del
+    # Comparador, reutilizada aquí en vez de duplicar la lógica.
     peers_tickers = get_manual_competitors(ticker)
     if peers_tickers:
-        with st.spinner("Cargando datos de competidores…"):
-            peers_data = fetch_peer_data(peers_tickers)
+        with st.spinner("Cargando datos de competidores (balance histórico y valoración)…"):
+            peers_data = fetch_peer_full_data(peers_tickers)
     else:
         peers_data = []
 

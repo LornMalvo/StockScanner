@@ -8,10 +8,10 @@ import yfinance as yf
 import streamlit as st
 import requests
 import time
+import json
 import os
 from datetime import datetime, timezone, timedelta
 from data_fetcher import build_confluence_supports
-import db
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BENCHMARKS DE SECTOR — medias de mercado por métrica
@@ -1061,6 +1061,34 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
                 )
             checks.append(("Cerca de zona de soporte (Motor de Confluencia)", near_support_ok, near_support_detail, 2))
 
+    # ── Sin gap bajista reciente sin llenar ────────────────────────────────
+    # Un gap a la baja (apertura muy por debajo del cierre anterior, típico
+    # tras una sorpresa negativa de resultados) que todavía no se ha vuelto
+    # a "rellenar" es una señal de cautela: suele indicar una repreciación
+    # real del mercado, no simple ruido, y el precio puede seguir buscando
+    # ese hueco como imán antes de estabilizarse. Ventana de "reciente":
+    # las mismas 10 sesiones usadas para el resto de checks de corto plazo
+    # relacionados con volumen/cruces recientes en este motor.
+    GAP_RECENT_WINDOW = 10
+    if tech and not tech.get("error"):
+        gaps = tech.get("unfilled_gaps") or []
+        recent_bearish_gap = next(
+            (g for g in gaps if g["direction"] == "down" and g.get("days_ago", 999) <= GAP_RECENT_WINDOW),
+            None
+        )
+        if recent_bearish_gap:
+            checks.append((
+                "Sin gap bajista reciente sin llenar", False,
+                f"Gap bajista del {recent_bearish_gap['gap_pct']:.1f}% hace "
+                f"{recent_bearish_gap['days_ago']} sesión(es) ({recent_bearish_gap['date']}), sin rellenar todavía",
+                1
+            ))
+        elif gaps is not None:
+            checks.append((
+                "Sin gap bajista reciente sin llenar", True,
+                "Sin gaps bajistas recientes sin rellenar en las últimas 10 sesiones", 1
+            ))
+
     # ── Transacciones de insiders (compras/ventas de directivos) ─────────
     # Dato con buen track record académico: los insiders compran cuando
     # creen que el mercado infravalora su propia empresa. Se evalúan las
@@ -1179,12 +1207,12 @@ def calc_entry_signal(y: dict, tech: dict | None, ev: dict) -> dict:
             desc = "Factores positivos, pero con veto técnico activo — ver aviso arriba."
             adx_veto_applied = True
 
-    MAX_POSSIBLE_CHECKS = 20   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección,
+    MAX_POSSIBLE_CHECKS = 21   # margen, health, dist_max, RSI, MM50, MM200, PEG, FCF, corrección,
                                # Golden/Death Cross reciente, cruce de precio con volumen,
                                # revisiones, MACD, OBV, Fibonacci, mínimo 52 semanas,
-                               # zona de soporte (Motor de Confluencia), insiders,
-                               # fuerza relativa, resultados, liquidez
-                               # (20 max; ADX es veto, no check puntuado)
+                               # zona de soporte (Motor de Confluencia), gap bajista reciente,
+                               # insiders, fuerza relativa, resultados, liquidez
+                               # (21 max; ADX es veto, no check puntuado)
     missing_checks = MAX_POSSIBLE_CHECKS - len(checks)
     reliability_ok = missing_checks <= 3   # tolerable perder hasta 3 checks (datos no siempre disponibles)
 
@@ -1214,6 +1242,7 @@ def calc_trend(y: dict | None) -> dict | None:
 
     rev_q = y.get("ttm_quarters", []) or []
     eps_q = y.get("eps_q",         []) or []
+    fcf_q = y.get("fcf_q",         []) or []
 
     if len(rev_q) < 2:
         return None
@@ -1221,6 +1250,7 @@ def calc_trend(y: dict | None) -> dict | None:
     # Ordenar de más antiguo a más reciente y tomar últimos 4
     rev_sorted = sorted(rev_q, key=lambda x: x.get("date",""))[-4:]
     eps_sorted = sorted(eps_q, key=lambda x: x.get("date",""))[-4:] if eps_q else []
+    fcf_sorted = sorted(fcf_q, key=lambda x: x.get("date",""))[-4:] if fcf_q else []
 
     # Calcular variación QoQ (para el semáforo de señal)
     def qoq_pct(series):
@@ -1234,6 +1264,7 @@ def calc_trend(y: dict | None) -> dict | None:
 
     rev_changes = qoq_pct(rev_sorted)
     eps_changes = qoq_pct(eps_sorted)
+    fcf_changes = qoq_pct(fcf_sorted)
 
     # ── Margen neto trimestral (Beneficio neto / Revenue) ─────────────────
     # net_income_q ya se descarga junto a Revenue (mismo income statement
@@ -1272,9 +1303,11 @@ def calc_trend(y: dict | None) -> dict | None:
         "rev_quarters":  rev_sorted,
         "eps_quarters":  eps_sorted,
         "margin_quarters": margin_sorted,
+        "fcf_quarters":  fcf_sorted,
         "rev_changes":   rev_changes,
         "eps_changes":   eps_changes,
         "margin_changes": margin_changes,
+        "fcf_changes":   fcf_changes,
         "rev_streak":    rev_streak,
         "eps_streak":    eps_streak,
         "trend_signal":  sig,
@@ -1297,31 +1330,74 @@ def calc_trend(y: dict | None) -> dict | None:
 # ─────────────────────────────────────────────────────────────────────────────
 # La tabla de comparativa NO se rellena automáticamente: el usuario añade
 # manualmente los tickers que considera competencia directa de la empresa
-# analizada. Se guardan en Supabase (tabla `competitors`) como relación
-# VERDADERAMENTE bidireccional — un único par (ticker_a, ticker_b) con
-# orden alfabético forzado, así que añadir AVGO→MRVL hace que MRVL también
-# vea a AVGO como competidor, sin tener que añadirlo dos veces por separado
-# (antes, con el JSON local, cada ticker gestionaba su lista de forma
-# independiente y esa inconsistencia era justo el bug reportado).
+# analizada. Se guardan en un archivo JSON local que persiste mientras el
+# contenedor de Streamlit Cloud no se redespliegue (sobrevive a recargas
+# de página y a cierres de sesión del navegador, pero no a un nuevo deploy
+# del código ni a un redeploy manual de la app).
+
+_COMPETITORS_FILE = "/tmp/competitors_store.json"
+
+
+def _load_competitors_store() -> dict:
+    """Carga el almacén completo de competidores manuales desde disco."""
+    if os.path.exists(_COMPETITORS_FILE):
+        try:
+            with open(_COMPETITORS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_competitors_store(store: dict):
+    """Guarda el almacén completo de competidores manuales a disco."""
+    try:
+        with open(_COMPETITORS_FILE, "w", encoding="utf-8") as f:
+            json.dump(store, f, indent=2)
+    except Exception as e:
+        print(f"[Competitors] Error al guardar: {e}")
 
 
 def get_manual_competitors(ticker: str) -> list:
     """Devuelve la lista de tickers competidores guardados para esta empresa."""
-    return db.competitors_get_for(ticker)
+    ticker = ticker.upper().strip()
+    store = _load_competitors_store()
+    return store.get(ticker, [])
 
 
 def add_manual_competitor(ticker: str, competitor_ticker: str) -> bool:
     """
-    Añade un competidor — bidireccional: se guarda como un único par, así
-    que también aparece reflejado al analizar el competidor_ticker.
+    Añade un competidor a la lista guardada para 'ticker'.
     Devuelve True si se añadió, False si ya existía o si es el mismo ticker.
     """
-    return db.competitors_add(ticker, competitor_ticker)
+    ticker            = ticker.upper().strip()
+    competitor_ticker = competitor_ticker.upper().strip()
+
+    if not competitor_ticker or competitor_ticker == ticker:
+        return False
+
+    store = _load_competitors_store()
+    current = store.get(ticker, [])
+    if competitor_ticker in current:
+        return False
+
+    current.append(competitor_ticker)
+    store[ticker] = current
+    _save_competitors_store(store)
+    return True
 
 
 def remove_manual_competitor(ticker: str, competitor_ticker: str):
-    """Elimina el par de competidores, sea cual sea el orden de los tickers."""
-    db.competitors_remove(ticker, competitor_ticker)
+    """Elimina un competidor de la lista guardada para 'ticker'."""
+    ticker            = ticker.upper().strip()
+    competitor_ticker = competitor_ticker.upper().strip()
+
+    store   = _load_competitors_store()
+    current = store.get(ticker, [])
+    if competitor_ticker in current:
+        current.remove(competitor_ticker)
+        store[ticker] = current
+        _save_competitors_store(store)
 
 
 def validate_ticker_exists(ticker: str) -> dict | None:
@@ -1408,31 +1484,13 @@ def render_competitor_manager(ticker: str):
 # COMPETIDORES — descarga de datos
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fetch_peer_data(peers: list) -> list:
-    results = []
-    for ticker in peers:
-        try:
-            t    = yf.Ticker(ticker)
-            info = t.info
-            if not info: continue
-            price = info.get("currentPrice") or info.get("regularMarketPrice")
-            if not price: continue
-            results.append({
-                "ticker":    ticker,
-                "name":      (info.get("shortName") or ticker)[:22],
-                "price":     price,
-                "pe_forward":info.get("forwardPE"),
-                "peg":       info.get("pegRatio"),
-                "ev_ebitda": info.get("enterpriseToEbitda"),
-                "profit_m":  (info.get("profitMargins") or 0) * 100,
-                "roe":       (info.get("returnOnEquity") or 0) * 100,
-                "rev_growth":(info.get("revenueGrowth") or 0) * 100,
-                "market_cap":info.get("marketCap"),
-            })
-            time.sleep(0.1)
-        except Exception:
-            continue
-    return results
+# ─────────────────────────────────────────────────────────────────────────────
+# COMPETIDORES — la descarga de datos (antes fetch_peer_data, ligera, solo
+# info de Yahoo) ahora usa fetch_peer_full_data en report.py, que reutiliza
+# el mismo pipeline completo del modo "métricas avanzadas" del Comparador
+# (balance histórico + valoración) — necesario para Piotroski y % vs Valor
+# Objetivo en la tabla de aquí abajo. Función eliminada de este archivo.
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RENDER — DESCRIPCIÓN DE LA EMPRESA
@@ -2058,6 +2116,8 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
     eps_bars = abs_bars(eps_q, "🟡 EPS por trimestre (Yahoo Finance)", is_eps=True)
     margin_q = trend.get("margin_quarters", [])
     margin_bars = abs_bars(margin_q, "🟡 Margen Neto por trimestre (Beneficio neto / Revenue)", is_pct=True)
+    fcf_q_trend = trend.get("fcf_quarters", [])
+    fcf_bars = abs_bars(fcf_q_trend, "🟡 FCF por trimestre (Yahoo Finance)")
 
     header = (
         '<div style="display:flex;align-items:center;justify-content:space-between;'
@@ -2092,7 +2152,13 @@ def render_trend(trend: dict | None, yahoo_quarters: list | None = None):
         'Margen neto trimestral no disponible para este ticker (falta Revenue o Beneficio neto trimestral en Yahoo Finance).</div>'
     ) if not margin_q else ""
 
-    content = header + rev_bars + (eps_bars or no_eps_note) + (margin_bars or no_margin_note) + legend
+    no_fcf_note = (
+        '<div style="font-size:0.75rem;color:#64748b;padding:0.4rem 0;">'
+        'FCF trimestral no disponible para este ticker en Yahoo Finance.</div>'
+    ) if not fcf_q_trend else ""
+
+    content = (header + rev_bars + (eps_bars or no_eps_note) + (margin_bars or no_margin_note)
+               + (fcf_bars or no_fcf_note) + legend)
     st.markdown(f'<div class="metric-card">{content}</div>', unsafe_allow_html=True)
 
 
@@ -2127,6 +2193,21 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
         if mc >= 1e9:  return f"${mc/1e9:.1f}B"
         return f"${mc/1e6:.0f}M"
 
+    def px_fmt(px):
+        if not px: return "—"
+        return f"${px:,.2f}"
+
+    def _fcf_quality_of(d):
+        """Calidad del beneficio = FCF / Beneficio neto anual (mismo criterio
+        que Salud Fundamental en toda la app — no CFO/NI, para no introducir
+        una tercera definición ligeramente distinta de 'calidad del
+        beneficio' en un sitio y otra en el resto de la aplicación)."""
+        fcf_raw   = d.get("free_cash_flow")
+        ni_recent = d.get("ni_year_cur")
+        if fcf_raw is not None and ni_recent and ni_recent > 0:
+            return fcf_raw / ni_recent
+        return None
+
     def td_col(val, low_good=True, ref=None, sfx="x", dec=1):
         if val is None:
             return '<td style="color:#d1d9e0;text-align:right;padding:0.3rem 0.5rem;">—</td>'
@@ -2135,37 +2216,112 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
             col = "#059669" if (val < ref) == low_good else "#dc2626"
         return f'<td style="font-family:\'IBM Plex Mono\',monospace;color:{col};text-align:right;padding:0.3rem 0.5rem;">{val:,.{dec}f}{sfx}</td>'
 
+    def td_piotroski(val):
+        if not val:
+            return '<td style="color:#d1d9e0;text-align:right;padding:0.3rem 0.5rem;">—</td>'
+        try:
+            score, total = (int(x) for x in val.split("/"))
+        except Exception:
+            return f'<td style="text-align:right;padding:0.3rem 0.5rem;">{val}</td>'
+        col = "#059669" if score >= total * 0.66 else "#d97706" if score >= total * 0.33 else "#dc2626"
+        return f'<td style="font-family:\'IBM Plex Mono\',monospace;color:{col};text-align:right;padding:0.3rem 0.5rem;">{val}</td>'
+
     def make_row(ticker, name, d, is_main=False):
         bg    = "#dbeafe" if is_main else "#ffffff"
         bdr   = "border-left:3px solid #0284c7;" if is_main else ""
         nc    = "#0284c7" if is_main else "#334155"
         badge = '<span style="font-size:0.65rem;background:#dbeafe;color:#0284c7;padding:1px 5px;border-radius:3px;margin-left:0.3rem;">TÚ</span>' if is_main else ""
+        # El ticker de la empresa que ya se está analizando no navega a
+        # ningún sitio (ya se está viendo su análisis); los competidores sí
+        # son clicables — reutiliza el mismo mecanismo de navegación que ya
+        # usa la pestaña de Favoritos ("_jump_to_analysis" vía query param
+        # ?jump_to=TICKER, que app.py recoge al recargar la pestaña Análisis).
+        ticker_html = (
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:700;color:{nc};">{ticker}</span>'
+            if is_main else
+            f'<a href="?jump_to={ticker}" target="_self" style="font-family:\'IBM Plex Mono\',monospace;'
+            f'font-weight:700;color:{nc};text-decoration:none;border-bottom:1px dashed {nc};" '
+            f'title="Ver análisis completo de {ticker}">{ticker}</a>'
+        )
         return (
             f'<tr style="background:{bg};{bdr}border-bottom:1px solid #eef1f5;">'
             f'<td style="padding:0.3rem 0.6rem;white-space:nowrap;">'
-            f'<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:700;color:{nc};">{ticker}</span>'
+            f'{ticker_html}'
             f'<span style="font-size:0.72rem;color:#64748b;margin-left:0.3rem;">{name}</span>{badge}</td>'
+            + f'<td style="font-family:\'IBM Plex Mono\',monospace;color:#0f172a;text-align:right;padding:0.3rem 0.5rem;">{px_fmt(d.get("price"))}</td>'
             + td_col(d.get("pe_forward"), low_good=True,  ref=pe_ref,  sfx="x")
             + td_col(d.get("peg"),        low_good=True,  ref=peg_ref, sfx="")
             + td_col(d.get("ev_ebitda"),  low_good=True,  ref=ev_ref,  sfx="x")
             + td_col(d.get("profit_m"),   low_good=False, ref=10,      sfx="%")
+            + td_col(d.get("op_margin"),  low_good=False, ref=15,      sfx="%")
+            + td_col(d.get("roic"),       low_good=False, ref=10,      sfx="%")
             + td_col(d.get("roe"),        low_good=False, ref=12,      sfx="%")
             + td_col(d.get("rev_growth"), low_good=False, ref=5,       sfx="%")
+            + td_col(d.get("fcf_quality"),low_good=False, ref=0.9,     sfx="x", dec=2)
+            + td_piotroski(d.get("piotroski_str"))
+            + td_col(d.get("upside"),     low_good=False, ref=0,       sfx="%")
             + f'<td style="font-family:\'IBM Plex Mono\',monospace;color:#64748b;text-align:right;padding:0.3rem 0.5rem;font-size:0.8rem;">{mc_fmt(d.get("market_cap"))}</td>'
             + '</tr>'
         )
 
+    main_piotroski = ev.get("piotroski") or {}
+    main_piotroski_str = (
+        f'{main_piotroski["score"]}/{main_piotroski["n_evaluable"]}'
+        if main_piotroski.get("n_evaluable") else None
+    )
+    main_upside = ev.get("upside")
+    main_fair_value = ev.get("fair_value")
+    if main_upside is None and main_fair_value and main_data.get("price"):
+        main_upside = (main_fair_value - main_data["price"]) / main_data["price"] * 100
+
     main_row  = make_row(main_ticker, (main_data.get("company_name","") or "")[:22], {
-        "pe_forward": main_data.get("pe_forward"),
-        "peg":        main_data.get("peg_ratio"),
-        "ev_ebitda":  main_data.get("ev_ebitda"),
-        "profit_m":   (main_data.get("profit_margin") or 0) * 100,
-        "roe":        (main_data.get("roe") or 0) * 100,
-        "rev_growth": main_data.get("revenue_yoy"),
-        "market_cap": main_data.get("market_cap"),
+        "price":        main_data.get("price"),
+        "pe_forward":   main_data.get("pe_forward"),
+        "peg":          main_data.get("peg_ratio"),
+        "ev_ebitda":    main_data.get("ev_ebitda"),
+        "profit_m":     (main_data.get("profit_margin") or 0) * 100 if main_data.get("profit_margin") is not None else None,
+        "op_margin":    (main_data.get("operating_margin") or 0) * 100 if main_data.get("operating_margin") is not None else None,
+        "roic":         (ev.get("roic") * 100) if ev.get("roic") is not None else None,
+        "roe":          (main_data.get("roe") or 0) * 100 if main_data.get("roe") is not None else None,
+        "rev_growth":   main_data.get("revenue_yoy"),
+        "market_cap":   main_data.get("market_cap"),
+        "fcf_quality":  _fcf_quality_of(main_data),
+        "piotroski_str":main_piotroski_str,
+        "upside":       main_upside,
     }, is_main=True)
 
-    peer_rows = "".join(make_row(p["ticker"], p["name"], p) for p in peers_data)
+    def _peer_row_dict(p):
+        """peers_data viene de fetch_peer_full_data: dict(y) del competidor
+        + campos avanzados (fair_value, piotroski_str, roic, fcf_quality...).
+        Los campos base (profit_margin, roe, operating_margin) llegan como
+        fracción crudas (igual que main_data), no pre-multiplicadas — a
+        diferencia de la antigua fetch_peer_data, que sí las devolvía ya en
+        %. Se normalizan aquí igual que para la fila principal."""
+        price      = p.get("price")
+        fair_value = p.get("fair_value")
+        upside = None
+        if fair_value and price:
+            upside = (fair_value - price) / price * 100
+        return {
+            "price":        price,
+            "pe_forward":   p.get("pe_forward"),
+            "peg":          p.get("peg_ratio"),
+            "ev_ebitda":    p.get("ev_ebitda"),
+            "profit_m":     (p.get("profit_margin") or 0) * 100 if p.get("profit_margin") is not None else None,
+            "op_margin":    (p.get("operating_margin") or 0) * 100 if p.get("operating_margin") is not None else None,
+            "roic":         (p.get("roic") * 100) if p.get("roic") is not None else None,
+            "roe":          (p.get("roe") or 0) * 100 if p.get("roe") is not None else None,
+            "rev_growth":   p.get("revenue_yoy"),
+            "market_cap":   p.get("market_cap"),
+            "fcf_quality":  p.get("fcf_quality"),
+            "piotroski_str":p.get("piotroski_str"),
+            "upside":       upside,
+        }
+
+    peer_rows = "".join(
+        make_row(p.get("ticker"), (p.get("company_name") or p.get("ticker") or "")[:22], _peer_row_dict(p))
+        for p in peers_data
+    )
     hs = "padding:0.4rem 0.5rem;font-size:0.68rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;text-align:right;border-bottom:1px solid #e2e8f0;"
 
     # Tooltips en cabeceras de columna
@@ -2188,12 +2344,18 @@ def render_peers(main_ticker: str, main_data: dict, peers_data: list,
         '<table style="width:100%;border-collapse:collapse;font-size:0.83rem;">'
         '<thead><tr style="background:#f8fafc;">'
         f'<th style="{hs}text-align:left;">Empresa</th>'
+        + th("Precio",    "Precio de cotización actual (USD).")
         + th("PER Fwd",   f"PER Forward: precio / beneficio estimado próximos 12 meses. Referencia sector: {pe_ref}×. Verde si está por debajo.")
         + th("PEG",       f"PEG = PER / crecimiento anual. <1 = empresa barata respecto a su crecimiento. Referencia sector: <{peg_ref}.")
         + th("EV/EBITDA", f"Valor empresa / EBITDA. Métrica universal de valoración. Referencia sector: {ev_ref}×. Verde si está por debajo.")
         + th("Margen",    "Margen de beneficio neto (%). Verde si supera el 10%. Cuanto más alto, más rentable el negocio.")
+        + th("Mg. Oper.", "Margen operativo (%): beneficio operativo / ingresos, antes de intereses e impuestos. Verde si supera el 15%. Mide la rentabilidad del negocio principal, sin el efecto de la estructura financiera.")
+        + th("ROIC",      "Return on Invested Capital: rentabilidad sobre el capital invertido total (deuda + patrimonio − caja), calculado con balance histórico real de 2 años (mismo método que Salud Fundamental). Verde si supera el 10%.")
         + th("ROE",       "Return on Equity: beneficio / patrimonio neto (%). Verde si supera el 12%. Mide eficiencia del capital.")
         + th("Crec.",     "Crecimiento de ingresos YoY (%). Verde si supera el 5%. Indica capacidad de expansión del negocio.")
+        + th("Cal. Bfio.",f"Calidad del beneficio: Free Cash Flow / Beneficio neto anual. Verde si ≥0.9× — el beneficio contable se convierte en caja real. Por debajo, parte del beneficio no llega a ser caja.")
+        + th("Piotroski", "Piotroski F-Score: 9 criterios de solidez financiera (rentabilidad, apalancamiento, eficiencia). Verde ≥66% de aciertos, ámbar ≥33%, rojo por debajo.")
+        + th("% vs V.O.", "Upside/downside: distancia entre el precio actual y el Valor Objetivo calculado por el motor de valoración de la app. Verde si el precio está por debajo del Valor Objetivo (recorrido al alza).")
         + th("Mkt Cap",   "Capitalización bursátil total. T = billones, B = miles de millones, M = millones.")
         + '</tr></thead>'
         f'<tbody>{main_row}{peer_rows}</tbody>'

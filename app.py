@@ -1,6 +1,6 @@
 import streamlit as st
 from data_fetcher import fetch_yahoo_data, fetch_usd_eur_rate, fetch_technical_data
-from report import render_report
+from report import render_report, TOOLTIPS, fetch_peer_full_data
 from stock_scanner import render_scanner
 from portfolio import render_portfolio
 from favorites import render_favorite_star, render_favorites_tab
@@ -14,7 +14,7 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@300;400;600&family=Sora:wght@600;700&family=Quicksand:wght@600;700&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@300;400;600&family=Sora:wght@600;700&display=swap');
   html, body, [class*="css"] { font-family:'Inter',sans-serif; background-color:#f8fafc; color:#1e293b; }
   .stApp { background-color:#f8fafc; }
   .hero { padding:2rem 0 1rem 0; border-bottom:1px solid #e2e8f0; margin-bottom:1.5rem; }
@@ -52,12 +52,11 @@ st.markdown("""
   .tooltip-wrap { display:inline-block; vertical-align:middle; }
   .tooltip-box { visibility:hidden; opacity:0; background:#1e293b; color:#f8fafc; font-size:0.75rem; line-height:1.5; border:1px solid #e2e8f0; border-radius:6px; padding:0.5rem 0.75rem; position:absolute; z-index:9999; bottom:125%; left:50%; transform:translateX(-50%); width:260px; pointer-events:none; transition:opacity 0.15s; font-family:'Inter',sans-serif; font-weight:400; text-transform:none; letter-spacing:0; box-shadow:0 4px 12px rgba(0,0,0,0.15); }
   .tooltip-wrap:hover .tooltip-box { visibility:visible; opacity:1; }
-  .stTabs [data-baseweb="tab-list"] { background:#f1f5f9 !important; border-bottom:none !important; gap:8px !important; padding:0.5rem !important; border-radius:14px !important; }
-  .stTabs [data-baseweb="tab"] { font-family:'Quicksand',sans-serif !important; font-weight:700 !important; font-size:0.9rem !important; color:#64748b !important; padding:0.65rem 1.2rem !important; border-bottom:none !important; border-radius:20px !important; background:#ffffff !important; opacity:1 !important; box-shadow:none !important; transition:background 0.15s, color 0.15s; }
-  .stTabs [data-baseweb="tab"] p { color:inherit !important; font-family:inherit !important; font-size:0.9rem !important; opacity:1 !important; }
-  .stTabs [aria-selected="true"] { color:#ffffff !important; background:#0284c7 !important; border-bottom:none !important; }
-  .stTabs [aria-selected="true"] p { color:#ffffff !important; }
+  .stTabs [data-baseweb="tab-list"] { background:#f8fafc; border-bottom:1px solid #e2e8f0; gap:0; }
+  .stTabs [data-baseweb="tab"] { font-family:'IBM Plex Mono',monospace; font-size:0.8rem; color:#64748b; padding:0.6rem 1.4rem; border-bottom:2px solid transparent; }
+  .stTabs [aria-selected="true"] { color:#0284c7 !important; border-bottom:2px solid #0284c7 !important; background:transparent !important; }
   /* Comparación lado a lado */
+  .compare-divider { border:none; border-left:1px solid #e2e8f0; margin:0 0.5rem; }
 
   /* Icono de estrella de favoritos — junto al ticker analizado.
      Se aplica vía st.container(key=...), que Streamlit expone como
@@ -82,12 +81,9 @@ st.markdown("""
     color: #eab308 !important; transform: scale(1.1);
   }
 
-  /* Estrella dorada en la pestaña FAVORITOS (5º tab). Se inyecta vía
-     ::before en vez de ::first-letter, porque ★ es un carácter de
-     categoría Símbolo (no Letra) y ::first-letter no lo trata de forma
-     fiable entre navegadores — por eso no se veía en amarillo. */
-  .stTabs [data-baseweb="tab-list"] button:nth-of-type(5) p::before {
-    content: "★  " !important;
+  /* Estrella dorada en la pestaña FAVORITOS (5º tab, la estrella es
+     el primer carácter de la etiqueta) */
+  .stTabs [data-baseweb="tab-list"] button:nth-child(5) p::first-letter {
     color: #eab308 !important;
   }
 </style>
@@ -103,16 +99,16 @@ st.markdown("""
       <path d="M15.5 8H19.5V12" stroke="#0284c7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
   </div>
-  <p>Yahoo Finance · Análisis técnico · Gestión de Cartera</p>
+  <p>Yahoo Finance · Análisis técnico · Portfolio Tracker · Comparador</p>
 </div>
 """, unsafe_allow_html=True)
 
-tab_analisis, tab_scanner, tab_portfolio, tab_papertrading, tab_favorites = st.tabs([
+tab_analisis, tab_compare, tab_scanner, tab_portfolio, tab_favorites = st.tabs([
     "📊  ANÁLISIS",
+    "⚖️  COMPARADOR",
     "🔍  RASTREADOR",
-    "💼  GESTIÓN DE CARTERA",
-    "🎯  PAPER TRADING",
-    "  FAVORITOS",
+    "💼  PORTFOLIO",
+    "★  FAVORITOS",
 ])
 
 # ── Tipo de cambio compartido ──────────────────────────────────────────────
@@ -148,6 +144,18 @@ with tab_analisis:
 
     # Si venimos de "Analizar" desde la pestaña Favoritos, forzar búsqueda automática
     jump_ticker = st.session_state.pop("_jump_to_analysis", None)
+
+    # Si venimos de pulsar un ticker clicable en la tabla de Comparativa
+    # frente a Competencia (analysis.py:render_peers), llega como query
+    # param ?jump_to=TICKER en vez de session_state, porque el enlace es
+    # un <a href> normal (recarga la página) y no un widget de Streamlit.
+    # Se limpia inmediatamente para que no se repita en el siguiente rerun.
+    if not jump_ticker:
+        qp_ticker = st.query_params.get("jump_to")
+        if qp_ticker:
+            jump_ticker = qp_ticker
+            st.query_params.clear()
+
     if jump_ticker and not buscar:
         ticker_input = jump_ticker
         buscar = True
@@ -199,38 +207,342 @@ with tab_analisis:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PESTAÑA 2 — RASTREADOR DE GANGAS
+# PESTAÑA 2 — MODO COMPARACIÓN DIRECTA
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_compare:
+    st.markdown("""
+    <div style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">
+    Compara varias empresas en paralelo, lado a lado.
+    </div>
+    """, unsafe_allow_html=True)
+
+    MAX_COMPARE = 6
+    if "compare_tickers" not in st.session_state:
+        st.session_state.compare_tickers = ["", ""]
+
+    # ── Gestión de empresas a comparar (mínimo 2, máximo MAX_COMPARE) ────
+    slot_cols = st.columns(len(st.session_state.compare_tickers))
+    for i, col in enumerate(slot_cols):
+        with col:
+            st.session_state.compare_tickers[i] = st.text_input(
+                f"Ticker {i+1}",
+                value=st.session_state.compare_tickers[i],
+                placeholder=["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA"][i % 6],
+                label_visibility="collapsed",
+                key=f"cmp_ticker_{i}",
+            ).strip().upper()
+            if len(st.session_state.compare_tickers) > 2:
+                if st.button("✕ Quitar", key=f"cmp_remove_{i}", use_container_width=True):
+                    st.session_state.compare_tickers.pop(i)
+                    # Limpia las claves de los text_input: al desplazarse los
+                    # índices, Streamlit reutilizaría el valor cacheado de
+                    # cada key en vez del nuevo `value` pasado explícitamente.
+                    for j in range(len(st.session_state.compare_tickers) + 1):
+                        st.session_state.pop(f"cmp_ticker_{j}", None)
+                    st.rerun()
+
+    col_add, col_go, col_adv = st.columns([1, 1, 2])
+    with col_add:
+        if len(st.session_state.compare_tickers) < MAX_COMPARE:
+            if st.button("➕ Añadir empresa", key="cmp_add_ticker", use_container_width=True):
+                st.session_state.compare_tickers.append("")
+                st.rerun()
+    with col_go:
+        btn_cmp = st.button("COMPARAR →", key="btn_compare", use_container_width=True)
+    with col_adv:
+        peers_full = st.toggle(
+            "Incluir métricas avanzadas (Calidad del beneficio, PER actual/sector/histórico, "
+            "Salud Fundamental, Piotroski F-Score, Valor Objetivo, Diagnóstico General, Señal de "
+            "Entrada y Veredicto Final) — más lento, analiza cada empresa a fondo",
+            value=st.session_state.get("cmp_peers_full", True),
+            key="cmp_peers_full",
+        )
+
+    tickers_clean = [t for t in st.session_state.compare_tickers if t]
+    tickers_clean = list(dict.fromkeys(tickers_clean))  # sin duplicados, conserva orden
+
+    # ── Caché por ticker ───────────────────────────────────────────────
+    # Los datos de cada empresa se guardan en session_state por separado.
+    # Así, al añadir o quitar una empresa NO se rehace toda la tabla: solo
+    # se pide a Yahoo Finance lo que todavía no esté en caché (la empresa
+    # nueva), y al quitar una simplemente deja de mostrarse su columna sin
+    # tocar las demás ni volver a consultar nada.
+    if "compare_data" not in st.session_state:
+        st.session_state.compare_data = {}       # ticker -> dict de datos
+    if "compare_data_mode" not in st.session_state:
+        st.session_state.compare_data_mode = {}  # ticker -> "basic" | "full"
+
+    desired_mode = "full" if peers_full else "basic"
+
+    if btn_cmp and len(tickers_clean) < 2:
+        st.warning("Introduce al menos dos tickers distintos para comparar.")
+    elif btn_cmp:
+        to_fetch = [
+            tk for tk in tickers_clean
+            if st.session_state.compare_data_mode.get(tk) != desired_mode
+        ]
+        if to_fetch:
+            spinner_msg = (f"Analizando a fondo {', '.join(to_fetch)} (puede tardar varios segundos)…"
+                            if peers_full else f"Cargando {', '.join(to_fetch)}…")
+            with st.spinner(spinner_msg):
+                if peers_full:
+                    for d in fetch_peer_full_data(to_fetch):
+                        st.session_state.compare_data[d["ticker"]] = d
+                        st.session_state.compare_data_mode[d["ticker"]] = "full"
+                else:
+                    for tk in to_fetch:
+                        d = fetch_yahoo_data(tk)
+                        if d:
+                            d["ticker"] = tk
+                            st.session_state.compare_data[tk] = d
+                            st.session_state.compare_data_mode[tk] = "basic"
+
+            missing = [tk for tk in to_fetch
+                       if st.session_state.compare_data_mode.get(tk) != desired_mode]
+            if missing:
+                st.error(f"No se encontraron datos para: {', '.join(missing)}")
+
+    # ── Renderizado — siempre a partir de lo que haya en caché, no solo
+    # tras pulsar COMPARAR, para que quitar una empresa actualice la tabla
+    # al instante sin perder el resto de datos ya cargados.
+    found = [tk for tk in tickers_clean
+             if tk in st.session_state.compare_data
+             and st.session_state.compare_data_mode.get(tk) == desired_mode]
+    show_advanced = peers_full and all(
+        st.session_state.compare_data_mode.get(tk) == "full" for tk in found
+    ) if found else False
+
+    if len(found) >= 2:
+        basic_data = st.session_state.compare_data
+
+        def _big(v):
+            if not v: return None
+            v = float(v)
+            if abs(v) >= 1e12: return f"${v/1e12:.2f}T"
+            if abs(v) >= 1e9:  return f"${v/1e9:.2f}B"
+            if abs(v) >= 1e6:  return f"${v/1e6:.1f}M"
+            return f"${v:,.0f}"
+
+        def _num(v, dec=2, prefix="", suffix=""):
+            if v is None: return "N/A"
+            try: return f"{prefix}{v:,.{dec}f}{suffix}"
+            except Exception: return "N/A"
+
+        hs = ("padding:0.35rem 0.6rem;font-size:0.75rem;color:#0284c7;"
+              "text-align:right;border-bottom:1px solid #e2e8f0;white-space:nowrap;")
+
+        def _tooltip_html(tip):
+            if not tip:
+                return ""
+            tip_safe = tip.replace('"', "&quot;").replace("'", "&#39;")
+            return (
+                '<span class="tooltip-wrap" style="margin-left:0.25rem;position:relative;cursor:help;">'
+                '<span style="font-size:0.6rem;color:#0284c7;border:1px solid #0284c7;'
+                'border-radius:50%;padding:0 3px;font-family:\'IBM Plex Mono\',monospace;">?</span>'
+                f'<span class="tooltip-box">{tip_safe}</span>'
+                '</span>'
+            )
+
+        def cmp_row(label, tip, values, fmt=lambda v: _num(v), low_good=False):
+            """Fila con una celda por empresa — verde la mejor, rojo la peor."""
+            numeric = [v for v in values if isinstance(v, (int, float))]
+            best = (min(numeric) if low_good else max(numeric)) if numeric else None
+            worst = (max(numeric) if low_good else min(numeric)) if numeric else None
+            cells = ""
+            for v in values:
+                col = "#0f172a"
+                if isinstance(v, (int, float)) and best is not None and len(numeric) > 1:
+                    if v == best: col = "#059669"
+                    elif v == worst: col = "#dc2626"
+                cells += (f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;'
+                          f'padding:0.32rem 0.6rem;color:{col};font-weight:600;">{fmt(v)}</td>')
+            tip_html = _tooltip_html(tip)
+            return (f'<tr style="border-bottom:1px solid #eef1f5;">'
+                    f'<td style="padding:0.32rem 0.6rem;font-size:0.8rem;color:#64748b;">{label}{tip_html}</td>'
+                    f'{cells}</tr>')
+
+        def cmp_row_fair_value(label, tip, d_list):
+            """Fila especial del Valor Objetivo: incluye el % de upside/downside
+            respecto al precio actual de cada empresa, junto al valor absoluto."""
+            values = [d.get("fair_value") for d in d_list]
+            numeric = [v for v in values if isinstance(v, (int, float))]
+            best  = max(numeric) if numeric else None
+            worst = min(numeric) if numeric else None
+            cells = ""
+            for d in d_list:
+                fv, price = d.get("fair_value"), d.get("price")
+                if fv is None:
+                    cells += '<td style="color:#d1d9e0;text-align:right;padding:0.32rem 0.6rem;">N/A</td>'
+                    continue
+                col = "#0f172a"
+                if best is not None and len(numeric) > 1:
+                    if fv == best: col = "#059669"
+                    elif fv == worst: col = "#dc2626"
+                upside_html = ""
+                if price:
+                    upside = (fv - price) / price * 100
+                    up_col = "#059669" if upside >= 0 else "#dc2626"
+                    upside_html = f' <span style="color:{up_col};font-size:0.72rem;">({upside:+.1f}%)</span>'
+                cells += (f'<td style="font-family:\'IBM Plex Mono\',monospace;text-align:right;'
+                          f'padding:0.32rem 0.6rem;color:{col};font-weight:600;white-space:nowrap;">'
+                          f'{_num(fv,2,"$")}{upside_html}</td>')
+            tip_html = _tooltip_html(tip)
+            return (f'<tr style="border-bottom:1px solid #eef1f5;">'
+                    f'<td style="padding:0.32rem 0.6rem;font-size:0.8rem;color:#64748b;">{label}{tip_html}</td>'
+                    f'{cells}</tr>')
+
+        def cmp_group(title):
+            colspan = len(found) + 1
+            return (f"<tr><td colspan='{colspan}' style='padding:0.2rem 0.6rem;background:#f8fafc;"
+                    f"font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;'>"
+                    f"{title}</td></tr>")
+
+        d_list = [basic_data[tk] for tk in found]
+
+        # Precio actual: verde el MÁS BAJO (low_good=True) · Market Cap: verde el MÁS ALTO (low_good=False)
+        rows  = cmp_row("Precio actual", TOOLTIPS.get("Precio Actual"),
+                         [d.get("price") for d in d_list], fmt=lambda v: _num(v, 2, "$"), low_good=True)
+        rows += cmp_row("Market Cap", TOOLTIPS.get("Market Cap"),
+                         [d.get("market_cap") for d in d_list], fmt=lambda v: _big(v) or "N/A", low_good=False)
+        rows += cmp_group("VALORACIÓN")
+        rows += cmp_row("PER Forward", TOOLTIPS.get("PER Forward"),
+                         [d.get("pe_forward") for d in d_list], fmt=lambda v: _num(v, 1, suffix="×"), low_good=True)
+        rows += cmp_row("PEG Ratio", TOOLTIPS.get("PEG Ratio"),
+                         [d.get("peg_ratio") for d in d_list], low_good=True)
+        rows += cmp_row("EV/EBITDA", TOOLTIPS.get("EV/EBITDA"),
+                         [d.get("ev_ebitda") for d in d_list], fmt=lambda v: _num(v, 1, suffix="×"), low_good=True)
+        rows += cmp_row("Price/Sales", TOOLTIPS.get("Price/Sales"),
+                         [d.get("price_sales") for d in d_list], fmt=lambda v: _num(v, 2, suffix="×"), low_good=True)
+        rows += cmp_group("RENTABILIDAD")
+        rows += cmp_row("Margen neto", TOOLTIPS.get("Profit Margin"),
+                         [(d.get("profit_margin") or 0) * 100 for d in d_list], fmt=lambda v: _num(v, 1, suffix="%"))
+        rows += cmp_row("Margen operativo", TOOLTIPS.get("Operating Margin"),
+                         [(d.get("operating_margin") or 0) * 100 for d in d_list], fmt=lambda v: _num(v, 1, suffix="%"))
+        rows += cmp_row("ROE", TOOLTIPS.get("ROE"),
+                         [(d.get("roe") or 0) * 100 for d in d_list], fmt=lambda v: _num(v, 1, suffix="%"))
+        rows += cmp_row("ROA", TOOLTIPS.get("ROA"),
+                         [(d.get("roa") or 0) * 100 for d in d_list], fmt=lambda v: _num(v, 1, suffix="%"))
+        rows += cmp_group("CRECIMIENTO")
+        rows += cmp_row("Revenue YoY", TOOLTIPS.get("Revenue Growth"),
+                         [d.get("revenue_yoy") for d in d_list], fmt=lambda v: _num(v, 1, suffix="%"))
+        rows += cmp_row("Earnings YoY", TOOLTIPS.get("Earnings Growth"),
+                         [d.get("earnings_yoy") for d in d_list], fmt=lambda v: _num(v, 1, suffix="%"))
+        rows += cmp_row("EPS TTM", TOOLTIPS.get("EPS (TTM)"),
+                         [d.get("eps_ttm") for d in d_list], fmt=lambda v: _num(v, 2, "$"))
+        rows += cmp_group("BALANCE")
+        rows += cmp_row("Free Cash Flow", TOOLTIPS.get("Free Cash Flow"),
+                         [d.get("free_cash_flow") for d in d_list], fmt=lambda v: _big(v) or "N/A")
+        rows += cmp_row("Deuda/Equity", TOOLTIPS.get("Debt/Equity"),
+                         [d.get("debt_equity") for d in d_list], fmt=lambda v: _num(v, 1, suffix="%"), low_good=True)
+        rows += cmp_row("Current Ratio", TOOLTIPS.get("Current Ratio"),
+                         [d.get("current_ratio") for d in d_list], fmt=lambda v: _num(v, 2, suffix="×"))
+        rows += cmp_group("TÉCNICO Y DIVIDENDO")
+        rows += cmp_row("Beta", TOOLTIPS.get("Beta"),
+                         [d.get("beta") for d in d_list], low_good=True)
+        rows += cmp_row("Short Ratio", TOOLTIPS.get("Short Ratio"),
+                         [d.get("short_ratio") for d in d_list], fmt=lambda v: _num(v, 1, suffix="d"), low_good=True)
+        rows += cmp_row("Div. Yield", TOOLTIPS.get("Dividend Yield"),
+                         [(d.get("dividend_yield") or 0) * 100 for d in d_list], fmt=lambda v: _num(v, 2, suffix="%"))
+        rows += cmp_row("Div. Rate", TOOLTIPS.get("Dividend Rate"),
+                         [d.get("dividend_rate") for d in d_list], fmt=lambda v: _num(v, 2, "$"))
+
+        if show_advanced:
+            rows += cmp_group("SALUD Y VALORACIÓN AVANZADA")
+            rows += cmp_row("Calidad beneficio (FCF/NI)",
+                "Free Cash Flow / Beneficio Neto anual. Mide si el beneficio contable se traduce en caja real. ≥0.9× = alta calidad, <0.5× = posibles ajustes contables agresivos.",
+                [d.get("fcf_quality") for d in d_list], fmt=lambda v: _num(v, 2, suffix="×"))
+            rows += cmp_row("PER Actual", TOOLTIPS.get("PER Trailing"),
+                [d.get("pe_trailing") for d in d_list], fmt=lambda v: _num(v, 1, suffix="×"), low_good=True)
+            rows += cmp_row("PER Sector",
+                "PER 'justo' de referencia para el sector de esta empresa, ajustado por los tipos de interés actuales.",
+                [d.get("pe_sector") for d in d_list], fmt=lambda v: _num(v, 1, suffix="×"))
+            rows += cmp_row("PER Histórico",
+                "Media del PER propio de la empresa en los últimos años. Sirve para ver si cotiza cara o barata respecto a su propio pasado, sin comparar con el sector.",
+                [d.get("pe_historico") for d in d_list], fmt=lambda v: _num(v, 1, suffix="×"))
+            rows += cmp_row("Salud Fundamental",
+                "Score compuesto (0-100) de rentabilidad, crecimiento, balance y calidad del beneficio. >70 = sólida, 45-70 = normal, <45 = débil.",
+                [d.get("health_score") for d in d_list], fmt=lambda v: _num(v, 0))
+            rows += cmp_row("Piotroski F-Score",
+                "9 criterios de fortaleza financiera (rentabilidad, apalancamiento, liquidez, eficiencia). ≥7 = fuerte, 4-6 = normal, <4 = débil.",
+                [d.get("piotroski_str") for d in d_list], fmt=lambda v: v if v else "N/A")
+            rows += cmp_row_fair_value("Valor Objetivo",
+                "Mediana de varios métodos de valoración ajustados al sector, incluyendo el consenso de analistas si existe. El % entre paréntesis es el upside/downside respecto al precio actual.",
+                d_list)
+            rows += cmp_row("Diagnóstico General",
+                "Comparación entre el precio actual y el Valor Objetivo calculado (infravalorada, precio justo, sobrevalorada...).",
+                [d.get("diag") for d in d_list], fmt=lambda v: v if v else "N/A")
+            rows += cmp_row("Señal de Entrada",
+                "Nivel de oportunidad de compra según una combinación de checks técnicos y fundamentales (Entrada Ideal, Posible, Esperar...).",
+                [d.get("signal_level") for d in d_list], fmt=lambda v: v if v else "N/A")
+            rows += cmp_row("Veredicto Final",
+                "Síntesis de Calidad (Salud Fundamental + Piotroski), Precio (Diagnóstico General) y Timing (Señal de Entrada) en una única conclusión.",
+                [f'{d.get("vf_icon","")} {d.get("vf_level","")}'.strip() for d in d_list],
+                fmt=lambda v: v if v and v.strip() else "N/A")
+
+        header_cells = "".join(
+            f'<th style="{hs}color:#0284c7;">{tk} — {(basic_data[tk].get("company_name") or basic_data[tk].get("name") or tk)[:20]}</th>'
+            for tk in found
+        )
+
+        st.markdown(
+            '<div class="metric-card" style="padding:0.5rem;">'
+            '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">'
+            '<thead><tr style="background:#f8fafc;">'
+            f'<th style="{hs}text-align:left;color:#64748b;">Métrica</th>'
+            f'{header_cells}'
+            f'</tr></thead><tbody>{rows}</tbody></table></div>'
+            '<div style="font-size:0.7rem;color:#64748b;margin-top:0.5rem;">'
+            'Verde = mejor valor entre las empresas comparadas · Rojo = peor</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        # Análisis técnico rápido de cada empresa (RSI/MM50/MM200) — se
+        # cachea igual que el resto, por ticker, para no perderlo al
+        # añadir/quitar otras empresas del comparador.
+        if "compare_tech" not in st.session_state:
+            st.session_state.compare_tech = {}
+        st.markdown('<div style="margin-top:1rem;"></div>', unsafe_allow_html=True)
+        tech_cols = st.columns(len(found))
+        for tk, col in zip(found, tech_cols):
+            with col:
+                if tk not in st.session_state.compare_tech:
+                    with st.spinner(f"Técnico {tk}…"):
+                        st.session_state.compare_tech[tk] = fetch_technical_data(tk)
+                tech_d = st.session_state.compare_tech[tk]
+                if tech_d and not tech_d.get("error"):
+                    rsi_d = tech_d.get("rsi", "N/A")
+                    mm50_d, mm200_d = tech_d.get("mm50"), tech_d.get("mm200")
+                    price_d = basic_data[tk].get("price", 0)
+                    st.markdown(
+                        f'<div class="metric-card"><div class="metric-label">{tk} — Técnico</div>'
+                        f'RSI: <b style="color:#0f172a;">{rsi_d}</b><br>'
+                        f'MM50: <b style="color:{"#059669" if mm50_d and price_d > mm50_d else "#dc2626"};">'
+                        f'{"▲" if mm50_d and price_d > mm50_d else "▼"}</b> &nbsp;·&nbsp; '
+                        f'MM200: <b style="color:{"#059669" if mm200_d and price_d > mm200_d else "#dc2626"};">'
+                        f'{"▲" if mm200_d and price_d > mm200_d else "▼"}</b></div>',
+                        unsafe_allow_html=True)
+    elif tickers_clean and len(tickers_clean) >= 2:
+        st.markdown(
+            '<div class="metric-card">'
+            '<span style="color:#64748b;">Pulsa COMPARAR → para cargar los datos de estas empresas.</span>'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PESTAÑA 3 — RASTREADOR DE GANGAS
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_scanner:
     render_scanner(fx_rate=fx_rate)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PESTAÑA 3 — GESTIÓN DE CARTERA
+# PESTAÑA 4 — PORTFOLIO TRACKER
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_portfolio:
     render_portfolio(fx_rate=fx_rate)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PESTAÑA 4 — PAPER TRADING (SIMULADOR)
-# ══════════════════════════════════════════════════════════════════════════════
-with tab_papertrading:
-    st.markdown("""
-    <div style="font-family:'IBM Plex Mono',monospace;font-size:0.75rem;color:#0284c7;
-                text-transform:uppercase;letter-spacing:0.1em;padding:1rem 0 0.5rem 0;">
-    🎯 PAPER TRADING
-    </div>
-    <div style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">
-    Simula operaciones a partir del plan de entrada/salida generado en Análisis Individual,
-    sin arriesgar capital real.
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.info(
-        "🚧 Sección en construcción. Próximamente podrás ejecutar el plan de entrada/salida "
-        "de cualquier análisis directamente desde aquí y hacer seguimiento de su rendimiento."
-    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
