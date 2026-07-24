@@ -21,16 +21,21 @@ import yfinance as yf
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timezone
+import db
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TIPO LIBRE DE RIESGO — Bono USA 10 años en tiempo real
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fetch_risk_free_rate() -> float:
+def fetch_risk_free_rate() -> float | None:
     """
     Obtiene el rendimiento del bono del Tesoro USA a 10 años en tiempo real.
-    Ticker: ^TNX (expresado en %). Fallback: 4.5% (aproximación actual).
+    Ticker: ^TNX (expresado en %). Devuelve None si no se puede obtener —
+    NO usa un fallback silencioso aquí: cada consumidor (calc_dcf,
+    _adjust_sector_profile en report.py) decide explícitamente cómo
+    reaccionar ante la ausencia de dato, para poder ser honesto en la UI
+    sobre si se está usando un tipo de interés real o uno de respaldo.
     """
     try:
         tnx  = yf.Ticker("^TNX")
@@ -40,7 +45,7 @@ def fetch_risk_free_rate() -> float:
             return rate / 100   # ^TNX viene en %, lo convertimos a decimal
     except Exception:
         pass
-    return 0.045   # fallback 4.5%
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -119,13 +124,31 @@ def _growth_scenarios(y: dict) -> dict:
     else:
         base_raw = 0.05   # fallback conservador 5%
 
-    # Acotar a rangos razonables
-    base = max(-0.05, min(base_raw, 0.35))
+    # Cada escenario se acota de forma INDEPENDIENTE a partir de la tasa
+    # BRUTA (base_raw), no del valor de "base" ya acotado con su propio
+    # suelo del -5% — si pesimista y optimista se derivaran del "base" ya
+    # topado, ambos podían colapsar en el mismo número cuando la empresa
+    # ya tiene un crecimiento TTM muy deprimido (p.ej. una fase de fuerte
+    # inversión con beneficios temporalmente muy negativos): "base" se
+    # quedaba anclado en el suelo del -5% y "pesimista = base − 10pp"
+    # topaba en ese MISMO suelo, dando Pesimista = Base idénticos.
+    base        = max(-0.05, min(base_raw,       0.35))
+    pessimistic = max(-0.25, min(base_raw - 0.10, 0.25))
+    optimistic  = max(-0.05, min(base_raw + 0.10, 0.40))
+
+    # Salvaguarda final: garantizar SIEMPRE pesimista < base < optimista
+    # con una separación mínima de 3pp entre escenarios consecutivos,
+    # incluso en casos límite donde los suelos/techos independientes de
+    # arriba pudieran cruzarse entre sí
+    if pessimistic >= base - 0.03:
+        pessimistic = base - 0.03
+    if optimistic <= base + 0.03:
+        optimistic = base + 0.03
 
     return {
-        "pessimistic": max(-0.05, base - 0.10),   # -10pp vs base
+        "pessimistic": pessimistic,
         "base":        base,
-        "optimistic":  min(0.40,  base + 0.10),   # +10pp vs base
+        "optimistic":  optimistic,
     }
 
 
@@ -163,6 +186,10 @@ def calc_dcf(y: dict, rf: float | None = None) -> dict | None:
 
     if rf is None:
         rf = fetch_risk_free_rate()
+    rf_is_fallback = False
+    if rf is None:
+        rf = 0.045   # fallback conservador — se marca explícitamente para
+        rf_is_fallback = True   # que la UI pueda avisar de que no es el tipo real en vivo
 
     wacc_data  = calc_wacc(y, rf)
     wacc       = wacc_data["wacc"]
@@ -226,6 +253,7 @@ def calc_dcf(y: dict, rf: float | None = None) -> dict | None:
         "scenarios":    results,
         "wacc":         wacc_data,
         "rf":           round(rf * 100, 2),
+        "rf_is_fallback": rf_is_fallback,
         "g_terminal":   g_terminal * 100,
         "fcf_base":     fcf,
         "net_cash":     net_cash,
@@ -239,27 +267,37 @@ def calc_dcf(y: dict, rf: float | None = None) -> dict | None:
 # HISTÓRICO DE MÚLTIPLOS PROPIOS
 # ─────────────────────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=43200, show_spinner=False)  # 12h — EPS anual/histórico de precios cambia poco
-def fetch_historical_multiples(
-    ticker: str,
-    market_cap: float | None = None,
-    price: float | None = None,
-    pe_trailing: float | None = None,
-    sector_pe_fair: float | None = None,
-) -> dict | None:
+def fetch_historical_multiples(ticker: str, y: dict, sector_pe_fair: float | None = None) -> dict | None:
     """
-    Calcula el PER histórico propio de los últimos 5 años.
-    Método: precio anual medio / EPS anual de cada año.
-    Fuente: yfinance histórico de precios + EPS anual.
-    Incluye también el PER medio "justo" del sector (benchmark de la app)
-    para poder comparar directamente PER actual vs PER histórico propio
-    vs PER medio del sector en el mismo lugar.
+    PER histórico propio de los últimos 5 años + comparación con el PER
+    ACTUAL y el PER "justo" del sector.
 
-    NOTA: recibe market_cap/price/pe_trailing como escalares sueltos (en vez
-    de todo el dict `y` de fetch_yahoo_data) a propósito — `y` lleva dentro
-    un timestamp de consulta que cambia en cada llamada, lo que invalidaría
-    el @st.cache_data de esta función en cada re-render.
+    La parte cara (histórico de precios mensuales + EPS anual, vía
+    yfinance) se cachea en Supabase con caché persistente
+    (data_type='historical_multiples' — solo cambia con cada cierre de
+    año fiscal, no tiene sentido pedirla en cada carga). La comparación
+    con el PER actual y el PER del sector se recalcula siempre en
+    caliente con `y`/`sector_pe_fair` frescos, para no comparar contra
+    una fotografía antigua del PER de hoy.
     """
+    ticker = ticker.upper().strip()
+
+    cached = db.cache_get(ticker, "historical_multiples")
+    if cached is not None:
+        per_history = cached.get("history")
+    else:
+        per_history = _fetch_per_history_live(ticker, y)
+        if per_history is not None:
+            db.cache_set(ticker, "historical_multiples", {"history": per_history})
+
+    if not per_history:
+        return None
+
+    return _build_multiples_result(per_history, y.get("pe_trailing"), sector_pe_fair)
+
+
+def _fetch_per_history_live(ticker: str, y: dict) -> list | None:
+    """Parte cara y cacheable: PER anual real de los últimos 5 años vía yfinance."""
     try:
         t = yf.Ticker(ticker)
 
@@ -288,7 +326,7 @@ def fetch_historical_multiples(
                     break
             if ni_row is None:
                 return None
-            shares = (market_cap or 0) / (price or 1)
+            shares = y.get("market_cap", 0) / (y.get("price", 1) or 1)
             if shares > 0:
                 eps_row = ni_row / shares
             else:
@@ -296,8 +334,6 @@ def fetch_historical_multiples(
 
         # Para cada año fiscal, calcular el PER medio
         per_history = []
-        current_per = pe_trailing
-
         for date, eps_val in eps_row.items():
             if not eps_val or eps_val <= 0:
                 continue
@@ -316,47 +352,50 @@ def fetch_historical_multiples(
                     "eps":   round(float(eps_val), 2),
                 })
 
-        if not per_history:
-            return None
-
         per_history.sort(key=lambda x: x["year"])
-        per_values  = [h["per"] for h in per_history]
-        per_mean    = round(sum(per_values) / len(per_values), 1)
-        per_min     = round(min(per_values), 1)
-        per_max     = round(max(per_values), 1)
-
-        # Comparación PER actual vs media histórica
-        if current_per and per_mean:
-            discount = round((current_per - per_mean) / per_mean * 100, 1)
-            if discount < -20:
-                signal = ("MUY BARATO vs su historia", "#059669")
-            elif discount < -5:
-                signal = ("BARATO vs su historia", "#16a34a")
-            elif discount < 5:
-                signal = ("EN LÍNEA con su historia", "#d97706")
-            elif discount < 20:
-                signal = ("CARO vs su historia", "#ea580c")
-            else:
-                signal = ("MUY CARO vs su historia", "#dc2626")
-        else:
-            discount = None
-            signal   = ("Sin comparativa", "#64748b")
-
-        return {
-            "history":       per_history,
-            "per_mean":      per_mean,
-            "per_min":       per_min,
-            "per_max":       per_max,
-            "per_current":   current_per,
-            "sector_pe_fair":sector_pe_fair,
-            "discount":      discount,
-            "signal":        signal,
-            "n_years":       len(per_history),
-        }
+        return per_history or None
 
     except Exception as e:
         print(f"[Multiples] Error: {e}")
         return None
+
+
+def _build_multiples_result(per_history: list, current_per: float | None,
+                             sector_pe_fair: float | None) -> dict:
+    """Parte barata y siempre fresca: agrega el histórico (cacheado o recién pedido) contra el PER actual."""
+    per_values  = [h["per"] for h in per_history]
+    per_mean    = round(sum(per_values) / len(per_values), 1)
+    per_min     = round(min(per_values), 1)
+    per_max     = round(max(per_values), 1)
+
+    # Comparación PER actual vs media histórica
+    if current_per and per_mean:
+        discount = round((current_per - per_mean) / per_mean * 100, 1)
+        if discount < -20:
+            signal = ("MUY BARATO vs su historia", "#059669")
+        elif discount < -5:
+            signal = ("BARATO vs su historia", "#16a34a")
+        elif discount < 5:
+            signal = ("EN LÍNEA con su historia", "#d97706")
+        elif discount < 20:
+            signal = ("CARO vs su historia", "#ea580c")
+        else:
+            signal = ("MUY CARO vs su historia", "#dc2626")
+    else:
+        discount = None
+        signal   = ("Sin comparativa", "#64748b")
+
+    return {
+        "history":       per_history,
+        "per_mean":      per_mean,
+        "per_min":       per_min,
+        "per_max":       per_max,
+        "per_current":   current_per,
+        "sector_pe_fair":sector_pe_fair,
+        "discount":      discount,
+        "signal":        signal,
+        "n_years":       len(per_history),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -373,6 +412,15 @@ def render_dcf(dcf: dict | None, currency: str = "USD", fx_rate: float | None = 
             'DCF no disponible — se necesita Free Cash Flow positivo y precio válido.</span></div>',
             unsafe_allow_html=True)
         return
+
+    if dcf.get("rf_is_fallback"):
+        st.markdown(
+            '<div style="padding:0.45rem 0.7rem;background:#fff7ed;border-left:3px solid #ea580c;'
+            'border-radius:4px;margin-bottom:0.6rem;font-size:0.72rem;color:#9a3412;">'
+            '⚠ No se pudo obtener el bono 10Y USA en tiempo real — este DCF usa un tipo libre '
+            'de riesgo de respaldo (4.5%), no el dato en vivo.</div>',
+            unsafe_allow_html=True
+        )
 
     price    = dcf["price"]
     wacc     = dcf["wacc"]

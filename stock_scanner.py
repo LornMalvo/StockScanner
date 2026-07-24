@@ -141,13 +141,7 @@ def _full_evaluate(ticker: str, y: dict) -> dict:
     bh   = fetch_balance_sheet_history(ticker)
 
     static_profile, _ = _get_sector_profile(y.get("sector", ""))
-    mult_data = fetch_historical_multiples(
-        ticker,
-        market_cap=y.get("market_cap"),
-        price=y.get("price"),
-        pe_trailing=y.get("pe_trailing"),
-        sector_pe_fair=static_profile["pe_fair"],
-    )
+    mult_data = fetch_historical_multiples(ticker, y, sector_pe_fair=static_profile["pe_fair"])
 
     ev     = _evaluate(y, bh, mult_data)
     signal = calc_entry_signal(y, tech, ev)
