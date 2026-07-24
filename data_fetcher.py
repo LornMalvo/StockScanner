@@ -9,6 +9,8 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 
+import db
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # NIVELES DE FIABILIDAD
@@ -208,13 +210,6 @@ def _calc_macd(closes: pd.Series) -> dict | None:
             "histogram": round(hist_now, 4),
             "bullish_cross": bullish_cross, "bearish_cross": bearish_cross,
             "bullish_divergence": divergence,
-            # Series completas (misma longitud que "closes", sin NaN iniciales
-            # porque ewm con adjust=False arranca en el primer valor) — se
-            # usan para dibujar el panel de histograma MACD bajo el gráfico
-            # de cotización, no solo el último valor puntual.
-            "macd_series":      [round(float(v), 4) for v in macd.tolist()],
-            "signal_series":    [round(float(v), 4) for v in signal.tolist()],
-            "histogram_series": [round(float(v), 4) for v in hist.tolist()],
         }
     except Exception:
         return None
@@ -333,12 +328,6 @@ def _calc_historical_support(closes: pd.Series, dates: list, price: float) -> di
     con el tiempo) o Fibonacci (niveles proporcionales fijos), esto son
     niveles de precio REALES donde el mercado ya ha demostrado interés
     comprador de forma repetida.
-
-    Además del cluster más fuerte (compatibilidad con el resto de la app,
-    p.ej. Señal de Entrada, que solo necesita "el mejor soporte"), se
-    devuelven también los 3 clusters más relevantes bajo la clave
-    "clusters" — los usa el Motor de Confluencia (Capa A) para construir
-    el Mapa de Suelos Proyectados con varios niveles, no solo uno.
     """
     try:
         vals = closes.values
@@ -372,37 +361,22 @@ def _calc_historical_support(closes: pd.Series, dates: list, price: float) -> di
             if not placed:
                 clusters.append({"avg": v, "touches": [(i, v)]})
 
-        # Exigir al menos 2 toques para considerarlo "soporte" real
-        valid_clusters = [cl for cl in clusters if len(cl["touches"]) >= 2]
-        if not valid_clusters:
-            return None
+        # Cluster más fuerte (más toques) por debajo del precio
+        clusters.sort(key=lambda c: len(c["touches"]), reverse=True)
+        best = clusters[0]
+        if len(best["touches"]) < 2:
+            return None   # exigir al menos 2 toques para considerarlo "soporte" real
 
-        def _cluster_dict(cl):
-            touch_idxs = [t[0] for t in cl["touches"]]
-            last_touch_idx = max(touch_idxs)
-            last_touch_date = dates[last_touch_idx] if last_touch_idx < len(dates) else None
-            distance_pct = (price - cl["avg"]) / price * 100
-            return {
-                "level":        round(cl["avg"], 2),
-                "touches":      len(cl["touches"]),
-                "distance_pct": round(distance_pct, 1),
-                "last_touch_date": last_touch_date,
-            }
+        touch_idxs = [t[0] for t in best["touches"]]
+        last_touch_idx = max(touch_idxs)
+        last_touch_date = dates[last_touch_idx] if last_touch_idx < len(dates) else None
+        distance_pct = (price - best["avg"]) / price * 100
 
-        # Los 3 clusters más relevantes: primero por nº de toques (más
-        # fiable), y a igualdad de toques, el más cercano al precio actual
-        # (más útil como referencia práctica que un mínimo muy lejano)
-        valid_clusters.sort(key=lambda c: (-len(c["touches"]), price - c["avg"]))
-        top_clusters = [_cluster_dict(cl) for cl in valid_clusters[:3]]
-
-        # Para el Motor de Confluencia interesa el orden por cercanía al
-        # precio (de más cercano a más profundo), no por nº de toques
-        clusters_by_proximity = sorted(top_clusters, key=lambda c: c["level"], reverse=True)
-
-        best = top_clusters[0]  # compatibilidad: cluster más fuerte por toques
         return {
-            **best,
-            "clusters": clusters_by_proximity,
+            "level":        round(best["avg"], 2),
+            "touches":      len(best["touches"]),
+            "distance_pct": round(distance_pct, 1),
+            "last_touch_date": last_touch_date,
         }
     except Exception:
         return None
@@ -429,6 +403,23 @@ def _find_row(df: pd.DataFrame, candidates: list):
 
 
 def fetch_balance_sheet_history(ticker: str) -> dict:
+    """
+    Balance histórico multi-año con caché persistente en Supabase
+    (data_type='balance_sheet', TTL 48h — solo cambia tras cada filing
+    trimestral, no tiene sentido pedirlo a Yahoo en cada carga).
+    """
+    ticker = ticker.upper().strip()
+    cached = db.cache_get(ticker, "balance_sheet")
+    if cached is not None:
+        return cached
+
+    result = _fetch_balance_sheet_history_live(ticker)
+    if result and not result.get("error"):
+        db.cache_set(ticker, "balance_sheet", result)
+    return result
+
+
+def _fetch_balance_sheet_history_live(ticker: str) -> dict:
     """
     Extrae del balance e income statement ANUAL (hasta 4 años disponibles,
     lo que Yahoo exponga) todos los campos necesarios para Piotroski
@@ -566,207 +557,24 @@ def fetch_relative_strength(closes: pd.Series, period_days: int = 63) -> dict | 
         return None
 
 
-def _calc_ma_cross_recency(closes: pd.Series, dates_str: list) -> dict | None:
+def fetch_technical_data(ticker: str) -> dict:
     """
-    Fecha del último Golden/Death Cross (MM50 cruza MM200) y su antigüedad
-    en sesiones. Sustituye a fetch_last_cross_date() (analysis.py), que
-    hacía su propia llamada de red duplicada al histórico de 2 años —
-    aquí se reutiliza el histórico que fetch_technical_data() ya descargó.
-
-    Es un indicador REZAGADO por naturaleza (una media de 200 sesiones
-    tarda en reaccionar): confirma una tendencia ya en marcha, no la
-    predice. Por eso en la Señal de Entrada se pondera de forma moderada,
-    igual que MACD u OBV, no como un factor fundamental.
+    Indicadores técnicos con caché persistente en Supabase
+    (data_type='technical', TTL 60 min — se recalcula sobre cierres
+    diarios, no hace falta pedirlo a Yahoo más a menudo que eso).
     """
-    try:
-        n = len(closes)
-        if n < 200:
-            return None
-        mm50  = closes.rolling(50).mean()
-        mm200 = closes.rolling(200).mean()
-        diff  = mm50 - mm200
-        for i in range(n - 1, 0, -1):
-            d_i, d_im1 = diff.iloc[i], diff.iloc[i-1]
-            if pd.isna(d_i) or pd.isna(d_im1):
-                continue
-            if d_i > 0 and d_im1 <= 0:
-                return {"date": dates_str[i], "type": "GOLDEN CROSS", "days_ago": (n - 1) - i}
-            if d_i < 0 and d_im1 >= 0:
-                return {"date": dates_str[i], "type": "DEATH CROSS", "days_ago": (n - 1) - i}
-        return None
-    except Exception:
-        return None
+    ticker = ticker.upper().strip()
+    cached = db.cache_get(ticker, "technical")
+    if cached is not None:
+        return cached
 
-
-def _calc_price_ma_cross(closes: pd.Series, ma_series: pd.Series, volumes: pd.Series,
-                          dates_str: list, ma_label: str) -> dict | None:
-    """
-    Última vez que el PRECIO (no las medias entre sí) cruzó una media
-    móvil concreta, con el volumen de esa sesión comparado a la media de
-    volumen de las 20 sesiones previas. Un cruce con volumen significativo
-    (≥1.5×) tiene más peso como ruptura real que uno con volumen normal
-    (más probable que sea un "falso cruce" que se revierte enseguida).
-    """
-    try:
-        n = len(closes)
-        if n < 25 or ma_series is None:
-            return None
-        diff = closes - ma_series
-        for i in range(n - 1, 0, -1):
-            d_i, d_im1 = diff.iloc[i], diff.iloc[i-1]
-            if pd.isna(d_i) or pd.isna(d_im1):
-                continue
-            crossed_up   = d_i > 0 and d_im1 <= 0
-            crossed_down = d_i < 0 and d_im1 >= 0
-            if crossed_up or crossed_down:
-                vol_window   = volumes.iloc[max(0, i - 20):i]
-                avg_vol      = float(vol_window.mean()) if len(vol_window) > 0 else None
-                vol_that_day = float(volumes.iloc[i])
-                vol_ratio    = (vol_that_day / avg_vol) if avg_vol and avg_vol > 0 else None
-                return {
-                    "ma":                 ma_label,
-                    "direction":          "up" if crossed_up else "down",
-                    "date":               dates_str[i],
-                    "days_ago":           (n - 1) - i,
-                    "volume_ratio":       round(vol_ratio, 2) if vol_ratio is not None else None,
-                    "significant_volume": bool(vol_ratio is not None and vol_ratio >= 1.5),
-                }
-        return None
-    except Exception:
-        return None
-
-
-def _calc_cross_proximity(mm50: float | None, mm200: float | None, price: float | None) -> dict | None:
-    """
-    Alerta de PROXIMIDAD — no una predicción. Señala cuándo la MM50 y la
-    MM200 están muy próximas entre sí (posible Golden/Death Cross cercano
-    si la tendencia actual continúa) o cuándo el precio está muy cerca de
-    tocar una de las medias. Es puramente informativa: extrapolar CUÁNDO
-    se producirá un cruce a partir de la pendiente reciente no tiene
-    respaldo estadístico real (las tendencias revierten constantemente,
-    sobre todo en mercados laterales) — por eso este dato NO puntúa en la
-    Señal de Entrada, solo se muestra como aviso a vigilar.
-    """
-    if not mm50 or not mm200 or not price:
-        return None
-    NEAR_THRESHOLD = 2.0  # % de margen para considerar "cerca"
-    notes = []
-    gap_ma_pct = abs(mm50 - mm200) / price * 100
-    if gap_ma_pct <= NEAR_THRESHOLD:
-        notes.append(f"MM50 y MM200 muy próximas ({gap_ma_pct:.1f}% de separación) — posible cruce cercano si continúa la tendencia")
-    dist_mm50_pct = abs(price - mm50) / price * 100
-    if dist_mm50_pct <= NEAR_THRESHOLD:
-        notes.append(f"Precio a {dist_mm50_pct:.1f}% de la MM50")
-    dist_mm200_pct = abs(price - mm200) / price * 100
-    if dist_mm200_pct <= NEAR_THRESHOLD:
-        notes.append(f"Precio a {dist_mm200_pct:.1f}% de la MM200")
-    return {"notes": notes} if notes else None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MOTOR DE CONFLUENCIA — zonas de soporte por combinación de métodos
-# ─────────────────────────────────────────────────────────────────────────────
-# Vive aquí (no en report.py, donde se usa para el Plan de Entrada/Salida, ni
-# en analysis.py, donde se usa para la Señal de Entrada) porque ambos módulos
-# necesitan importarla y report.py ya importa de analysis.py — así se evita
-# el import circular manteniendo una única implementación compartida.
-
-CONFLUENCE_MARGIN = 0.015
-
-# Nº de capas independientes coincidiendo en una zona -> etiqueta de fiabilidad
-_RELIABILITY_LABELS = {
-    1: "Media (1 indicador)",
-    2: "Alta (2 indicadores)",
-}
-_RELIABILITY_LABEL_3PLUS = "Extrema (3+ indicadores)"
-
-
-def build_confluence_supports(price: float, tech: dict) -> list:
-    """
-    Motor de Confluencia (Fase 1 — Capas A, C y D; la Capa B de Volume
-    Profile/HVN queda para la Fase 2).
-
-    Combina 3 métodos técnicos independientes que la app ya calcula por
-    separado:
-      Capa A: clusters de soporte histórico (mínimos locales con rebotes reales)
-      Capa C: medias móviles dinámicas (MM50, MM100, MM200)
-      Capa D: retrocesos de Fibonacci (38.2/50/61.8/78.6% del rango 52 semanas)
-
-    y agrupa los niveles que caen dentro de ±1.5% entre sí en una misma
-    "zona de soporte". Cuantas más capas independientes coincidan en la
-    misma zona, mayor la fiabilidad de que el precio encuentre comprador
-    ahí ("Soporte de Alta Fiabilidad").
-
-    Devuelve una lista de zonas por debajo del precio actual, ordenadas de
-    más cercana a más profunda, cada una con: price, distance_pct,
-    indicators (etiquetas de los métodos que confluyen ahí), n_layers
-    (nº de capas distintas) y reliability (etiqueta textual).
-
-    Usada tanto por el Plan de Entrada/Salida (report.py) como por el check
-    "cerca de un soporte" de la Señal de Entrada (analysis.py) — antes eran
-    2 sistemas separados resolviendo la misma pregunta con lógicas
-    distintas; ahora comparten una única implementación.
-    """
-    raw = []  # (etiqueta, precio, capa)
-
-    mm50, mm100, mm200 = tech.get("mm50"), tech.get("mm100"), tech.get("mm200")
-    if mm50 and mm50 < price:
-        raw.append(("MM50", mm50, "media_movil"))
-    if mm100 and mm100 < price:
-        raw.append(("MM100", mm100, "media_movil"))
-    if mm200 and mm200 < price:
-        raw.append(("MM200", mm200, "media_movil"))
-
-    fib_data = tech.get("fibonacci")
-    if fib_data and fib_data.get("levels"):
-        for label in ("38.2%", "50.0%", "61.8%", "78.6%"):
-            lvl = fib_data["levels"].get(label)
-            if lvl and lvl < price:
-                raw.append((f"Fibonacci {label}", lvl, "fibonacci"))
-
-    support_data = tech.get("historical_support")
-    if support_data and support_data.get("clusters"):
-        for cl in support_data["clusters"]:
-            if cl["level"] < price:
-                raw.append((f"Soporte histórico ({cl['touches']}× rebotes)", cl["level"], "historico"))
-
-    if not raw:
-        return []
-
-    # Agrupar por confluencia: de más cercano al precio a más profundo,
-    # fusionando cada candidato con la zona abierta más reciente si cae
-    # dentro del margen (las capas ya vienen pre-ordenadas por precio
-    # dentro de cada capa, y el orden global por precio agrupa bien las
-    # zonas sin necesitar una búsqueda cuadrática más compleja)
-    raw.sort(key=lambda c: c[1], reverse=True)
-    zones = []
-    for label, lvl, layer in raw:
-        placed = False
-        for z in zones:
-            if abs(lvl - z["_avg"]) / z["_avg"] <= CONFLUENCE_MARGIN:
-                z["_members"].append((label, lvl, layer))
-                z["_avg"] = sum(m[1] for m in z["_members"]) / len(z["_members"])
-                placed = True
-                break
-        if not placed:
-            zones.append({"_avg": lvl, "_members": [(label, lvl, layer)]})
-
-    result = []
-    for z in zones:
-        n_layers = len(set(m[2] for m in z["_members"]))
-        result.append({
-            "price":        round(z["_avg"], 2),
-            "distance_pct": round((z["_avg"] - price) / price * 100, 1),
-            "indicators":   [m[0] for m in z["_members"]],
-            "n_layers":     n_layers,
-            "reliability":  _RELIABILITY_LABELS.get(n_layers, _RELIABILITY_LABEL_3PLUS),
-        })
-
-    result.sort(key=lambda z: z["price"], reverse=True)
+    result = _fetch_technical_data_live(ticker)
+    if result and not result.get("error"):
+        db.cache_set(ticker, "technical", result)
     return result
 
 
-def fetch_technical_data(ticker: str) -> dict:
+def _fetch_technical_data_live(ticker: str) -> dict:
     """RSI(14), MM50, MM200 con metadatos de frescura."""
     try:
         t = yf.Ticker(ticker)
@@ -795,7 +603,6 @@ def fetch_technical_data(ticker: str) -> dict:
 
         rsi   = _calc_rsi(closes_full)
         mm50  = round(float(closes_full.tail(50).mean()), 4)
-        mm100 = round(float(closes_full.tail(100).mean()), 4) if len(closes_full) >= 100 else None
         mm200 = round(float(closes_full.tail(200).mean()), 4) if len(closes_full) >= 200 else None
 
         rsi_lbl, rsi_cls = _rsi_label(rsi)
@@ -837,15 +644,6 @@ def fetch_technical_data(ticker: str) -> dict:
         mm50_series  = closes_full.rolling(window=50).mean()
         mm200_series = closes_full.rolling(window=200).mean() if len(closes_full) >= 200 else None
 
-        # ── Cruces: Golden/Death Cross reciente + cruce de precio con volumen ──
-        last_ma_cross    = _calc_ma_cross_recency(closes_full, dates_str_full)
-        price_cross_mm50 = _calc_price_ma_cross(closes_full, mm50_series, hist_full["Volume"],
-                                                 dates_str_full, "MM50")
-        price_cross_mm200 = (_calc_price_ma_cross(closes_full, mm200_series, hist_full["Volume"],
-                                                    dates_str_full, "MM200")
-                              if mm200_series is not None else None)
-        cross_proximity = _calc_cross_proximity(mm50, mm200, price)
-
         # Recorte a ~1 año de sesiones (252 aprox.) para el gráfico
         display_start = max(0, len(closes_full) - 252)
 
@@ -859,9 +657,6 @@ def fetch_technical_data(ticker: str) -> dict:
                 "mm50":  round(float(mm50_series.iloc[i]), 4) if not mm50_series.isna().iloc[i] else None,
                 "mm200": (round(float(mm200_series.iloc[i]), 4)
                           if mm200_series is not None and not mm200_series.isna().iloc[i] else None),
-                "macd":        macd_data["macd_series"][i]      if macd_data else None,
-                "macd_signal": macd_data["signal_series"][i]    if macd_data else None,
-                "macd_hist":   macd_data["histogram_series"][i] if macd_data else None,
             })
 
         return {
@@ -873,16 +668,11 @@ def fetch_technical_data(ticker: str) -> dict:
             "mm50_signal":  mm50_signal,
             "mm50_css":     mm50_cls,
             "dist_mm50":    dist_mm50,
-            "mm100":        mm100,
             "mm200":        mm200,
             "mm200_signal": mm200_signal,
             "mm200_css":    mm200_cls,
             "dist_mm200":   dist_mm200,
             "cross_signal": cross_signal,
-            "last_ma_cross":      last_ma_cross,
-            "price_cross_mm50":   price_cross_mm50,
-            "price_cross_mm200":  price_cross_mm200,
-            "cross_proximity":    cross_proximity,
             "price_history":price_history,
             "macd":         macd_data,
             "adx":          adx_val,
@@ -931,7 +721,61 @@ def _calc_dividend_frequency(t) -> str | None:
         return None
 
 
+def _fetch_live_price(ticker: str) -> float | None:
+    """
+    Precio actual SIN caché, usando fast_info en vez de .info completo.
+    fast_info es un endpoint mucho más ligero en yfinance (no trae
+    fundamentales, solo cotización) — es intencionadamente barato de
+    llamar en cada análisis, por eso no necesita pasar por Supabase.
+    """
+    try:
+        fi = yf.Ticker(ticker).fast_info
+        price = fi.get("lastPrice") if hasattr(fi, "get") else getattr(fi, "last_price", None)
+        return float(price) if price else None
+    except Exception as e:
+        print(f"[fetch_live_price] Error ({ticker}): {e}")
+        return None
+
+
 def fetch_yahoo_data(ticker: str) -> dict | None:
+    """
+    Datos fundamentales de Yahoo Finance. Los fundamentales pesados (TTM,
+    márgenes, balance, growth...) se cachean en Supabase 24h — apenas
+    cambian entre trimestres, no tiene sentido pedirlos en cada carga.
+
+    El PRECIO, en cambio, se pide siempre fresco con una llamada aparte y
+    ligera (fast_info), independientemente de si el resto viene de caché
+    o no. Así el precio nunca tiene más de unos segundos de antigüedad,
+    sin sacrificar el ahorro de la parte pesada.
+    """
+    ticker = ticker.upper().strip()
+
+    cached = db.cache_get(ticker, "yahoo_data")
+    if cached is not None:
+        result = cached
+    else:
+        result = _fetch_yahoo_data_live(ticker)
+        if result is not None:
+            db.cache_set(ticker, "yahoo_data", result)
+
+    if result is None:
+        return None
+
+    live_price = _fetch_live_price(ticker)
+    if live_price:
+        result = dict(result)  # copia — no mutar el objeto que pueda estar cacheado en memoria
+        result["price"] = live_price
+        result["meta"] = dict(result.get("meta") or {})
+        result["meta"]["price_date"]      = "En vivo (ahora)"
+        result["meta"]["price_days_old"]  = 0
+        result["meta"]["price_freshness"] = {"ok": True, "label": "Precio en vivo", "color": "#6ee7b7", "icon": "✅"}
+    # Si fast_info falla, se sirve el precio del bloque cacheado/recién pedido como fallback — degradación
+    # razonable en vez de romper el análisis.
+
+    return result
+
+
+def _fetch_yahoo_data_live(ticker: str) -> dict | None:
     """Datos fundamentales de Yahoo Finance con metadatos de frescura y fiabilidad."""
     try:
         t    = yf.Ticker(ticker)
@@ -990,29 +834,6 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
                         if i >= 4: break
                         net_income_q.append({"date": str(date)[:10], "value": val})
                     break
-
-        # ── EBIT e Interest Expense TTM (para Cobertura de Intereses) ──────
-        # interest_expense también lo usa calc_wacc (dcf.py) para el coste
-        # de deuda implícito — antes ese campo nunca se rellenaba desde
-        # aquí, así que WACC siempre caía al fallback (Rf + 1.5pp) aunque
-        # hubiera datos reales disponibles.
-        ebit_ttm = None
-        if income_stmt is not None and not income_stmt.empty:
-            for label in ["EBIT", "Operating Income"]:
-                if label in income_stmt.index:
-                    row = income_stmt.loc[label].dropna()
-                    if len(row) > 0:
-                        ebit_ttm = float(row.iloc[:4].sum())
-                        break
-
-        interest_expense_ttm = None
-        if income_stmt is not None and not income_stmt.empty:
-            for label in ["Interest Expense", "Interest Expense Non Operating"]:
-                if label in income_stmt.index:
-                    row = income_stmt.loc[label].dropna()
-                    if len(row) > 0:
-                        interest_expense_ttm = abs(float(row.iloc[:4].sum()))
-                        break
 
         # ── EPS trimestral ────────────────────────────────────────────────
         eps_q = []
@@ -1198,8 +1019,6 @@ def fetch_yahoo_data(ticker: str) -> dict | None:
             "net_income_q":    net_income_q,
             "eps_q":           eps_q,
             "ebitda":          info.get("ebitda"),
-            "ebit_ttm":        ebit_ttm,
-            "interest_expense": interest_expense_ttm,
 
             # ── Metadatos de fiabilidad ───────────────────────────────────
             "meta": {
@@ -1255,33 +1074,24 @@ NET_INCOME_CONCEPTS = [
 ]
 
 
-_CIK_MAP_CACHE: dict = {}   # ticker -> CIK, cacheado a nivel de proceso — el
-                             # listado completo de la SEC son varios MB, no
-                             # tiene sentido volver a descargarlo en cada
-                             # análisis si ya lo tenemos de una consulta previa
-
-
 def _get_cik(ticker: str) -> str | None:
-    """Obtiene el CIK de la SEC para un ticker dado (con caché de proceso)."""
-    global _CIK_MAP_CACHE
-    if not _CIK_MAP_CACHE:
-        try:
-            r = requests.get(
-                "https://www.sec.gov/files/company_tickers.json",
-                headers=SEC_HEADERS, timeout=12
-            )
-            if r.status_code != 200:
-                print(f"[SEC CIK] HTTP {r.status_code}")
-                return None
-            data = r.json()
-            for entry in data.values():
-                t = entry.get("ticker", "").upper()
-                if t:
-                    _CIK_MAP_CACHE[t] = str(entry["cik_str"]).zfill(10)
-        except Exception as e:
-            print(f"[SEC CIK] Error: {e}")
+    """Obtiene el CIK de la SEC para un ticker dado."""
+    try:
+        r = requests.get(
+            "https://www.sec.gov/files/company_tickers.json",
+            headers=SEC_HEADERS, timeout=12
+        )
+        if r.status_code != 200:
+            print(f"[SEC CIK] HTTP {r.status_code}")
             return None
-    return _CIK_MAP_CACHE.get(ticker.upper())
+        data = r.json()
+        for entry in data.values():
+            if entry.get("ticker", "").upper() == ticker.upper():
+                cik = str(entry["cik_str"]).zfill(10)
+                return cik
+    except Exception as e:
+        print(f"[SEC CIK] Error: {e}")
+    return None
 
 
 def _get_concept(cik: str, concept: str, unit: str = "USD") -> list:
@@ -1311,10 +1121,7 @@ def _get_concept(cik: str, concept: str, unit: str = "USD") -> list:
 
 def _last_4_quarters(series: list) -> list:
     """
-    Extrae los 4 últimos trimestres 10-Q estancos disponibles (sin
-    derivar el que falte). Se mantiene como fallback y para listar
-    trimestres individuales en la UI — el cálculo real del TTM usa
-    _calc_ttm_from_sec(), más robusto (ver docstring de esa función).
+    Extrae los 4 últimos trimestres estancos.
     Acepta períodos 60-135 días para cubrir calendarios fiscales atípicos.
     Excluye 10-K (acumulados anuales) — solo usa 10-Q estancos.
     """
@@ -1339,100 +1146,6 @@ def _last_4_quarters(series: list) -> list:
     return quarterly
 
 
-def _calc_ttm_from_sec(series: list) -> tuple | None:
-    """
-    Calcula el TTM de forma robusta: último 10-K (año fiscal completo) +
-    trimestres 10-Q presentados DESPUÉS de ese cierre anual − los mismos
-    trimestres de hace un año (que ahora "salen" de la ventana de 12 meses).
-
-    Por qué no basta con sumar "los últimos 4 10-Q": el último trimestre
-    del año fiscal (normalmente Q4) casi nunca existe como hecho XBRL
-    trimestral aislado — va embebido dentro del 10-K anual, no se presenta
-    un 10-Q separado para él. Exigir 4 trimestres 10-Q consecutivos hace
-    que ese trimestre se salte silenciosamente y se coja uno de hace más
-    de un año para completar el cupo de 4 — desalineando la ventana de 12
-    meses (a veces cubriendo 15+ meses, o dejando fuera trimestres
-    recientes) y produciendo TTMs sistemáticamente distintos del TTM real
-    de Yahoo, que si conoce el Q4 directamente. Este método evita
-    depender de ese dato inexistente: usa el total anual ya conocido y
-    solo necesita trimestres 10-Q normales (que sí existen siempre) para
-    ajustar hacia adelante y hacia atrás.
-
-    Devuelve (valor_ttm, fecha_fin_más_reciente, fecha_filing_más_reciente)
-    o None si no hay datos suficientes.
-    """
-    from datetime import datetime as dt, timedelta
-
-    def _dur(a, b):
-        return (dt.strptime(b, "%Y-%m-%d") - dt.strptime(a, "%Y-%m-%d")).days
-
-    quarterly, seen_q = [], set()
-    for item in series:
-        start, end, form = item.get("start", ""), item.get("end", ""), item.get("form", "")
-        if not start or not end or form != "10-Q" or end in seen_q:
-            continue
-        try:
-            days = _dur(start, end)
-        except Exception:
-            continue
-        if 60 <= days <= 135:
-            quarterly.append(item)
-            seen_q.add(end)
-    quarterly.sort(key=lambda x: x["end"], reverse=True)
-
-    annuals, seen_a = [], set()
-    for item in series:
-        start, end, form = item.get("start", ""), item.get("end", ""), item.get("form", "")
-        if not start or not end or form != "10-K" or end in seen_a:
-            continue
-        try:
-            days = _dur(start, end)
-        except Exception:
-            continue
-        if 300 <= days <= 380:
-            annuals.append(item)
-            seen_a.add(end)
-    annuals.sort(key=lambda x: x["end"], reverse=True)
-
-    if not annuals:
-        # Sin 10-K disponible (poco común): fallback al método anterior,
-        # asumiendo el riesgo de trimestres no consecutivos
-        if len(quarterly) >= 4:
-            q4 = quarterly[:4]
-            return sum(q["val"] for q in q4), q4[0]["end"], q4[0].get("filed", "")
-        return None
-
-    latest_fy = annuals[0]
-    fy_end    = latest_fy["end"]
-
-    new_quarters = sorted(
-        (q for q in quarterly if q["end"] > fy_end),
-        key=lambda x: x["end"]
-    )
-
-    if not new_quarters:
-        # El 10-K más reciente YA es la ventana de 12 meses más actual
-        return latest_fy["val"], fy_end, latest_fy.get("filed", "")
-
-    ttm = latest_fy["val"]
-    for nq in new_quarters:
-        ttm += nq["val"]
-        # Restar el trimestre equivalente de hace 1 año (ya incluido en el
-        # 10-K), buscando el 10-Q cuyo inicio esté a ~365 días del nuevo
-        target_start = dt.strptime(nq["start"], "%Y-%m-%d") - timedelta(days=365)
-        year_ago = min(
-            quarterly,
-            key=lambda q: abs((dt.strptime(q["start"], "%Y-%m-%d") - target_start).days),
-            default=None
-        )
-        if year_ago and abs((dt.strptime(year_ago["start"], "%Y-%m-%d") - target_start).days) <= 20:
-            ttm -= year_ago["val"]
-        # Si no se encuentra el trimestre exacto de hace un año, se deja
-        # sin restar — mejor una ligera sobreestimación que perder el dato
-
-    return ttm, new_quarters[-1]["end"], new_quarters[-1].get("filed", "")
-
-
 def _fetch_first_concept(cik: str, concepts: list) -> list:
     """Prueba conceptos en orden y devuelve el primero con datos."""
     for concept in concepts:
@@ -1443,27 +1156,38 @@ def _fetch_first_concept(cik: str, concepts: list) -> list:
 
 
 def fetch_sec_data(ticker: str) -> dict | None:
+    """
+    Datos de SEC EDGAR con caché persistente en Supabase (data_type=
+    'sec_data', TTL 48h — un filing SEC no cambia entre trimestres, así
+    que no tiene sentido golpear la API de SEC EDGAR más a menudo).
+    """
+    ticker = ticker.upper().strip()
+    cached = db.cache_get(ticker, "sec_data")
+    if cached is not None:
+        return cached
+
+    result = _fetch_sec_data_live(ticker)
+    if result is not None:
+        db.cache_set(ticker, "sec_data", result)
+    return result
+
+
+def _fetch_sec_data_live(ticker: str) -> dict | None:
     """Ingresos y beneficio neto TTM desde SEC EDGAR con metadatos de frescura."""
     cik = _get_cik(ticker)
     if not cik:
         return None
 
     rev_series = _fetch_first_concept(cik, REVENUE_CONCEPTS)
-    if not rev_series:
-        return None
-    rev_ttm_result = _calc_ttm_from_sec(rev_series)
-    if not rev_ttm_result:
-        return None
-    ttm_revenue, latest_end, latest_filed = rev_ttm_result
+    rev_q      = _last_4_quarters(rev_series)
+    ni_series  = _fetch_first_concept(cik, NET_INCOME_CONCEPTS)
+    ni_q       = _last_4_quarters(ni_series)
 
-    ni_series = _fetch_first_concept(cik, NET_INCOME_CONCEPTS)
-    ni_ttm_result = _calc_ttm_from_sec(ni_series) if ni_series else None
-    ttm_net_income = ni_ttm_result[0] if ni_ttm_result else None
+    if not rev_q:
+        return None
 
-    # Trimestres 10-Q individuales, solo para mostrar el desglose en la UI
-    # (el TTM real ya se calculó arriba con el método robusto)
-    rev_q = _last_4_quarters(rev_series)
-    ni_q  = _last_4_quarters(ni_series) if ni_series else []
+    ttm_revenue    = sum(q.get("val", 0) for q in rev_q)
+    ttm_net_income = sum(q.get("val", 0) for q in ni_q) if ni_q else None
 
     quarters_fmt = [
         {"date": q["end"], "value": q["val"], "filed": q.get("filed",""), "form": q.get("form","")}
@@ -1474,6 +1198,8 @@ def fetch_sec_data(ticker: str) -> dict | None:
         for q in ni_q
     ] if ni_q else []
 
+    latest_end   = rev_q[0].get("end",   "") if rev_q else ""
+    latest_filed = rev_q[0].get("filed", "") if rev_q else ""
     days_end     = _days_since(latest_end)
     days_filed   = _days_since(latest_filed)
     sec_freshness = _freshness_status(days_end, STALE_SEC)
@@ -1504,60 +1230,28 @@ def fetch_sec_data(ticker: str) -> dict | None:
 # VERIFICACIÓN CRUZADA
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _cross_check(sec_val, yahoo_val) -> dict:
-    """Contraste genérico de un valor TTM entre SEC EDGAR y Yahoo Finance."""
-    if sec_val is None or yahoo_val is None:
-        return {"status": "NO_DATA", "diff": None, "pct": None, "sec_val": sec_val, "yahoo_val": yahoo_val}
-    if sec_val == 0 and yahoo_val == 0:
-        return {"status": "NO_DATA", "diff": None, "pct": None, "sec_val": None, "yahoo_val": None}
-    diff = abs(sec_val - yahoo_val)
-    base = max(abs(sec_val), abs(yahoo_val))
+def verify_cross_data(sec: dict, yahoo: dict) -> dict:
+    if not sec or not yahoo:
+        return {"status": "NO_DATA", "diff": None, "pct": None}
+
+    sec_ttm   = sec.get("ttm_revenue",   0) or 0
+    yahoo_ttm = yahoo.get("ttm_revenue", 0) or 0
+
+    if sec_ttm == 0 and yahoo_ttm == 0:
+        return {"status": "NO_DATA", "diff": None, "pct": None}
+
+    diff = abs(sec_ttm - yahoo_ttm)
+    base = max(sec_ttm, yahoo_ttm)
     pct  = (diff / base * 100) if base else 0
-    if pct < 2:    status = "OK"
+
+    if pct < 2:   status = "OK"
     elif pct < 10: status = "WARN"
     else:          status = "ERROR"
-    return {"status": status, "diff": diff, "pct": pct, "sec_val": sec_val, "yahoo_val": yahoo_val}
-
-
-_STATUS_RANK = {"OK": 0, "WARN": 1, "ERROR": 2, "NO_DATA": -1}
-
-
-def verify_cross_data(sec: dict, yahoo: dict) -> dict:
-    """
-    Contraste cruzado SEC EDGAR vs Yahoo Finance. Compara TODOS los datos
-    TTM que ya se descargan de SEC EDGAR (antes solo se comparaba Revenue,
-    aunque el Beneficio Neto TTM ya se calculaba y se dejaba sin usar).
-
-    Devuelve tanto los campos "planos" de Revenue (compatibilidad con el
-    código existente: status/diff/pct/sec_ttm/yahoo_ttm) como un desglose
-    completo en "checks" con cada contraste por separado, y un
-    "overall_status" que es el peor de todos los contrastes disponibles
-    (para un badge-resumen de un vistazo).
-    """
-    if not sec or not yahoo:
-        return {"status": "NO_DATA", "diff": None, "pct": None, "overall_status": "NO_DATA", "checks": {}}
-
-    rev_check = _cross_check(sec.get("ttm_revenue"), yahoo.get("ttm_revenue"))
-    ni_check  = _cross_check(sec.get("ttm_net_income"), yahoo.get("ttm_net_income"))
-
-    checks = {}
-    if rev_check["status"] != "NO_DATA":
-        checks["revenue"] = rev_check
-    if ni_check["status"] != "NO_DATA":
-        checks["net_income"] = ni_check
-
-    if not checks:
-        return {"status": "NO_DATA", "diff": None, "pct": None, "overall_status": "NO_DATA", "checks": {}}
-
-    overall_status = max(checks.values(), key=lambda c: _STATUS_RANK[c["status"]])["status"]
 
     return {
-        # Compatibilidad: estos 4 campos siguen siendo el contraste de Revenue
-        "status":    rev_check["status"],
-        "diff":      rev_check["diff"],
-        "pct":       rev_check["pct"],
-        "sec_ttm":   rev_check["sec_val"],
-        "yahoo_ttm": rev_check["yahoo_val"],
-        "overall_status": overall_status,
-        "checks": checks,
+        "status":    status,
+        "diff":      diff,
+        "pct":       pct,
+        "sec_ttm":   sec_ttm,
+        "yahoo_ttm": yahoo_ttm,
     }

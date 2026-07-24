@@ -9,7 +9,8 @@ Todas las tablas están definidas en schema_supabase.sql:
 """
 
 import streamlit as st
-from datetime import datetime, timezone
+import math
+from datetime import datetime, timezone, date, timedelta
 from supabase import create_client, Client
 
 
@@ -28,17 +29,55 @@ def get_client() -> Client:
 # CACHÉ DE MERCADO — market_data_cache (ticker, data_type) -> payload jsonb
 # ─────────────────────────────────────────────────────────────────────────────
 
-# TTL en minutos por tipo de dato (acordado previamente)
+# TTL en minutos por tipo de dato, uno por cada función pesada de
+# data_fetcher.py que engancha la caché. "yahoo_data" incluye precio en
+# vivo mezclado con fundamentales, así que su TTL es corto pese a cargar
+# datos pesados — es el compromiso de cachear la función tal cual está
+# estructurada hoy, en vez de trocearla en piezas más finas.
 CACHE_TTL_MINUTES = {
-    "quote":             15,
-    "technical":         60,
-    "historical_prices": 24 * 60,
-    "company_info":      24 * 60,
-    "fundamentals":      48 * 60,
-    "sec_data":          48 * 60,
-    "short_interest":    24 * 60,
+    "yahoo_data":     24 * 60,   # fundamentales — el precio ya no depende de este TTL, se sirve siempre en vivo
+    "technical":       60,
+    "balance_sheet":  48 * 60,
+    "sec_data":       48 * 60,
 }
 _DEFAULT_TTL = 60
+
+
+def _json_safe(obj):
+    """
+    Convierte recursivamente tipos no serializables en JSON estándar
+    (numpy.float64/int64, NaN, pandas Timestamp, date/datetime) a tipos
+    nativos de Python. Necesario porque yfinance devuelve objetos numpy/
+    pandas dentro de los diccionarios que queremos guardar como jsonb.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, (str, int, bool)):
+        return obj
+    # numpy escalares, pandas Timestamp, Decimal, etc. — todos exponen
+    # .item() o son convertibles a través de str()/float() de forma segura
+    if hasattr(obj, "item"):
+        try:
+            return _json_safe(obj.item())
+        except Exception:
+            pass
+    if hasattr(obj, "isoformat"):
+        try:
+            return obj.isoformat()
+        except Exception:
+            pass
+    try:
+        return float(obj) if "." in str(obj) else str(obj)
+    except Exception:
+        return str(obj)
 
 
 def cache_get(ticker: str, data_type: str) -> dict | None:
@@ -83,11 +122,26 @@ def cache_set(ticker: str, data_type: str, payload: dict):
         client.table("market_data_cache").upsert({
             "ticker":     ticker,
             "data_type":  data_type,
-            "payload":    payload,
+            "payload":    _json_safe(payload),
             "fetched_at": datetime.now(timezone.utc).isoformat(),
         }).execute()
     except Exception as e:
         print(f"[db.cache_set] Error ({ticker}/{data_type}): {e}")
+
+
+def cache_clear_expired(max_age_hours: int = 72):
+    """
+    Borra de market_data_cache filas más viejas que max_age_hours.
+    No es estrictamente necesario (cache_get ya ignora lo caducado), pero
+    evita que la tabla crezca indefinidamente. Llamar ocasionalmente
+    (p.ej. desde un botón manual), no en cada carga de página.
+    """
+    try:
+        client = get_client()
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+        client.table("market_data_cache").delete().lt("fetched_at", cutoff.isoformat()).execute()
+    except Exception as e:
+        print(f"[db.cache_clear_expired] Error: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

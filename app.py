@@ -5,25 +5,6 @@ from stock_scanner import render_scanner
 from portfolio import render_portfolio
 from favorites import render_favorite_star, render_favorites_tab
 
-# ── TEMPORAL: verificación de conexión a Supabase — borrar tras confirmar ──
-import db
-
-with st.sidebar.expander("🔧 Debug: conexión Supabase", expanded=True):
-    if st.button("Probar conexión"):
-        result = db.check_connection()
-        if result["ok"]:
-            st.success("Conexión OK — todas las tablas responden")
-        else:
-            st.error("Hay algún problema")
-        for table, status in result["tables"].items():
-            if status.startswith("OK"):
-                st.write(f"✅ `{table}` → {status}")
-            else:
-                st.write(f"❌ `{table}` → {status}")
-        if "connection_error" in result:
-            st.write(f"⚠️ Error de conexión: {result['connection_error']}")
-# ── FIN bloque temporal ─────────────────────────────────────────────────
-
 st.set_page_config(
     page_title="Stock Scanner",
     page_icon="📊",
