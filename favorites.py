@@ -1,63 +1,28 @@
 """
-favorites.py — v1.0
-Gestión de empresas favoritas con persistencia en archivo JSON local.
-Mismo patrón de almacenamiento que competitors_store.json: persiste entre
-recargas de página mientras el contenedor de Streamlit Cloud no se
-redespliegue (no sobrevive a un nuevo deploy del código).
+favorites.py — v2.0
+Gestión de empresas favoritas con persistencia en Supabase (tabla
+`favorites`). Antes usaba un JSON en /tmp que no sobrevivía a un redeploy
+de Streamlit Cloud; ahora persiste de verdad entre despliegues.
 """
 
 import streamlit as st
-import json
-import os
-from datetime import datetime, timezone
-
-_FAVORITES_FILE = "/tmp/favorites_store.json"
-
-
-def _load_favorites() -> dict:
-    """Carga el diccionario completo de favoritos {ticker: {name, sector, added_date}}."""
-    if os.path.exists(_FAVORITES_FILE):
-        try:
-            with open(_FAVORITES_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-
-def _save_favorites(store: dict):
-    try:
-        with open(_FAVORITES_FILE, "w", encoding="utf-8") as f:
-            json.dump(store, f, indent=2)
-    except Exception as e:
-        print(f"[Favorites] Error al guardar: {e}")
+import db
 
 
 def is_favorite(ticker: str) -> bool:
-    ticker = ticker.upper().strip()
-    return ticker in _load_favorites()
+    return db.favorites_is_favorite(ticker)
 
 
 def add_favorite(ticker: str, company_name: str = "", sector: str = ""):
-    ticker = ticker.upper().strip()
-    store = _load_favorites()
-    store[ticker] = {
-        "name":       company_name,
-        "sector":     sector,
-        "added_date": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-    }
-    _save_favorites(store)
+    db.favorites_add(ticker, company_name, sector)
 
 
 def remove_favorite(ticker: str):
-    ticker = ticker.upper().strip()
-    store = _load_favorites()
-    store.pop(ticker, None)
-    _save_favorites(store)
+    db.favorites_remove(ticker)
 
 
 def get_all_favorites() -> dict:
-    return _load_favorites()
+    return db.favorites_get_all()
 
 
 def render_favorite_star(ticker: str, company_name: str, sector: str):

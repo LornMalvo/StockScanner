@@ -129,6 +129,117 @@ def cache_set(ticker: str, data_type: str, payload: dict):
         print(f"[db.cache_set] Error ({ticker}/{data_type}): {e}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# FAVORITOS — tabla favorites (ticker PK)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def favorites_get_all() -> dict:
+    """Devuelve {ticker: {name, sector, added_date}}, mismo shape que el JSON anterior."""
+    try:
+        client = get_client()
+        res = client.table("favorites").select("*").execute()
+        return {
+            row["ticker"]: {
+                "name":       row.get("name") or "",
+                "sector":     row.get("sector") or "",
+                "added_date": (row.get("added_at") or "")[:16].replace("T", " ") + " UTC" if row.get("added_at") else "",
+            }
+            for row in (res.data or [])
+        }
+    except Exception as e:
+        print(f"[db.favorites_get_all] Error: {e}")
+        return {}
+
+
+def favorites_is_favorite(ticker: str) -> bool:
+    ticker = ticker.upper().strip()
+    try:
+        client = get_client()
+        res = client.table("favorites").select("ticker").eq("ticker", ticker).limit(1).execute()
+        return bool(res.data)
+    except Exception as e:
+        print(f"[db.favorites_is_favorite] Error: {e}")
+        return False
+
+
+def favorites_add(ticker: str, name: str = "", sector: str = ""):
+    ticker = ticker.upper().strip()
+    try:
+        client = get_client()
+        client.table("favorites").upsert({
+            "ticker": ticker,
+            "name":   name,
+            "sector": sector,
+        }).execute()
+    except Exception as e:
+        print(f"[db.favorites_add] Error: {e}")
+
+
+def favorites_remove(ticker: str):
+    ticker = ticker.upper().strip()
+    try:
+        client = get_client()
+        client.table("favorites").delete().eq("ticker", ticker).execute()
+    except Exception as e:
+        print(f"[db.favorites_remove] Error: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COMPETIDORES — tabla competitors, bidireccional (ticker_a < ticker_b, par único)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def competitors_get_for(ticker: str) -> list:
+    """
+    Devuelve la lista de tickers competidores de 'ticker', combinando ambos
+    lados del par (ticker_a y ticker_b) — así AVGO→MRVL también hace que
+    MRVL vea a AVGO como competidor, sin tener que añadirlo dos veces.
+    """
+    ticker = ticker.upper().strip()
+    try:
+        client = get_client()
+        res_a = client.table("competitors").select("ticker_b").eq("ticker_a", ticker).execute()
+        res_b = client.table("competitors").select("ticker_a").eq("ticker_b", ticker).execute()
+        out = [r["ticker_b"] for r in (res_a.data or [])] + [r["ticker_a"] for r in (res_b.data or [])]
+        return sorted(set(out))
+    except Exception as e:
+        print(f"[db.competitors_get_for] Error: {e}")
+        return []
+
+
+def competitors_add(ticker: str, competitor: str) -> bool:
+    """Añade el par (orden alfabético forzado). Devuelve False si ya existía o es inválido."""
+    ticker     = ticker.upper().strip()
+    competitor = competitor.upper().strip()
+    if not competitor or competitor == ticker:
+        return False
+    a, b = sorted([ticker, competitor])
+    try:
+        client = get_client()
+        existing = (
+            client.table("competitors").select("id")
+            .eq("ticker_a", a).eq("ticker_b", b).limit(1).execute()
+        )
+        if existing.data:
+            return False
+        client.table("competitors").insert({"ticker_a": a, "ticker_b": b}).execute()
+        return True
+    except Exception as e:
+        print(f"[db.competitors_add] Error: {e}")
+        return False
+
+
+def competitors_remove(ticker: str, competitor: str):
+    """Elimina el par, sea cual sea el orden en que se pasen los tickers."""
+    ticker     = ticker.upper().strip()
+    competitor = competitor.upper().strip()
+    a, b = sorted([ticker, competitor])
+    try:
+        client = get_client()
+        client.table("competitors").delete().eq("ticker_a", a).eq("ticker_b", b).execute()
+    except Exception as e:
+        print(f"[db.competitors_remove] Error: {e}")
+
+
 def cache_clear_expired(max_age_hours: int = 72):
     """
     Borra de market_data_cache filas más viejas que max_age_hours.

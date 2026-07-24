@@ -8,10 +8,10 @@ import yfinance as yf
 import streamlit as st
 import requests
 import time
-import json
 import os
 from datetime import datetime, timezone, timedelta
 from data_fetcher import build_confluence_supports
+import db
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BENCHMARKS DE SECTOR — medias de mercado por métrica
@@ -1297,74 +1297,31 @@ def calc_trend(y: dict | None) -> dict | None:
 # ─────────────────────────────────────────────────────────────────────────────
 # La tabla de comparativa NO se rellena automáticamente: el usuario añade
 # manualmente los tickers que considera competencia directa de la empresa
-# analizada. Se guardan en un archivo JSON local que persiste mientras el
-# contenedor de Streamlit Cloud no se redespliegue (sobrevive a recargas
-# de página y a cierres de sesión del navegador, pero no a un nuevo deploy
-# del código ni a un redeploy manual de la app).
-
-_COMPETITORS_FILE = "/tmp/competitors_store.json"
-
-
-def _load_competitors_store() -> dict:
-    """Carga el almacén completo de competidores manuales desde disco."""
-    if os.path.exists(_COMPETITORS_FILE):
-        try:
-            with open(_COMPETITORS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-
-def _save_competitors_store(store: dict):
-    """Guarda el almacén completo de competidores manuales a disco."""
-    try:
-        with open(_COMPETITORS_FILE, "w", encoding="utf-8") as f:
-            json.dump(store, f, indent=2)
-    except Exception as e:
-        print(f"[Competitors] Error al guardar: {e}")
+# analizada. Se guardan en Supabase (tabla `competitors`) como relación
+# VERDADERAMENTE bidireccional — un único par (ticker_a, ticker_b) con
+# orden alfabético forzado, así que añadir AVGO→MRVL hace que MRVL también
+# vea a AVGO como competidor, sin tener que añadirlo dos veces por separado
+# (antes, con el JSON local, cada ticker gestionaba su lista de forma
+# independiente y esa inconsistencia era justo el bug reportado).
 
 
 def get_manual_competitors(ticker: str) -> list:
     """Devuelve la lista de tickers competidores guardados para esta empresa."""
-    ticker = ticker.upper().strip()
-    store = _load_competitors_store()
-    return store.get(ticker, [])
+    return db.competitors_get_for(ticker)
 
 
 def add_manual_competitor(ticker: str, competitor_ticker: str) -> bool:
     """
-    Añade un competidor a la lista guardada para 'ticker'.
+    Añade un competidor — bidireccional: se guarda como un único par, así
+    que también aparece reflejado al analizar el competidor_ticker.
     Devuelve True si se añadió, False si ya existía o si es el mismo ticker.
     """
-    ticker            = ticker.upper().strip()
-    competitor_ticker = competitor_ticker.upper().strip()
-
-    if not competitor_ticker or competitor_ticker == ticker:
-        return False
-
-    store = _load_competitors_store()
-    current = store.get(ticker, [])
-    if competitor_ticker in current:
-        return False
-
-    current.append(competitor_ticker)
-    store[ticker] = current
-    _save_competitors_store(store)
-    return True
+    return db.competitors_add(ticker, competitor_ticker)
 
 
 def remove_manual_competitor(ticker: str, competitor_ticker: str):
-    """Elimina un competidor de la lista guardada para 'ticker'."""
-    ticker            = ticker.upper().strip()
-    competitor_ticker = competitor_ticker.upper().strip()
-
-    store   = _load_competitors_store()
-    current = store.get(ticker, [])
-    if competitor_ticker in current:
-        current.remove(competitor_ticker)
-        store[ticker] = current
-        _save_competitors_store(store)
+    """Elimina el par de competidores, sea cual sea el orden de los tickers."""
+    db.competitors_remove(ticker, competitor_ticker)
 
 
 def validate_ticker_exists(ticker: str) -> dict | None:
