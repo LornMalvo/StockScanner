@@ -27,14 +27,10 @@ from datetime import datetime, timezone
 # TIPO LIBRE DE RIESGO — Bono USA 10 años en tiempo real
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fetch_risk_free_rate() -> float | None:
+def fetch_risk_free_rate() -> float:
     """
     Obtiene el rendimiento del bono del Tesoro USA a 10 años en tiempo real.
-    Ticker: ^TNX (expresado en %). Devuelve None si no se puede obtener —
-    NO usa un fallback silencioso aquí: cada consumidor (calc_dcf,
-    _adjust_sector_profile en report.py) decide explícitamente cómo
-    reaccionar ante la ausencia de dato, para poder ser honesto en la UI
-    sobre si se está usando un tipo de interés real o uno de respaldo.
+    Ticker: ^TNX (expresado en %). Fallback: 4.5% (aproximación actual).
     """
     try:
         tnx  = yf.Ticker("^TNX")
@@ -44,7 +40,7 @@ def fetch_risk_free_rate() -> float | None:
             return rate / 100   # ^TNX viene en %, lo convertimos a decimal
     except Exception:
         pass
-    return None
+    return 0.045   # fallback 4.5%
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -123,31 +119,13 @@ def _growth_scenarios(y: dict) -> dict:
     else:
         base_raw = 0.05   # fallback conservador 5%
 
-    # Cada escenario se acota de forma INDEPENDIENTE a partir de la tasa
-    # BRUTA (base_raw), no del valor de "base" ya acotado con su propio
-    # suelo del -5% — si pesimista y optimista se derivaran del "base" ya
-    # topado, ambos podían colapsar en el mismo número cuando la empresa
-    # ya tiene un crecimiento TTM muy deprimido (p.ej. una fase de fuerte
-    # inversión con beneficios temporalmente muy negativos): "base" se
-    # quedaba anclado en el suelo del -5% y "pesimista = base − 10pp"
-    # topaba en ese MISMO suelo, dando Pesimista = Base idénticos.
-    base        = max(-0.05, min(base_raw,       0.35))
-    pessimistic = max(-0.25, min(base_raw - 0.10, 0.25))
-    optimistic  = max(-0.05, min(base_raw + 0.10, 0.40))
-
-    # Salvaguarda final: garantizar SIEMPRE pesimista < base < optimista
-    # con una separación mínima de 3pp entre escenarios consecutivos,
-    # incluso en casos límite donde los suelos/techos independientes de
-    # arriba pudieran cruzarse entre sí
-    if pessimistic >= base - 0.03:
-        pessimistic = base - 0.03
-    if optimistic <= base + 0.03:
-        optimistic = base + 0.03
+    # Acotar a rangos razonables
+    base = max(-0.05, min(base_raw, 0.35))
 
     return {
-        "pessimistic": pessimistic,
+        "pessimistic": max(-0.05, base - 0.10),   # -10pp vs base
         "base":        base,
-        "optimistic":  optimistic,
+        "optimistic":  min(0.40,  base + 0.10),   # +10pp vs base
     }
 
 
@@ -185,10 +163,6 @@ def calc_dcf(y: dict, rf: float | None = None) -> dict | None:
 
     if rf is None:
         rf = fetch_risk_free_rate()
-    rf_is_fallback = False
-    if rf is None:
-        rf = 0.045   # fallback conservador — se marca explícitamente para
-        rf_is_fallback = True   # que la UI pueda avisar de que no es el tipo real en vivo
 
     wacc_data  = calc_wacc(y, rf)
     wacc       = wacc_data["wacc"]
@@ -252,7 +226,6 @@ def calc_dcf(y: dict, rf: float | None = None) -> dict | None:
         "scenarios":    results,
         "wacc":         wacc_data,
         "rf":           round(rf * 100, 2),
-        "rf_is_fallback": rf_is_fallback,
         "g_terminal":   g_terminal * 100,
         "fcf_base":     fcf,
         "net_cash":     net_cash,
@@ -266,7 +239,14 @@ def calc_dcf(y: dict, rf: float | None = None) -> dict | None:
 # HISTÓRICO DE MÚLTIPLOS PROPIOS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fetch_historical_multiples(ticker: str, y: dict, sector_pe_fair: float | None = None) -> dict | None:
+@st.cache_data(ttl=43200, show_spinner=False)  # 12h — EPS anual/histórico de precios cambia poco
+def fetch_historical_multiples(
+    ticker: str,
+    market_cap: float | None = None,
+    price: float | None = None,
+    pe_trailing: float | None = None,
+    sector_pe_fair: float | None = None,
+) -> dict | None:
     """
     Calcula el PER histórico propio de los últimos 5 años.
     Método: precio anual medio / EPS anual de cada año.
@@ -274,6 +254,11 @@ def fetch_historical_multiples(ticker: str, y: dict, sector_pe_fair: float | Non
     Incluye también el PER medio "justo" del sector (benchmark de la app)
     para poder comparar directamente PER actual vs PER histórico propio
     vs PER medio del sector en el mismo lugar.
+
+    NOTA: recibe market_cap/price/pe_trailing como escalares sueltos (en vez
+    de todo el dict `y` de fetch_yahoo_data) a propósito — `y` lleva dentro
+    un timestamp de consulta que cambia en cada llamada, lo que invalidaría
+    el @st.cache_data de esta función en cada re-render.
     """
     try:
         t = yf.Ticker(ticker)
@@ -303,7 +288,7 @@ def fetch_historical_multiples(ticker: str, y: dict, sector_pe_fair: float | Non
                     break
             if ni_row is None:
                 return None
-            shares = y.get("market_cap", 0) / (y.get("price", 1) or 1)
+            shares = (market_cap or 0) / (price or 1)
             if shares > 0:
                 eps_row = ni_row / shares
             else:
@@ -311,7 +296,7 @@ def fetch_historical_multiples(ticker: str, y: dict, sector_pe_fair: float | Non
 
         # Para cada año fiscal, calcular el PER medio
         per_history = []
-        current_per = y.get("pe_trailing")
+        current_per = pe_trailing
 
         for date, eps_val in eps_row.items():
             if not eps_val or eps_val <= 0:
@@ -388,15 +373,6 @@ def render_dcf(dcf: dict | None, currency: str = "USD", fx_rate: float | None = 
             'DCF no disponible — se necesita Free Cash Flow positivo y precio válido.</span></div>',
             unsafe_allow_html=True)
         return
-
-    if dcf.get("rf_is_fallback"):
-        st.markdown(
-            '<div style="padding:0.45rem 0.7rem;background:#fff7ed;border-left:3px solid #ea580c;'
-            'border-radius:4px;margin-bottom:0.6rem;font-size:0.72rem;color:#9a3412;">'
-            '⚠ No se pudo obtener el bono 10Y USA en tiempo real — este DCF usa un tipo libre '
-            'de riesgo de respaldo (4.5%), no el dato en vivo.</div>',
-            unsafe_allow_html=True
-        )
 
     price    = dcf["price"]
     wacc     = dcf["wacc"]

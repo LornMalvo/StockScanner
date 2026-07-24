@@ -52,9 +52,9 @@ st.markdown("""
   .tooltip-wrap { display:inline-block; vertical-align:middle; }
   .tooltip-box { visibility:hidden; opacity:0; background:#1e293b; color:#f8fafc; font-size:0.75rem; line-height:1.5; border:1px solid #e2e8f0; border-radius:6px; padding:0.5rem 0.75rem; position:absolute; z-index:9999; bottom:125%; left:50%; transform:translateX(-50%); width:260px; pointer-events:none; transition:opacity 0.15s; font-family:'Inter',sans-serif; font-weight:400; text-transform:none; letter-spacing:0; box-shadow:0 4px 12px rgba(0,0,0,0.15); }
   .tooltip-wrap:hover .tooltip-box { visibility:visible; opacity:1; }
-  .stTabs [data-baseweb="tab-list"] { background:#f1f5f9; border-bottom:none; gap:8px; padding:0.5rem; border-radius:14px; }
-  .stTabs [data-baseweb="tab"] { font-family:'Quicksand',sans-serif; font-weight:700; font-size:0.9rem; color:#64748b !important; padding:0.65rem 1.2rem; border-bottom:none; border-radius:20px; background:#ffffff !important; opacity:1 !important; transition:background 0.15s, color 0.15s; }
-  .stTabs [data-baseweb="tab"] p { color:inherit !important; font-size:0.9rem !important; opacity:1 !important; }
+  .stTabs [data-baseweb="tab-list"] { background:#f1f5f9 !important; border-bottom:none !important; gap:8px !important; padding:0.5rem !important; border-radius:14px !important; }
+  .stTabs [data-baseweb="tab"] { font-family:'Quicksand',sans-serif !important; font-weight:700 !important; font-size:0.9rem !important; color:#64748b !important; padding:0.65rem 1.2rem !important; border-bottom:none !important; border-radius:20px !important; background:#ffffff !important; opacity:1 !important; box-shadow:none !important; transition:background 0.15s, color 0.15s; }
+  .stTabs [data-baseweb="tab"] p { color:inherit !important; font-family:inherit !important; font-size:0.9rem !important; opacity:1 !important; }
   .stTabs [aria-selected="true"] { color:#ffffff !important; background:#0284c7 !important; border-bottom:none !important; }
   .stTabs [aria-selected="true"] p { color:#ffffff !important; }
   /* Comparación lado a lado */
@@ -86,8 +86,8 @@ st.markdown("""
      ::before en vez de ::first-letter, porque ★ es un carácter de
      categoría Símbolo (no Letra) y ::first-letter no lo trata de forma
      fiable entre navegadores — por eso no se veía en amarillo. */
-  .stTabs [data-baseweb="tab-list"] button:nth-child(5) p::before {
-    content: "★  ";
+  .stTabs [data-baseweb="tab-list"] button:nth-of-type(5) p::before {
+    content: "★  " !important;
     color: #eab308 !important;
   }
 </style>
