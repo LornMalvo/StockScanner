@@ -5,29 +5,39 @@ Renderiza el informe completo en Streamlit con el diseño claro.
 
 import streamlit as st
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import yfinance as yf
 import statistics
-from data_fetcher import fetch_balance_sheet_history
+from data_fetcher import (
+    fetch_balance_sheet_history, fetch_yahoo_data, fetch_technical_data,
+    fetch_sec_data, verify_cross_data, build_confluence_supports,
+)
 from analysis import (
     calc_entry_signal, calc_trend, fetch_peer_data, get_manual_competitors,
     render_entry_signal, render_trend, render_peers,
     fetch_company_description, fetch_recent_news, fetch_earnings_analysis,
-    fetch_last_cross_date, render_company_description, render_news,
+    render_company_description, render_news,
     get_sector_benchmarks, fetch_analyst_revisions,
     calc_short_squeeze, render_short_squeeze,
 )
 from dcf import (
     fetch_historical_multiples,
     render_historical_multiples,
+    fetch_risk_free_rate,
+    calc_dcf,
+    render_dcf,
 )
 from pdf_export import render_pdf_download_button
 
 
-# ─── Gráfico de cotización con MM50/MM200 ────────────────────────────────────
+# ─── Gráfico de cotización con MM50/MM200 + panel MACD ───────────────────────
 
 def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_exit_plan: dict | None = None):
     """
-    Gráfico interactivo de cotización a 1 año con MM50 y MM200 superpuestas.
+    Gráfico interactivo de cotización a 1 año con MM50 y MM200 superpuestas,
+    con un segundo panel debajo mostrando el histograma MACD, la línea MACD,
+    la línea de señal y la línea cero de referencia (eje X compartido con el
+    gráfico de precio, para poder leer ambos a la vez).
     Zoom, pan y tooltip con fecha + precio al pasar el cursor (nativo de Plotly).
     Opcionalmente puede superponer los niveles del Plan de Entrada y Salida
     Sugerido — desactivado por defecto, activable con un botón, para no
@@ -37,10 +47,14 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_ex
     if not history:
         return
 
-    dates  = [h["date"]  for h in history]
-    closes = [h["close"] for h in history]
-    mm50s  = [h["mm50"]  for h in history]
-    mm200s = [h["mm200"] for h in history]
+    dates      = [h["date"]  for h in history]
+    closes     = [h["close"] for h in history]
+    mm50s      = [h["mm50"]  for h in history]
+    mm200s     = [h["mm200"] for h in history]
+    macd_line  = [h.get("macd")        for h in history]
+    signal_line = [h.get("macd_signal") for h in history]
+    hist_bars  = [h.get("macd_hist")   for h in history]
+    has_macd   = any(v is not None for v in macd_line)
 
     show_plan = False
     if entry_exit_plan:
@@ -51,20 +65,32 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_ex
             key=toggle_key,
         )
 
-    fig = go.Figure()
+    if has_macd:
+        fig = make_subplots(
+            rows=2, cols=1, shared_xaxes=True,
+            row_heights=[0.7, 0.3], vertical_spacing=0.06,
+        )
+    else:
+        fig = go.Figure()
 
-    fig.add_trace(go.Scatter(
+    def _add(trace, row=1):
+        if has_macd:
+            fig.add_trace(trace, row=row, col=1)
+        else:
+            fig.add_trace(trace)
+
+    _add(go.Scatter(
         x=dates, y=closes, mode="lines", name="Precio",
         line=dict(color="#0284c7", width=2),
         hovertemplate="<b>%{x}</b><br>Precio: " + currency + " %{y:.2f}<extra></extra>",
     ))
-    fig.add_trace(go.Scatter(
+    _add(go.Scatter(
         x=dates, y=mm50s, mode="lines", name="MM50",
         line=dict(color="#d97706", width=1.4, dash="solid"),
         hovertemplate="<b>%{x}</b><br>MM50: " + currency + " %{y:.2f}<extra></extra>",
     ))
     if any(v is not None for v in mm200s):
-        fig.add_trace(go.Scatter(
+        _add(go.Scatter(
             x=dates, y=mm200s, mode="lines", name="MM200",
             line=dict(color="#dc2626", width=1.4, dash="solid"),
             hovertemplate="<b>%{x}</b><br>MM200: " + currency + " %{y:.2f}<extra></extra>",
@@ -77,6 +103,7 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_ex
                 annotation_text=f"Entrada {i+1}: {currency} {lvl['price']:,.2f}",
                 annotation_position="top left",
                 annotation=dict(font=dict(size=9, color="#059669")),
+                row=1 if has_macd else None, col=1 if has_macd else None,
             )
         for obj in (entry_exit_plan.get("exit_plan") or []):
             fig.add_hline(
@@ -84,6 +111,7 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_ex
                 annotation_text=f"{obj['label']}: {currency} {obj['price']:,.2f}",
                 annotation_position="top left",
                 annotation=dict(font=dict(size=9, color="#0284c7")),
+                row=1 if has_macd else None, col=1 if has_macd else None,
             )
         if entry_exit_plan.get("stop_loss"):
             fig.add_hline(
@@ -91,15 +119,39 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_ex
                 annotation_text=f"Stop Loss: {currency} {entry_exit_plan['stop_loss']:,.2f}",
                 annotation_position="bottom left",
                 annotation=dict(font=dict(size=9, color="#dc2626")),
+                row=1 if has_macd else None, col=1 if has_macd else None,
             )
 
+    if has_macd:
+        hist_colors = [
+            "#94a3b8" if v is None else ("#059669" if v >= 0 else "#dc2626")
+            for v in hist_bars
+        ]
+        fig.add_trace(go.Bar(
+            x=dates, y=hist_bars, name="Histograma",
+            marker=dict(color=hist_colors),
+            hovertemplate="<b>%{x}</b><br>Histograma: %{y:.3f}<extra></extra>",
+        ), row=2, col=1)
+        fig.add_trace(go.Scatter(
+            x=dates, y=macd_line, mode="lines", name="MACD",
+            line=dict(color="#0284c7", width=1.4),
+            hovertemplate="<b>%{x}</b><br>MACD: %{y:.3f}<extra></extra>",
+        ), row=2, col=1)
+        fig.add_trace(go.Scatter(
+            x=dates, y=signal_line, mode="lines", name="Señal",
+            line=dict(color="#d97706", width=1.4, dash="dot"),
+            hovertemplate="<b>%{x}</b><br>Señal: %{y:.3f}<extra></extra>",
+        ), row=2, col=1)
+        fig.add_hline(y=0, line=dict(color="#94a3b8", width=1, dash="dash"), row=2, col=1)
+
     fig.update_layout(
-        height=380,
+        height=520 if has_macd else 380,
         margin=dict(l=10, r=10, t=32, b=10),
         plot_bgcolor="#ffffff",
         paper_bgcolor="#ffffff",
         font=dict(family="Inter, sans-serif", size=12, color="#1e293b"),
         hovermode="x unified",
+        barmode="relative",
         legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0.34,
                     font=dict(size=11)),
         xaxis=dict(
@@ -122,6 +174,10 @@ def _render_price_chart(tech: dict, ticker: str, currency: str = "USD", entry_ex
             tickprefix=f"{currency} ",
         ),
     )
+    if has_macd:
+        fig.update_yaxes(title_text="MACD", row=2, col=1,
+                          showgrid=True, gridcolor="#f1f5f9", showline=True, linecolor="#e2e8f0")
+        fig.update_xaxes(rangeslider=dict(visible=False), row=2, col=1)
 
     st.plotly_chart(fig, use_container_width=True, config={
         "displayModeBar": True,
@@ -460,23 +516,6 @@ _ADJ_MIN     = 0.75    # cota inferior del factor de ajuste (máx -25%)
 _ADJ_MAX     = 1.25    # cota superior del factor de ajuste (máx +25%)
 
 
-def fetch_risk_free_rate() -> float | None:
-    """
-    Rendimiento del bono del Tesoro USA a 10 años en tiempo real (^TNX).
-    Devuelve None si no se puede obtener — en ese caso no se ajustan los
-    benchmarks y se usan los valores estáticos originales.
-    """
-    try:
-        t    = yf.Ticker("^TNX")
-        info = t.info
-        rate = info.get("regularMarketPrice") or info.get("previousClose")
-        if rate and 0 < rate < 20:
-            return rate / 100
-    except Exception as e:
-        print(f"[RiskFreeRate] Error: {e}")
-    return None
-
-
 def _adjust_sector_profile(profile: dict, rf_current: float | None) -> tuple[dict, dict | None]:
     """
     Ajusta pe_fair, pe_high y ev_ebitda_fair según el tipo libre de riesgo
@@ -545,7 +584,8 @@ def _robust_aggregate(weighted: list[float]) -> float:
     return statistics.median(weighted)
 
 
-def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None, mult_data: dict | None = None) -> tuple[float | None, list[str], tuple[float, float] | None, float | None]:
+def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None, mult_data: dict | None = None,
+                      dcf_data: dict | None = None) -> tuple[float | None, list[str], tuple[float, float] | None, float | None, str | None]:
     """
     Calcula el valor objetivo usando los métodos relevantes para el sector.
     Devuelve (fair_value, lista_de_métodos_usados, rango_min_max).
@@ -680,6 +720,63 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None, mult_data: 
                     f"(precio objetivo medio) → {target_mean:,.2f}"
                 )
 
+    DCF_MAX_SPREAD = 0.80   # puerta de confianza Nº1: si (optimista-pesimista)/base
+                             # supera este spread, el DCF es demasiado sensible a
+                             # los supuestos de crecimiento como para fiarse del
+                             # número — se excluye de la mediana del Valor Objetivo
+    DCF_MAX_PEER_DEVIATION = 0.50   # puerta de confianza Nº2: aunque los 3
+                             # escenarios del DCF concuerden razonablemente entre
+                             # sí (pase la Nº1), pueden seguir estando los 3 de
+                             # acuerdo en algo poco realista — típico en "story
+                             # stocks" (p.ej. Tesla) cuya valoración depende de
+                             # una narrativa de futuro (robotaxi, IA...) que un
+                             # DCF mecánico, basado solo en crecimiento pasado,
+                             # no puede capturar. Por eso se compara ADEMÁS
+                             # contra la mediana de los otros métodos ya
+                             # reunidos (PER, PEG, EV/EBITDA, consenso...): si
+                             # se desvía demasiado de lo que dice el resto de
+                             # métodos independientes, se excluye igualmente.
+    dcf_excluded_reason = None
+
+    def _add_dcf():
+        nonlocal dcf_excluded_reason
+        if not dcf_data:
+            return
+        sc = dcf_data.get("scenarios", {})
+        base = sc.get("base", {}).get("price_target")
+        pess = sc.get("pessimistic", {}).get("price_target")
+        opt  = sc.get("optimistic", {}).get("price_target")
+        if not base or base <= 0 or pess is None or opt is None:
+            return
+
+        spread = (opt - pess) / base
+        if spread > DCF_MAX_SPREAD:
+            dcf_excluded_reason = (
+                f"DCF excluido del Valor Objetivo por alta dispersión entre escenarios "
+                f"(pesimista {pess:,.2f} — optimista {opt:,.2f}, spread {spread*100:.0f}% > {DCF_MAX_SPREAD*100:.0f}%) "
+                f"— consulta la sección DCF como referencia, no como parte del consenso."
+            )
+            return
+
+        peer_median = _robust_aggregate(targets) if targets else None
+        if peer_median and peer_median > 0:
+            deviation = abs(base - peer_median) / peer_median
+            if deviation > DCF_MAX_PEER_DEVIATION:
+                dcf_excluded_reason = (
+                    f"DCF excluido del Valor Objetivo por desviarse demasiado del resto de métodos "
+                    f"(DCF base {base:,.2f} vs mediana de otros métodos {peer_median:,.2f}, "
+                    f"desviación {deviation*100:.0f}% > {DCF_MAX_PEER_DEVIATION*100:.0f}%) — "
+                    f"consulta la sección DCF como referencia, no como parte del consenso."
+                )
+                return
+
+        targets.append(base)
+        weighted.append(base)
+        weighted_single.append(base)
+        methods_used.append(
+            f"DCF (escenario base, WACC {dcf_data['wacc']['wacc']*100:.1f}%) → {base:,.2f}"
+        )
+
     # ── FALLBACK HYPER-GROWTH: EV/Sales cuando PER/PEG no aplican ──────────
     is_eps_negative = (eps_fwd is None or eps_fwd <= 0) and (eps_ttm is None or eps_ttm <= 0)
     is_hyper_growth = is_eps_negative and rev_yoy is not None and rev_yoy > 25
@@ -697,14 +794,16 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None, mult_data: 
                 f"÷ {ev_revenue:.1f} (EV/Sales actual) ] , Rev YoY {rev_yoy:.0f}% > 25% ) → {val:,.2f}"
             )
         # En modo hyper-growth NO se usan PER/PEG aunque el sector los liste,
-        # porque el EPS negativo los invalida por definición.
+        # porque el EPS negativo los invalida por definición. El DCF SÍ puede
+        # aplicar si hay FCF positivo pese al EPS negativo (cargos no-caja).
         _add_consensus()
+        _add_dcf()
         if not weighted:
-            return None, [], None, None
+            return None, [], None, None, None
         fair_value = _robust_aggregate(weighted)
         fair_value_single = _robust_aggregate(weighted_single)
         rng = (min(targets), max(targets)) if len(targets) >= 2 else None
-        return fair_value, methods_used, rng, fair_value_single
+        return fair_value, methods_used, rng, fair_value_single, dcf_excluded_reason
 
     for method in profile["methods"]:
 
@@ -853,14 +952,15 @@ def _calc_fair_value(y: dict, profile: dict, bh: dict | None = None, mult_data: 
                 )
 
     _add_consensus()
+    _add_dcf()
 
     if not weighted:
-        return None, [], None, None
+        return None, [], None, None, None
 
     fair_value = _robust_aggregate(weighted)
     fair_value_single = _robust_aggregate(weighted_single)
     rng = (min(targets), max(targets)) if len(targets) >= 2 else None
-    return fair_value, methods_used, rng, fair_value_single
+    return fair_value, methods_used, rng, fair_value_single, dcf_excluded_reason
 
 
 # ─── Salud fundamental ajustada al sector ────────────────────────────────────
@@ -1278,9 +1378,9 @@ def _calc_health_score(y: dict, profile: dict, bh: dict | None = None) -> tuple[
         score += pts
         breakdown.append((f"PEG {peg:.2f} (ref. sector <{peg_ok}): +{pts:.1f}/12", _pts_color(pts, 12)))
 
-    # -- Balance y Liquidez ampliado (0-20 pts) --------------------------
-    # 6 sub-métricas: FCF, Current Ratio, Quick Ratio, Debt/Equity,
-    # Net Debt/EBITDA y Dilución (NUEVA).
+    # -- Balance y Liquidez ampliado (0-23 pts) --------------------------
+    # 7 sub-métricas: FCF, Current Ratio, Quick Ratio, Debt/Equity,
+    # Net Debt/EBITDA, Cobertura de Intereses (NUEVA) y Dilución.
     b_pts = 0
 
     # FCF positivo, con desglose CFO/CAPEX (0-3)
@@ -1353,6 +1453,29 @@ def _calc_health_score(y: dict, profile: dict, bh: dict | None = None) -> tuple[
         ))
     else:
         missing_fields.append("Net Debt/EBITDA")
+
+    # Cobertura de intereses: EBIT / Gasto en intereses (0-3, NUEVO) --
+    # Antes se miraba Deuda/Equity y Net Debt/EBITDA (cuánta deuda tiene la
+    # empresa), pero no si puede PAGAR los intereses de esa deuda con el
+    # beneficio operativo actual — que es donde suelen aparecer los
+    # problemas de liquidez reales antes de una crisis, incluso en
+    # empresas con ratios de apalancamiento aparentemente razonables.
+    ebit_ttm = y.get("ebit_ttm")
+    interest_expense = y.get("interest_expense")
+    if ebit_ttm is not None and interest_expense and interest_expense > 0:
+        interest_coverage = ebit_ttm / interest_expense
+        if interest_coverage >= 6:      ic_pts = 3
+        elif interest_coverage >= 3:    ic_pts = 2
+        elif interest_coverage >= 1.5:  ic_pts = 1
+        elif interest_coverage > 0:     ic_pts = 0.3
+        else:                            ic_pts = 0
+        b_pts += ic_pts
+        breakdown.append((
+            f"Cobertura de intereses (EBIT/Gasto intereses) {interest_coverage:.1f}×: +{ic_pts:.1f}/3",
+            _pts_color(ic_pts, 3)
+        ))
+    else:
+        missing_fields.append("Cobertura de intereses (EBIT/Gasto en intereses)")
 
     # Dilución (0-4, NUEVO) -- variación de acciones en circulación vs año
     # anterior. Emitir acciones nuevas para financiar pérdidas diluye a los
@@ -1458,6 +1581,38 @@ def _classify_timing(signal_level: str) -> str:
     return "sin_datos"
 
 
+# Margen de agrupación del Motor de Confluencia: dos niveles de capas
+# distintas que caigan dentro de este ±1.5% se consideran la misma "zona
+# de soporte" (p.ej. un cluster de soporte histórico y la MM200 casi
+# coincidiendo en precio refuerzan la misma idea, no son 2 ideas separadas)
+def _detect_correction_trigger(y: dict, tech: dict, price: float) -> dict:
+    """
+    Trigger de caída: señales de que el valor está en fase correctiva, y
+    por tanto tiene sentido consultar el Mapa de Suelos Proyectados en vez
+    de comprar en la primera pequeña bajada (síndrome del "cuchillo
+    cayendo"). Puramente informativo, no bloquea el cálculo del plan.
+    """
+    reasons = []
+    mm50 = tech.get("mm50")
+    if mm50 and price < mm50:
+        reasons.append("precio por debajo de la MM50")
+
+    week52_high = y.get("52w_high")
+    if week52_high and week52_high > 0:
+        dist = (week52_high - price) / week52_high * 100
+        if dist > 10:
+            reasons.append(f"un {dist:.1f}% por debajo del máximo de 52 semanas")
+
+    # Nota: no disponemos de la tendencia histórica del RSI, solo su valor
+    # actual — se usa como proxy razonable de "presión bajista", no como
+    # una detección estricta de "RSI en caída"
+    rsi = tech.get("rsi")
+    if rsi is not None and rsi < 50:
+        reasons.append(f"RSI en zona baja ({rsi:.0f})")
+
+    return {"active": len(reasons) > 0, "reasons": reasons}
+
+
 def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
     """
     Plan de entrada (3 niveles escalonados con % de capital) y plan de
@@ -1478,6 +1633,15 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
     empresas de calidad baja reciben más peso en los niveles inferiores
     (más cautela, se exige más confirmación de que ha tocado suelo antes de
     comprometer capital importante).
+
+    Los 3 niveles de entrada se alimentan del Mapa de Suelos Proyectados
+    (Motor de Confluencia — ver build_confluence_supports en data_fetcher.py): en vez de
+    tomar el candidato de soporte más cercano de cualquier tipo, agrupa
+    varios métodos técnicos independientes (soporte histórico, medias
+    móviles, Fibonacci) y muestra las 3 zonas de soporte reales más
+    cercanas al precio, señalando cuántos métodos coinciden en cada una —
+    así se evita comprar en la primera pequeña bajada cuando el soporte
+    realmente sólido está más abajo.
     """
     price = y.get("price")
     if not price or not tech or tech.get("error"):
@@ -1494,52 +1658,59 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
     }
     splits = CAPITAL_SPLITS.get(calidad, CAPITAL_SPLITS["media"])
 
-    # ── Recopilar candidatos a soporte, todos por debajo del precio actual
-    candidates = []
-    mm50  = tech.get("mm50")
-    mm200 = tech.get("mm200")
-    if mm50 and mm50 < price:
-        candidates.append(("MM50", mm50))
-    if mm200 and mm200 < price:
-        candidates.append(("MM200", mm200))
+    correction_trigger = _detect_correction_trigger(y, tech, price)
 
-    fib_data = tech.get("fibonacci")
-    if fib_data and fib_data.get("levels"):
-        for label in ("50.0%", "61.8%", "78.6%"):
-            lvl = fib_data["levels"].get(label)
-            if lvl and lvl < price:
-                candidates.append((f"Fibonacci {label}", lvl))
+    # ── Mapa de Suelos Proyectados (Motor de Confluencia) ────────────────
+    # Nota: zones puede salir vacía cuando el precio ya está por debajo de
+    # TODAS las medias móviles, fuera de la zona de Fibonacci (cerca del
+    # mínimo de 52 semanas) y sin ningún soporte histórico por debajo —
+    # típico de una acción en mínimos nuevos, sin referencia técnica de
+    # soporte por debajo. Antes esto hacía que la función se rindiera del
+    # todo (return None); ahora se sigue generando el plan igualmente,
+    # arrancando la cascada de relleno desde el propio precio actual en
+    # vez de desde una zona real — es precisamente en este escenario
+    # (sin suelo técnico visible) donde un plan escalonado es más útil,
+    # no menos.
+    zones = build_confluence_supports(price, tech)
 
-    support_data = tech.get("historical_support")
-    if support_data and support_data.get("level") and support_data["level"] < price:
-        candidates.append((f"Soporte histórico ({support_data['touches']}× rebotes)", support_data["level"]))
+    levels = zones[:3]
 
-    if not candidates:
-        return None
-
-    # Ordenar de más cercano al precio (mayor) a más profundo (menor)
-    candidates.sort(key=lambda c: c[1], reverse=True)
-
-    # Seleccionar 3 niveles con separación mínima del 2% entre ellos, para
-    # que no queden pegados si varias fuentes coinciden casi en el mismo precio
-    MIN_GAP = 0.02
-    levels = [candidates[0]]
-    for label, lvl in candidates[1:]:
-        if len(levels) >= 3:
-            break
-        if (levels[-1][1] - lvl) / levels[-1][1] >= MIN_GAP:
-            levels.append((label, lvl))
-
-    # Si no hay suficientes niveles distintos, completar con % fijos del
-    # precio actual como aproximación razonable (mejor un plan con 3 niveles
-    # aproximados que uno incompleto)
+    # Si no hay suficientes zonas de confluencia reales (o ninguna en
+    # absoluto), completar con niveles de relleno. IMPORTANTE: cada
+    # relleno se calcula en relación al nivel anterior YA COLOCADO (real o
+    # relleno) — o al precio actual si todavía no hay ningún nivel — nunca
+    # como % fijo del precio actual una vez ya hay un nivel colocado, así
+    # se garantiza matemáticamente que el plan siga en descenso sin
+    # importar cuán profunda esté la zona real anterior (si se ancla al
+    # precio actual, una zona real ya muy profunda puede dejar el
+    # siguiente relleno POR ENCIMA suyo, rompiendo el orden).
+    FALLBACK_GAP = 0.05
     while len(levels) < 3:
-        fallback_pct = [0.97, 0.92, 0.85][len(levels)]
-        levels.append((f"Aproximación (-{(1-fallback_pct)*100:.0f}%)", price * fallback_pct))
+        prev_price = levels[-1]["price"] if levels else price
+        fallback_price = prev_price * (1 - FALLBACK_GAP)
+        pct_vs_precio_actual = (1 - fallback_price / price) * 100
+        levels.append({
+            "price":        round(fallback_price, 2),
+            "distance_pct": round(-pct_vs_precio_actual, 1),
+            "indicators":   [f"Aproximación (-{pct_vs_precio_actual:.0f}%)"],
+            "n_layers":     0,
+            "reliability":  "Baja — sin confluencia de indicadores en esta zona",
+        })
+
+    def _zone_label(z):
+        if len(z["indicators"]) == 1:
+            return z["indicators"][0]
+        return "Confluencia: " + " + ".join(z["indicators"])
 
     entry_plan = [
-        {"label": lbl, "price": round(lvl, 2), "capital_pct": splits[i]}
-        for i, (lbl, lvl) in enumerate(levels[:3])
+        {
+            "label":       _zone_label(z),
+            "price":       z["price"],
+            "capital_pct": splits[i],
+            "reliability": z["reliability"],
+            "n_layers":    z["n_layers"],
+        }
+        for i, z in enumerate(levels[:3])
     ]
 
     # Precio medio de compra si se ejecutan los 3 niveles con el capital
@@ -1574,49 +1745,17 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
                               f"fundamental se considera cumplida.")},
         ]
 
-        # Stop Loss: NO se ancla al "nivel que caiga en 3ª posición por
-        # distancia" (podía ser cualquier tipo de candidato, incluida una
-        # simple media móvil sin memoria de mercado real) — se prioriza
-        # explícitamente por fiabilidad estructural, buscando entre TODOS
-        # los candidatos disponibles (no solo los 3 elegidos para el plan
-        # de entrada) el más fiable que esté a un precio igual o inferior
-        # al Nivel 3, para que el Stop Loss nunca quede por encima de
-        # ningún nivel de entrada planeado (si no, se activaría el stop
-        # antes incluso de alcanzar los niveles de compra más profundos).
-        nivel3_price = entry_plan[2]["price"]
-
-        def _es_soporte_historico(lbl): return lbl.startswith("Soporte histórico")
-        def _es_fibonacci_profundo(lbl): return "78.6%" in lbl or "61.8%" in lbl
-        def _es_mm200(lbl): return lbl == "MM200"
-
-        RELIABILITY_ORDER = [
-            ("Alta — nivel con evidencia de rebotes reales", _es_soporte_historico),
-            ("Media-alta — retroceso técnico profundo reconocido", _es_fibonacci_profundo),
-            ("Moderada — media móvil simple, sin memoria de mercado real", _es_mm200),
-        ]
-
-        sl_source = None
-        for confidence_txt, check in RELIABILITY_ORDER:
-            matches = [(lbl, lvl) for lbl, lvl in candidates if check(lbl) and lvl <= nivel3_price]
-            if matches:
-                # Si hay varios que cumplen, el más profundo (más conservador)
-                sl_source = min(matches, key=lambda x: x[1])
-                stop_loss_confidence = confidence_txt
-                break
-
-        if sl_source is None:
-            # Ningún candidato de mayor fiabilidad disponible por debajo del
-            # Nivel 3 — fallback al comportamiento anterior, pero marcado
-            # honestamente como de menor confianza en vez de presentarlo
-            # igual que un nivel bien fundamentado
-            sl_source = (entry_plan[2]["label"], nivel3_price)
-            stop_loss_confidence = "Moderada — sin soporte estructural más fiable disponible por debajo de este nivel"
-
-        stop_loss_source = sl_source[0]
-        # Margen de seguridad adicional del 5% por debajo, para no saltar
-        # por un simple pico de ruido de un día que perfore el nivel y
-        # rebote enseguida
-        stop_loss = round(sl_source[1] * 0.95, 2)
+        # Stop Loss: anclaje matemático simple, un 5% por debajo del
+        # Soporte 3 (Estructural) detectado por el Motor de Confluencia —
+        # ese margen adicional evita que salte por un simple pico de ruido
+        # de un día que perfore el nivel y rebote enseguida. Al venir
+        # siempre del Nivel 3 (el más profundo de los 3 elegidos para el
+        # plan de entrada), el Stop Loss nunca queda por encima de ningún
+        # nivel de entrada planeado.
+        nivel3 = entry_plan[2]
+        stop_loss_source = nivel3["label"]
+        stop_loss_confidence = nivel3["reliability"]
+        stop_loss = round(nivel3["price"] * 0.95, 2)
 
     return {
         "calidad": calidad,
@@ -1627,6 +1766,7 @@ def calc_entry_exit_plan(y: dict, ev: dict, tech: dict | None) -> dict | None:
         "stop_loss_source": stop_loss_source,
         "stop_loss_confidence": stop_loss_confidence,
         "current_price": price,
+        "correction_trigger": correction_trigger,
     }
 
 
@@ -1662,6 +1802,16 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD", fx_rate: fl
         unsafe_allow_html=True
     )
 
+    if plan.get("correction_trigger", {}).get("active"):
+        motivos = ", ".join(plan["correction_trigger"]["reasons"])
+        st.markdown(
+            '<div style="padding:0.45rem 0.7rem;background:#fff7ed;border-left:3px solid #ea580c;'
+            'border-radius:4px;margin-bottom:0.6rem;font-size:0.72rem;color:#9a3412;">'
+            f'🔻 <b>Fase correctiva detectada</b> ({motivos}) — consulta el Mapa de Suelos Proyectados '
+            'antes de comprar en la primera bajada.</div>',
+            unsafe_allow_html=True
+        )
+
     st.markdown(
         f'<div style="font-size:0.72rem;color:#64748b;margin-bottom:0.6rem;">'
         f'Reparto de capital ajustado a Calidad <b style="color:#0284c7;">'
@@ -1670,18 +1820,32 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD", fx_rate: fl
         unsafe_allow_html=True
     )
 
-    entry_html = '<div style="font-size:0.7rem;color:#059669;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem;">Plan de Entrada</div>'
+    # Nomenclatura del Mapa de Suelos Proyectados (Motor de Confluencia)
+    _SOPORTE_NOMBRES = ["Soporte 1 (Inmediato)", "Soporte 2 (Fuerte)", "Soporte 3 (Estructural)"]
+    _RELIABILITY_COLORS = {
+        "Media (1 indicador)":       ("#fef3c7", "#92400e"),
+        "Alta (2 indicadores)":      ("#dbeafe", "#1e40af"),
+        "Extrema (3+ indicadores)":  ("#dcfce7", "#166534"),
+    }
+
+    entry_html = '<div style="font-size:0.7rem;color:#059669;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem;">Mapa de Suelos Proyectados — Plan de Entrada</div>'
     for i, lvl in enumerate(plan["entry_plan"]):
         dist_pct = (lvl["price"] - price_now) / price_now * 100
+        reliability_txt = lvl.get("reliability", "")
+        rel_bg, rel_fg = _RELIABILITY_COLORS.get(reliability_txt, ("#f1f5f9", "#475569"))
         entry_html += (
-            '<div style="display:flex;justify-content:space-between;align-items:center;'
-            'padding:0.5rem 0.7rem;background:#f4f6f9;border-radius:6px;margin-bottom:0.4rem;">'
-            f'<div><span style="font-weight:600;color:#0f172a;">Nivel {i+1}</span> '
+            '<div style="padding:0.5rem 0.7rem;background:#f4f6f9;border-radius:6px;margin-bottom:0.4rem;">'
+            '<div style="display:flex;justify-content:space-between;align-items:center;">'
+            f'<div><span style="font-weight:600;color:#0f172a;">{_SOPORTE_NOMBRES[i]}</span> '
             f'<span style="font-size:0.72rem;color:#64748b;">— {lvl["label"]}</span></div>'
             f'<div style="text-align:right;">'
             f'<span style="font-family:\'IBM Plex Mono\',monospace;color:#0f172a;font-weight:600;">'
             f'{currency} {lvl["price"]:,.2f}{_eur(lvl["price"])}</span> '
-            f'<span style="font-size:0.72rem;color:#dc2626;">({dist_pct:+.1f}%)</span><br>'
+            f'<span style="font-size:0.72rem;color:#dc2626;">({dist_pct:+.1f}%)</span>'
+            '</div></div>'
+            '<div style="display:flex;justify-content:flex-end;gap:0.4rem;margin-top:0.3rem;">'
+            f'<span style="background:{rel_bg};color:{rel_fg};padding:1px 8px;border-radius:4px;'
+            f'font-size:0.68rem;font-weight:700;">{reliability_txt}</span>'
             f'<span style="background:#d1fae5;color:#059669;padding:1px 8px;border-radius:4px;'
             f'font-size:0.72rem;font-weight:700;">{lvl["capital_pct"]}% capital</span>'
             '</div></div>'
@@ -1735,11 +1899,12 @@ def render_entry_exit_plan(plan: dict | None, currency: str = "USD", fx_rate: fl
     st.markdown(
         f'<div class="metric-card">{entry_html}{exit_html}'
         '<div style="font-size:0.68rem;color:#94a3b8;margin-top:0.7rem;">'
-        'Plan orientativo derivado de Soporte histórico, Fibonacci y medias móviles ya calculados, '
-        'combinados con el Valor Objetivo. No es una recomendación de inversión. El Stop Loss se '
-        'prioriza por fiabilidad estructural (Soporte histórico > Fibonacci profundo > MM200), no '
-        'por cuál nivel esté simplemente más cerca — la fiabilidad indicada refleja cuánta confianza '
-        'da ese tipo de nivel concreto, no una garantía.</div>'
+        'Plan orientativo generado por el Motor de Confluencia: agrupa Soporte histórico, medias '
+        'móviles (MM50/MM100/MM200) y Fibonacci dentro de un margen del ±1.5% y muestra las 3 zonas '
+        'de soporte más cercanas, indicando cuántos métodos independientes coinciden en cada una '
+        '(a más indicadores, mayor fiabilidad). Combinado con el Valor Objetivo. No es una '
+        'recomendación de inversión. El Stop Loss se ancla un 5% por debajo del Soporte 3 '
+        '(Estructural) como margen de seguridad frente a ruido de mercado de un solo día.</div>'
         '</div>',
         unsafe_allow_html=True
     )
@@ -1930,8 +2095,14 @@ def _evaluate(y: dict, bh: dict | None = None, mult_data: dict | None = None) ->
     # financiera — no se mezcla en el score de Salud Fundamental) ─────────
     piotroski = calc_piotroski_score(y, bh)
 
+    # ── DCF (3 escenarios) — reutiliza el mismo Rf ya cacheado en sesión,
+    # calc_dcf gestiona internamente el caso rf_current=None (fallback
+    # marcado como tal, ver fetch_risk_free_rate/calc_dcf en dcf.py)
+    dcf_data = calc_dcf(y, rf=rf_current)
+
     # ── Valor objetivo ───────────────────────────────────────────────────
-    fair_value, methods_used, targets_range, fair_value_single = _calc_fair_value(y, profile, bh, mult_data)
+    fair_value, methods_used, targets_range, fair_value_single, dcf_excluded_reason = \
+        _calc_fair_value(y, profile, bh, mult_data, dcf_data)
 
     # Flag informativo: ¿se usó el fallback hyper-growth (EV/Sales)?
     is_hyper_growth = any("hyper-growth" in m for m in methods_used)
@@ -2090,6 +2261,8 @@ def _evaluate(y: dict, bh: dict | None = None, mult_data: dict | None = None) ->
         "fair_value":      fair_value,
         "fair_value_single": fair_value_single,
         "methods_used":    methods_used,
+        "dcf_data":          dcf_data,
+        "dcf_excluded_reason": dcf_excluded_reason,
         "upside":          upside,
         "diag":            diag,
         "diag_color":      diag_color,
@@ -2117,6 +2290,78 @@ def _evaluate(y: dict, bh: dict | None = None, mult_data: dict | None = None) ->
 
 
 
+def fetch_peer_full_data(tickers: list) -> list:
+    """
+    Modo "métricas avanzadas" del Comparador (toggle en app.py): ejecuta,
+    por cada ticker, el MISMO pipeline de análisis que un informe
+    individual completo (datos de Yahoo, balance histórico, múltiplos
+    propios, Salud Fundamental, Piotroski, Valor Objetivo, Diagnóstico
+    General, Señal de Entrada y Veredicto Final), en vez del modo básico
+    que solo trae los datos crudos de Yahoo. Por eso es más lento — se
+    avisa de ello en la UI ("puede tardar varios segundos").
+
+    Devuelve una lista de dicts (uno por ticker que se pudo analizar, los
+    que fallen se omiten en silencio para no romper la comparación de los
+    demás), cada uno con todos los campos básicos de fetch_yahoo_data más
+    los campos avanzados que consume la tabla del Comparador: fcf_quality,
+    pe_trailing, pe_sector, pe_historico, health_score, piotroski_str,
+    fair_value, diag, signal_level, vf_icon, vf_level.
+    """
+    results = []
+    for ticker in tickers:
+        try:
+            y = fetch_yahoo_data(ticker)
+            if not y:
+                continue
+
+            tech = fetch_technical_data(ticker)
+            bh   = fetch_balance_sheet_history(ticker)
+
+            _static_profile, _ = _get_sector_profile(y.get("sector", ""))
+            mult_data = fetch_historical_multiples(ticker, y, sector_pe_fair=_static_profile["pe_fair"])
+
+            ev     = _evaluate(y, bh, mult_data)
+            signal = calc_entry_signal(y, tech if tech and not tech.get("error") else None, ev)
+            vf     = calc_valoracion_final(ev, signal)
+
+            piotroski = ev.get("piotroski") or {}
+            piotroski_str = (
+                f'{piotroski["score"]}/{piotroski["n_evaluable"]}'
+                if piotroski.get("n_evaluable") else None
+            )
+
+            # Calidad del beneficio (FCF/Beneficio neto anual) — mismo cálculo
+            # y misma condición de guarda que dentro de _calc_health_score,
+            # pero expuesto aquí como dato propio para la tabla comparadora
+            fcf_raw   = y.get("free_cash_flow")
+            ni_recent = y.get("ni_year_cur")
+            fcf_quality = (
+                fcf_raw / ni_recent
+                if (fcf_raw is not None and ni_recent and ni_recent > 0) else None
+            )
+
+            d = dict(y)
+            d.update({
+                "ticker":        ticker,
+                "fcf_quality":   fcf_quality,
+                "pe_sector":     ev.get("pe_ref"),
+                "pe_historico":  mult_data.get("per_mean") if mult_data else None,
+                "health_score":  ev.get("health_score"),
+                "piotroski_str": piotroski_str,
+                "fair_value":    ev.get("fair_value"),
+                "diag":          ev.get("diag_base"),
+                "signal_level":  signal.get("level"),
+                "vf_icon":       vf.get("icon"),
+                "vf_level":      vf.get("level"),
+            })
+            results.append(d)
+        except Exception:
+            # Un ticker que falle no debe romper la comparación de los demás
+            continue
+
+    return results
+
+
 # ─── Render principal ─────────────────────────────────────────────────────────
 
 def render_report(ticker, company_name, y: dict,
@@ -2130,6 +2375,13 @@ def render_report(ticker, company_name, y: dict,
     meta_tech  = {}
     if tech and not tech.get("error"):
         meta_tech = {k: tech.get(k) for k in ("last_date","days_old","freshness","trust","source")}
+
+    # Verificación SEC EDGAR — se calcula aquí (antes de "FIABILIDAD Y
+    # FRESCURA DE DATOS", justo debajo) para poder integrarla en esa misma
+    # tabla en vez de mostrarla en una sección aparte y redundante.
+    with st.spinner("Verificando datos contra SEC EDGAR…"):
+        sec_data = fetch_sec_data(ticker)
+    cross = verify_cross_data(sec_data, y) if sec_data else None
 
     from analysis import get_sector_benchmarks
     sbm = get_sector_benchmarks(y.get("sector",""))
@@ -2180,6 +2432,27 @@ def render_report(ticker, company_name, y: dict,
                 f'<div style="color:#64748b;font-size:0.71rem;margin-top:0.15rem;">'
                 f'Verifica este dato en la fuente original antes de operar.</div></div>'
             )
+
+    # Discrepancias TTM Yahoo vs SEC EDGAR (Revenue y/o Beneficio Neto)
+    _CROSS_LABELS = {"revenue": "REVENUE TTM", "net_income": "BENEFICIO NETO TTM"}
+    def _fmt_ttm_compact(v):
+        v = float(v or 0)
+        return f"{v/1e9:.2f}B" if abs(v) >= 1e9 else f"{v/1e6:.0f}M" if abs(v) >= 1e6 else f"{v:,.0f}"
+    if cross and cross.get("checks"):
+        for key, chk in cross["checks"].items():
+            if chk["status"] not in ("WARN", "ERROR"):
+                continue
+            col = "#dc2626" if chk["status"] == "ERROR" else "#d97706"
+            alert_rows += (
+                f'<div style="background:#fffbeb;border:1px solid {col};border-left:4px solid {col};'
+                f'border-radius:6px;padding:0.5rem 0.8rem;margin-bottom:0.4rem;font-size:0.8rem;">'
+                f'<span style="color:{col};font-weight:700;">⚠ {_CROSS_LABELS.get(key,key.upper())}: YAHOO VS SEC EDGAR</span>'
+                f'<span style="color:#64748b;margin-left:0.5rem;">{chk["pct"]:.1f}% de diferencia</span>'
+                f'<div style="color:#64748b;font-size:0.71rem;margin-top:0.15rem;">'
+                f'Yahoo: {currency_y} {_fmt_ttm_compact(chk["yahoo_val"])} · SEC EDGAR: {currency_y} {_fmt_ttm_compact(chk["sec_val"])} — '
+                f'verifica en el 10-K/10-Q original antes de operar.</div></div>'
+            )
+
     if alert_rows:
         st.markdown(alert_rows, unsafe_allow_html=True)
 
@@ -2203,10 +2476,24 @@ def render_report(ticker, company_name, y: dict,
     TRUST_Y    = {"icon":"🟡","label":"Yahoo Finance", "color":"#d97706"}
     TRUST_CALC = {"icon":"🟠","label":"Calculado app", "color":"#ea580c"}
     TRUST_ESTI = {"icon":"🔴","label":"Estimado",      "color":"#dc2626"}
+    TRUST_SEC  = {"icon":"🟢","label":"SEC EDGAR",     "color":"#059669"}
+
+    sec_row = ""
+    if cross and cross.get("checks"):
+        sec_meta = (sec_data or {}).get("meta", {})
+        row_labels = {"revenue": "Revenue TTM (verificado)", "net_income": "Beneficio Neto TTM (verificado)"}
+        for key, chk in cross["checks"].items():
+            status_lbl = {"OK": "coincide con Yahoo", "WARN": f'{chk["pct"]:.1f}% de diferencia',
+                          "ERROR": f'{chk["pct"]:.1f}% de diferencia ⚠'}[chk["status"]]
+            sec_row += _source_row(
+                row_labels.get(key, key), TRUST_SEC,
+                f'{sec_meta.get("latest_end","N/A")} · {status_lbl}', {}
+            )
 
     rows = (
         _source_row("Precio actual",               TRUST_Y,    meta_y.get("price_date","N/A"),    pf)
       + _source_row("Fundamentales (ratios/margen)",TRUST_Y,    meta_y.get("earnings_date","N/A"), ff)
+      + sec_row
       + _source_row("Consenso analistas",           TRUST_ESTI, "Sin fecha exacta en Yahoo",       {})
       + _source_row("Crecimiento YoY / TTM",        TRUST_CALC, meta_y.get("earnings_date","N/A"), {})
       + (_source_row("Técnico — RSI, MM50/200",     TRUST_Y,    meta_tech.get("last_date","N/A"),  tf) if meta_tech else "")
@@ -2222,7 +2509,8 @@ def render_report(ticker, company_name, y: dict,
     )
     legend = (
         '<div style="margin-top:0.6rem;font-size:0.71rem;color:#64748b;">'
-        '🟡 Yahoo Finance &nbsp;·&nbsp; 🟠 Calculado por la app &nbsp;·&nbsp; 🔴 Estimación analistas</div>'
+        '🟢 SEC EDGAR (oficial) &nbsp;·&nbsp; 🟡 Yahoo Finance &nbsp;·&nbsp; 🟠 Calculado por la app '
+        '&nbsp;·&nbsp; 🔴 Estimación analistas</div>'
         '<div style="margin-top:0.4rem;font-size:0.7rem;color:#94a3b8;line-height:1.55;">'
         '⚠ Yahoo Finance agrega datos de múltiples proveedores. Para cifras críticas, '
         'verifica directamente en los informes trimestrales (10-K/10-Q en SEC EDGAR).</div>'
@@ -2621,13 +2909,7 @@ def render_report(ticker, company_name, y: dict,
     # sección de "Histórico de Múltiplos Propios" sin volver a pedir datos.
     _static_profile, _ = _get_sector_profile(y.get("sector", ""))
     with st.spinner("Calculando múltiplos históricos…"):
-        mult_data = fetch_historical_multiples(
-            ticker,
-            market_cap=y.get("market_cap"),
-            price=y.get("price"),
-            pe_trailing=y.get("pe_trailing"),
-            sector_pe_fair=_static_profile["pe_fair"],
-        )
+        mult_data = fetch_historical_multiples(ticker, y, sector_pe_fair=_static_profile["pe_fair"])
 
     ev = _evaluate(y, bh, mult_data)
     entry_exit_plan = calc_entry_exit_plan(y, ev, tech)
@@ -2648,64 +2930,100 @@ def render_report(ticker, company_name, y: dict,
         html_top += _kv("Beta",          _fmt_num(y.get("beta"), 2))
         st.markdown(f'<div class="metric-card">{html_top}</div>', unsafe_allow_html=True)
 
-        col_t1, col_t2 = st.columns(2)
+        rsi_val = tech.get("rsi")
+        rsi_lbl = tech.get("rsi_label","N/A")
+        rsi_pct = min(max(rsi_val or 0, 0), 100)
+        bar_col = "#dc2626" if rsi_pct >= 70 else "#059669" if rsi_pct <= 30 else "#0284c7"
+        rsi_css = tech.get("rsi_css","")
+        rsi_card_html = (
+            '<div class="metric-label">RSI (14 períodos)</div>'
+            '<div style="display:flex;align-items:baseline;gap:0.6rem;">'
+            f'<div class="metric-value">{_fmt_num(rsi_val,2)}</div>'
+            f'<span class="row-val {rsi_css}" style="font-size:0.82rem;">{rsi_lbl}</span>'
+            '</div>'
+            '<div class="progress-bar-bg" style="margin-top:0.6rem;">'
+            f'<div style="height:8px;border-radius:4px;background:{bar_col};width:{rsi_pct}%;"></div>'
+            '</div>'
+            '<div style="display:flex;justify-content:space-between;font-size:0.7rem;'
+            'color:#64748b;margin-top:0.2rem;">'
+            '<span>0 — Sobreventa</span><span>50</span><span>Sobrecompra — 100</span>'
+            '</div>'
+            '<div style="margin-top:0.5rem;font-size:0.78rem;color:#64748b;">'
+            '▸ RSI &lt; 30: sobreventa (posible rebote) &nbsp;|&nbsp; RSI &gt; 70: sobrecompra'
+            '</div>'
+        )
 
-        with col_t1:
-            rsi_val = tech.get("rsi")
-            rsi_lbl = tech.get("rsi_label","N/A")
-            rsi_pct = min(max(rsi_val or 0, 0), 100)
-            bar_col = "#dc2626" if rsi_pct >= 70 else "#059669" if rsi_pct <= 30 else "#0284c7"
-            rsi_css = tech.get("rsi_css","")
-            st.markdown(
-                '<div class="metric-card">'
-                '<div class="metric-label">RSI (14 períodos)</div>'
-                '<div style="display:flex;align-items:baseline;gap:0.6rem;">'
-                f'<div class="metric-value">{_fmt_num(rsi_val,2)}</div>'
-                f'<span class="row-val {rsi_css}" style="font-size:0.82rem;">{rsi_lbl}</span>'
-                '</div>'
-                '<div class="progress-bar-bg" style="margin-top:0.6rem;">'
-                f'<div style="height:8px;border-radius:4px;background:{bar_col};width:{rsi_pct}%;"></div>'
-                '</div>'
-                '<div style="display:flex;justify-content:space-between;font-size:0.7rem;'
-                'color:#64748b;margin-top:0.2rem;">'
-                '<span>0 — Sobreventa</span><span>50</span><span>Sobrecompra — 100</span>'
-                '</div>'
-                '<div style="margin-top:0.5rem;font-size:0.78rem;color:#64748b;">'
-                '▸ RSI &lt; 30: sobreventa (posible rebote) &nbsp;|&nbsp; RSI &gt; 70: sobrecompra'
-                '</div></div>',
-                unsafe_allow_html=True
+        mm50      = tech.get("mm50")
+        mm200     = tech.get("mm200")
+        d50       = tech.get("dist_mm50")
+        d200      = tech.get("dist_mm200")
+        cross_sig = tech.get("cross_signal")
+
+        mm_card_html  = _kv("MM50",  _fmt_price(mm50, currency_y, fx_rate), f"row-val {tech.get('mm50_css','')}")
+        mm_card_html += _kv("Distancia MM50",
+            _fmt_num(d50,2,suffix="%") if d50 is not None else "N/A",
+            "row-val green" if (d50 or 0) >= 0 else "row-val red")
+        mm_card_html += _kv("Señal MM50",  tech.get("mm50_signal","N/A"),  f"row-val {tech.get('mm50_css','')}")
+        mm_card_html += _kv("MM200", _fmt_price(mm200,currency_y,fx_rate) if mm200 else "N/A",
+            f"row-val {tech.get('mm200_css','')}")
+        mm_card_html += _kv("Distancia MM200",
+            _fmt_num(d200,2,suffix="%") if d200 is not None else "N/A",
+            "row-val green" if (d200 or 0) >= 0 else "row-val red")
+        mm_card_html += _kv("Señal MM200", tech.get("mm200_signal","N/A"), f"row-val {tech.get('mm200_css','')}")
+        if cross_sig:
+            c_label, c_css = cross_sig
+            mm_card_html += _kv("Cruce MM50/MM200", c_label, f"row-val {c_css}")
+
+        # Último cruce MM50/MM200 con fecha — ya calculado en tech, sin
+        # necesidad de una segunda llamada de red al histórico (antes
+        # fetch_last_cross_date() volvía a descargar 2 años de precios)
+        last_cross = tech.get("last_ma_cross")
+        if last_cross and last_cross.get("date"):
+            lc_color = "green" if last_cross["type"] == "GOLDEN CROSS" else "red"
+            mm_card_html += _kv("Último cruce MM50/MM200 (fecha)",
+                f'{last_cross["type"]} — {last_cross["date"]} ({last_cross["days_ago"]} sesiones)',
+                f"row-val {lc_color}")
+
+        # Cruce de PRECIO (no de medias entre sí) sobre MM50/MM200, con el
+        # volumen de esa sesión frente a la media de 20 sesiones — un
+        # cruce con volumen significativo (≥1.5×) es más fiable que uno
+        # con volumen normal (posible "falso cruce")
+        for pc in (tech.get("price_cross_mm50"), tech.get("price_cross_mm200")):
+            if not pc:
+                continue
+            pc_color = "green" if pc["direction"] == "up" else "red"
+            vol_txt = (f' · {pc["volume_ratio"]:.1f}× volumen medio'
+                       + (' (significativo)' if pc["significant_volume"] else '')) \
+                      if pc.get("volume_ratio") is not None else ''
+            mm_card_html += _kv(
+                f'Cruce de precio sobre {pc["ma"]}',
+                f'{"Al alza ↑" if pc["direction"]=="up" else "A la baja ↓"} — {pc["date"]} '
+                f'({pc["days_ago"]} sesiones){vol_txt}',
+                f"row-val {pc_color}"
             )
 
-        with col_t2:
-            mm50      = tech.get("mm50")
-            mm200     = tech.get("mm200")
-            d50       = tech.get("dist_mm50")
-            d200      = tech.get("dist_mm200")
-            cross_sig = tech.get("cross_signal")
+        # Alerta de proximidad — informativa, NO puntúa en la Señal de
+        # Entrada (extrapolar cuándo se producirá un cruce no tiene
+        # respaldo estadístico real, solo se avisa de que está cerca)
+        proximity = tech.get("cross_proximity")
+        if proximity and proximity.get("notes"):
+            for note in proximity["notes"]:
+                mm_card_html += _kv("⚠ A vigilar", note, "row-val")
 
-            html  = _kv("MM50",  _fmt_price(mm50, currency_y, fx_rate), f"row-val {tech.get('mm50_css','')}")
-            html += _kv("Distancia MM50",
-                _fmt_num(d50,2,suffix="%") if d50 is not None else "N/A",
-                "row-val green" if (d50 or 0) >= 0 else "row-val red")
-            html += _kv("Señal MM50",  tech.get("mm50_signal","N/A"),  f"row-val {tech.get('mm50_css','')}")
-            html += _kv("MM200", _fmt_price(mm200,currency_y,fx_rate) if mm200 else "N/A",
-                f"row-val {tech.get('mm200_css','')}")
-            html += _kv("Distancia MM200",
-                _fmt_num(d200,2,suffix="%") if d200 is not None else "N/A",
-                "row-val green" if (d200 or 0) >= 0 else "row-val red")
-            html += _kv("Señal MM200", tech.get("mm200_signal","N/A"), f"row-val {tech.get('mm200_css','')}")
-            if cross_sig:
-                c_label, c_css = cross_sig
-                html += _kv("Cruce MM50/MM200", c_label, f"row-val {c_css}")
-
-            # Último cruce con fecha
-            last_cross = fetch_last_cross_date(ticker)
-            if last_cross.get("date"):
-                lc_color = "green" if last_cross["type"] == "GOLDEN CROSS" else "red"
-                html += _kv("Último cruce (fecha)",
-                    f'{last_cross["type"]} — {last_cross["date"]}', f"row-val {lc_color}")
-
-            st.markdown(f'<div class="metric-card">{html}</div>', unsafe_allow_html=True)
+        # Un único st.markdown con una rejilla CSS propia (.tech-grid-2, en
+        # app.py), en vez de st.columns(2) — st.columns ha cambiado de
+        # comportamiento entre versiones de Streamlit (ya ocurrió con el
+        # submenú de pestañas) y en algún despliegue reciente dejaba un
+        # hueco en blanco entre estas dos tarjetas. Una rejilla CSS propia
+        # no depende de esa implementación interna y es estable frente a
+        # futuras actualizaciones de Streamlit.
+        st.markdown(
+            '<div class="tech-grid-2">'
+            f'<div class="metric-card">{rsi_card_html}</div>'
+            f'<div class="metric-card">{mm_card_html}</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
 
         # ── Nuevos indicadores: MACD, ADX, OBV, Fibonacci ────────────────
         macd_d = tech.get("macd")
@@ -2730,55 +3048,60 @@ def render_report(ticker, company_name, y: dict,
                 '</span>'
             )
 
-        col_t3, col_t4 = st.columns(2)
-        with col_t3:
-            html2 = ""
-            if macd_d:
-                macd_sig = ("Cruce alcista" if macd_d["bullish_cross"] else
-                            "Divergencia alcista" if macd_d["bullish_divergence"] else
-                            "Cruce bajista" if macd_d["bearish_cross"] else "Sin señal de giro")
-                macd_col = "green" if (macd_d["bullish_cross"] or macd_d["bullish_divergence"]) else \
-                           "red" if macd_d["bearish_cross"] else ""
-                html2 += _kv(f"MACD{_tip('EMA(12)-EMA(26). El histograma mide la distancia entre el MACD y su línea de señal EMA(9). Un cruce alcista o una divergencia (precio cae, histograma sube) sugiere que el impulso bajista se agota.')}",
-                    f'{macd_d["macd"]:.3f}', "row-val")
-                html2 += _kv("Histograma", f'{macd_d["histogram"]:+.3f}',
-                    "row-val green" if macd_d["histogram"] >= 0 else "row-val red")
-                html2 += _kv("Señal MACD", macd_sig, f"row-val {macd_col}")
-            if adx_v is not None:
-                adx_lbl = "Tendencia fuerte" if adx_v > 25 else "Tendencia débil / lateral"
-                html2 += _kv(f"ADX (14){_tip('Average Directional Index: mide la FUERZA de la tendencia, no su dirección. >25 = tendencia fuerte (alcista o bajista). <20 = mercado sin tendencia clara. Se usa para bloquear Entrada Ideal si hay tendencia bajista fuerte confirmada.')}",
-                    f'{adx_v:.1f} ({adx_lbl})', "row-val")
-            if html2:
-                st.markdown(f'<div class="metric-card">{html2}</div>', unsafe_allow_html=True)
+        html2 = ""
+        if macd_d:
+            macd_sig = ("Cruce alcista" if macd_d["bullish_cross"] else
+                        "Divergencia alcista" if macd_d["bullish_divergence"] else
+                        "Cruce bajista" if macd_d["bearish_cross"] else "Sin señal de giro")
+            macd_col = "green" if (macd_d["bullish_cross"] or macd_d["bullish_divergence"]) else \
+                       "red" if macd_d["bearish_cross"] else ""
+            html2 += _kv(f"MACD{_tip('EMA(12)-EMA(26). El histograma mide la distancia entre el MACD y su línea de señal EMA(9). Un cruce alcista o una divergencia (precio cae, histograma sube) sugiere que el impulso bajista se agota.')}",
+                f'{macd_d["macd"]:.3f}', "row-val")
+            html2 += _kv("Histograma", f'{macd_d["histogram"]:+.3f}',
+                "row-val green" if macd_d["histogram"] >= 0 else "row-val red")
+            html2 += _kv("Señal MACD", macd_sig, f"row-val {macd_col}")
+        if adx_v is not None:
+            adx_lbl = "Tendencia fuerte" if adx_v > 25 else "Tendencia débil / lateral"
+            html2 += _kv(f"ADX (14){_tip('Average Directional Index: mide la FUERZA de la tendencia, no su dirección. >25 = tendencia fuerte (alcista o bajista). <20 = mercado sin tendencia clara. Se usa para bloquear Entrada Ideal si hay tendencia bajista fuerte confirmada.')}",
+                f'{adx_v:.1f} ({adx_lbl})', "row-val")
 
-        with col_t4:
-            html3 = ""
-            if obv_d:
-                obv_lbl = ("Posible acumulación" if obv_d["accumulation"] else
-                           "Posible distribución" if obv_d["distribution"] else
-                           "Alcista" if obv_d["obv_trend_up"] else "Bajista")
-                obv_col = "green" if (obv_d["accumulation"] or obv_d["obv_trend_up"]) else "red"
-                html3 += _kv(f"OBV (volumen){_tip('On-Balance Volume: acumula el volumen en días de subida y lo resta en días de bajada. Si el precio cae pero el OBV sube, sugiere que hay compras de manos fuertes pese al precio débil (acumulación). Si el precio sube pero el OBV cae, la subida no está respaldada por volumen real (distribución).')}",
-                    obv_lbl, f"row-val {obv_col}")
-                html3 += _kv("Precio 20 días", f'{obv_d["price_pct_20d"]:+.1f}%',
-                    "row-val green" if obv_d["price_pct_20d"] >= 0 else "row-val red")
-            if fib_d:
-                near = fib_d.get("near_support")
-                fib_lbl = f"En soporte {near}" if near else "Sin soporte Fibonacci cercano"
-                html3 += _kv(f"Fibonacci 52W{_tip('Niveles de retroceso entre el máximo y mínimo de 52 semanas — estructura ESTÁTICA de mercado, a diferencia de las medias móviles (dinámicas). Se marca en soporte si el precio está a menos del 3% de los niveles 61.8% o 78.6%, las zonas de rebote técnico más vigiladas tras una corrección.')}",
-                    fib_lbl, "row-val green" if near else "row-val")
-            if support_d:
-                sup_currency = currency_y
-                sup_price_str = _fmt_price(support_d["level"], sup_currency, fx_rate)
-                html3 += _kv(f"Soporte histórico{_tip('Nivel de precio donde la acción ha rebotado repetidamente en los últimos 2 años (mínimo 2 toques), agrupando mínimos locales dentro de un margen del 2.5%. A diferencia de las medias móviles o Fibonacci, es un nivel REAL donde el mercado ya ha demostrado interés comprador, no un cálculo proporcional o dinámico.')}",
-                    sup_price_str, "row-val")
-                html3 += _kv("Distancia al soporte", f'-{support_d["distance_pct"]:.1f}%', "row-val red")
-                html3 += _kv("Nº de rebotes / último toque",
-                    f'{support_d["touches"]}× · {support_d.get("last_touch_date","N/A")}', "row-val")
-            elif tech and not tech.get("error"):
-                html3 += _kv("Soporte histórico", "Sin soporte estructural claro detectado", "row-val")
-            if html3:
-                st.markdown(f'<div class="metric-card">{html3}</div>', unsafe_allow_html=True)
+        html3 = ""
+        if obv_d:
+            obv_lbl = ("Posible acumulación" if obv_d["accumulation"] else
+                       "Posible distribución" if obv_d["distribution"] else
+                       "Alcista" if obv_d["obv_trend_up"] else "Bajista")
+            obv_col = "green" if (obv_d["accumulation"] or obv_d["obv_trend_up"]) else "red"
+            html3 += _kv(f"OBV (volumen){_tip('On-Balance Volume: acumula el volumen en días de subida y lo resta en días de bajada. Si el precio cae pero el OBV sube, sugiere que hay compras de manos fuertes pese al precio débil (acumulación). Si el precio sube pero el OBV cae, la subida no está respaldada por volumen real (distribución).')}",
+                obv_lbl, f"row-val {obv_col}")
+            html3 += _kv("Precio 20 días", f'{obv_d["price_pct_20d"]:+.1f}%',
+                "row-val green" if obv_d["price_pct_20d"] >= 0 else "row-val red")
+        if fib_d:
+            near = fib_d.get("near_support")
+            fib_lbl = f"En soporte {near}" if near else "Sin soporte Fibonacci cercano"
+            html3 += _kv(f"Fibonacci 52W{_tip('Niveles de retroceso entre el máximo y mínimo de 52 semanas — estructura ESTÁTICA de mercado, a diferencia de las medias móviles (dinámicas). Se marca en soporte si el precio está a menos del 3% de los niveles 61.8% o 78.6%, las zonas de rebote técnico más vigiladas tras una corrección.')}",
+                fib_lbl, "row-val green" if near else "row-val")
+        if support_d:
+            sup_currency = currency_y
+            sup_price_str = _fmt_price(support_d["level"], sup_currency, fx_rate)
+            html3 += _kv(f"Soporte histórico{_tip('Nivel de precio donde la acción ha rebotado repetidamente en los últimos 2 años (mínimo 2 toques), agrupando mínimos locales dentro de un margen del 2.5%. A diferencia de las medias móviles o Fibonacci, es un nivel REAL donde el mercado ya ha demostrado interés comprador, no un cálculo proporcional o dinámico.')}",
+                sup_price_str, "row-val")
+            html3 += _kv("Distancia al soporte", f'-{support_d["distance_pct"]:.1f}%', "row-val red")
+            html3 += _kv("Nº de rebotes / último toque",
+                f'{support_d["touches"]}× · {support_d.get("last_touch_date","N/A")}', "row-val")
+        elif tech and not tech.get("error"):
+            html3 += _kv("Soporte histórico", "Sin soporte estructural claro detectado", "row-val")
+
+        # Igual que arriba: rejilla CSS propia en vez de st.columns(2). Si
+        # alguna de las dos tarjetas queda vacía (p.ej. macd_d y adx_v
+        # ambos ausentes), se omite del todo en vez de dejar un hueco vacío
+        # con el mismo tamaño que su vecina.
+        cards23 = ""
+        if html2:
+            cards23 += f'<div class="metric-card">{html2}</div>'
+        if html3:
+            cards23 += f'<div class="metric-card">{html3}</div>'
+        if cards23:
+            st.markdown(f'<div class="tech-grid-2">{cards23}</div>', unsafe_allow_html=True)
 
     elif tech and tech.get("error"):
         st.markdown(
@@ -3222,9 +3545,29 @@ def render_report(ticker, company_name, y: dict,
     # histórico propio como método del Valor Objetivo) — aquí solo se
     # actualiza el campo informativo "PER justo sector" con el valor YA
     # ajustado por tipos de interés (ev.get("pe_ref")), sin volver a pedir
-    # datos a Yahoo.
-    mult_data["sector_pe_fair"] = ev.get("pe_ref")
+    # datos a Yahoo. mult_data puede ser None (empresas con histórico
+    # insuficiente para 5 años de múltiplos propios, p.ej. recién salidas a
+    # bolsa) — render_historical_multiples ya está preparado para recibir
+    # None y mostrar el aviso correspondiente, así que no se le asigna nada.
+    if mult_data is not None:
+        mult_data["sector_pe_fair"] = ev.get("pe_ref")
     render_historical_multiples(mult_data)
+
+    # ════════════════════════════════════════════════════════════════════
+    # VALORACIÓN DCF — TRES ESCENARIOS
+    # ════════════════════════════════════════════════════════════════════
+    # dcf_data ya se calculó antes de _evaluate (para poder incluir su
+    # escenario base en el Valor Objetivo si pasa la puerta de confianza —
+    # ver _add_dcf en _calc_fair_value). Aquí solo se renderiza el desglose
+    # completo de los 3 escenarios como referencia adicional.
+    render_dcf(ev.get("dcf_data"), currency_y, fx_rate)
+    if ev.get("dcf_excluded_reason"):
+        st.markdown(
+            '<div style="padding:0.5rem 0.7rem;background:#fff7ed;border-left:3px solid #ea580c;'
+            'border-radius:4px;margin:-0.3rem 0 0.8rem 0;font-size:0.75rem;color:#9a3412;">'
+            f'ℹ️ {ev["dcf_excluded_reason"]}</div>',
+            unsafe_allow_html=True
+        )
 
     # ════════════════════════════════════════════════════════════════════
     # SEÑAL DE ENTRADA
